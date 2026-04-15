@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Styleguide · miployees{% endblock %}
+{% block body_class %}surface--manager{% endblock %}
+{% block layout %}
+<main class="styleguide">
+  <header class="styleguide__hero">
+    <span class="styleguide__eyebrow">miployees design system</span>
+    <h1 class="styleguide__title">Paper, moss, and a little grit.</h1>
+    <p class="styleguide__lede">
+      A warm, editorial operations product for households. Fraunces sets the voice;
+      Inter Tight carries the weight; moss green says "go."
+    </p>
+  </header>
+
+  <section class="styleguide__section">
+    <h2>Palette</h2>
+    <div class="swatch-grid">
+      <div class="swatch swatch--paper"><span>Paper</span><code>#FAF7F2</code></div>
+      <div class="swatch swatch--ink"><span>Ink</span><code>#1F1A14</code></div>
+      <div class="swatch swatch--moss"><span>Moss</span><code>#3F6E3B</code></div>
+      <div class="swatch swatch--rust"><span>Rust</span><code>#B04A27</code></div>
+      <div class="swatch swatch--sand"><span>Sand</span><code>#D9A441</code></div>
+      <div class="swatch swatch--sky"><span>Sky</span><code>#4F7CA8</code></div>
+      <div class="swatch swatch--night"><span>Night</span><code>#F4EFE6</code></div>
+    </div>
+  </section>
+
+  <section class="styleguide__section">
+    <h2>Typography</h2>
+    <div class="type-row">
+      <p class="type-sample type-sample--display">Villa Sud — tomorrow's turnover</p>
+      <p class="type-caption">Fraunces · display · 600</p>
+    </div>
+    <div class="type-row">
+      <p class="type-sample">The cook sees what to prepare tomorrow. The driver sees the airport run. The head of house sees everything.</p>
+      <p class="type-caption">Inter Tight · body · 400</p>
+    </div>
+    <div class="type-row">
+      <p class="type-sample type-sample--mono">task_id=t-2 · scheduled=10:30 · est=25min</p>
+      <p class="type-caption">JetBrains Mono · dev-facing</p>
+    </div>
+  </section>
+
+  <section class="styleguide__section">
+    <h2>Chips &amp; dots</h2>
+    <div class="demo-row">
+      <span class="chip chip--moss">moss</span>
+      <span class="chip chip--rust">rust</span>
+      <span class="chip chip--sand">sand</span>
+      <span class="chip chip--sky">sky</span>
+      <span class="chip chip--ghost">ghost</span>
+      <span class="chip chip--sm chip--moss">small</span>
+      <span class="dot dot--moss"></span>
+      <span class="dot dot--rust"></span>
+      <span class="dot dot--sand"></span>
+    </div>
+  </section>
+
+  <section class="styleguide__section">
+    <h2>Buttons</h2>
+    <div class="demo-row">
+      <button class="btn btn--moss">Primary</button>
+      <button class="btn btn--ghost">Ghost</button>
+      <button class="btn btn--rust">Destructive</button>
+      <button class="btn btn--moss btn--lg">Large primary</button>
+      <button class="btn btn--sm btn--ghost">Small ghost</button>
+    </div>
+  </section>
+
+  <section class="styleguide__section">
+    <h2>Task card</h2>
+    <div class="demo-row demo-row--stack">
+      <a class="task-card task-card--now" href="#">
+        <div class="task-card__head">
+          <span class="chip chip--moss">Villa Sud</span>
+          <span class="chip chip--rust">High priority</span>
+          <span class="chip chip--sand chip--sm">📷 photo required</span>
+          <span class="task-card__when">10:30 · 25 min</span>
+        </div>
+        <h3 class="task-card__title">Change linen — master bedroom</h3>
+        <div class="task-card__meta">Master bedroom</div>
+        <div class="task-card__progress">
+          <span class="progress-bar"><span style="width:33%"></span></span>
+          <span class="progress-label">1/3 steps</span>
+        </div>
+        <div class="task-card__cta">Complete with photo →</div>
+      </a>
+    </div>
+  </section>
+
+  <section class="styleguide__section">
+    <h2>Motion principles</h2>
+    <ul class="kb-list">
+      <li class="kb-item"><div class="kb-item__main"><strong>Enter</strong> — 150ms fade &amp; rise 4px.</div></li>
+      <li class="kb-item"><div class="kb-item__main"><strong>Tick</strong> — scale-to-checkmark, spring.</div></li>
+      <li class="kb-item"><div class="kb-item__main"><strong>Respect</strong> <code class="inline-code">prefers-reduced-motion</code> — reduce to opacity only.</div></li>
+    </ul>
+  </section>
+</main>
+{% endblock %}

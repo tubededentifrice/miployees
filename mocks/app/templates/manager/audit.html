@@ -1,0 +1,34 @@
+{% extends "manager_base.html" %}
+{% block title %}Audit log · miployees{% endblock %}
+{% block page_title %}Audit log{% endblock %}
+{% block page_sub %}<p class="page-sub">Append-only. Every mutation by a human, agent, or system process.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--ghost">Export JSONL</button>{% endblock %}
+
+{% block desk_body %}
+<section class="panel">
+  <div class="desk-filters">
+    <span class="chip chip--ghost chip--sm chip--active">All</span>
+    <span class="chip chip--ghost chip--sm">Human · {{ entries | selectattr('actor_kind','equalto','human') | list | length }}</span>
+    <span class="chip chip--ghost chip--sm">Agent · {{ entries | selectattr('actor_kind','equalto','agent') | list | length }}</span>
+    <span class="chip chip--ghost chip--sm">System · {{ entries | selectattr('actor_kind','equalto','system') | list | length }}</span>
+  </div>
+  <table class="table">
+    <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Via</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for e in entries %}
+        <tr>
+          <td class="mono">{{ e.at.strftime('%H:%M:%S') }}<div class="table__sub">{{ e.at.strftime('%d %b') }}</div></td>
+          <td>
+            <span class="chip chip--sm chip--{{ {'human':'moss','agent':'sky','system':'ghost'}[e.actor_kind] }}">{{ e.actor_kind }}</span>
+            {{ e.actor }}
+          </td>
+          <td class="mono">{{ e.action }}</td>
+          <td class="mono muted">{{ e.target }}</td>
+          <td><span class="chip chip--ghost chip--sm">{{ e.via }}</span></td>
+          <td class="table__sub">{{ e.reason or '' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

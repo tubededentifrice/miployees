@@ -1,0 +1,100 @@
+{% extends "employee_base.html" %}
+{% block title %}Me · miployees{% endblock %}
+
+{% block phone_body %}
+<section class="phone__section">
+  <div class="profile-card">
+    <div class="avatar avatar--xl">{{ employee.avatar_initials }}</div>
+    <div>
+      <h2 class="profile-card__name">{{ employee.name }}</h2>
+      <div class="profile-card__roles">
+        {% for r in employee.roles %}<span class="chip chip--ghost chip--sm">{{ r }}</span>{% endfor %}
+      </div>
+      <div class="profile-card__meta">Started {{ employee.started_on.strftime('%d %b %Y') }} · {{ employee.phone }}</div>
+    </div>
+  </div>
+</section>
+
+<section class="phone__section">
+  <h2 class="section-title">Shift</h2>
+  <a href="/shifts" class="stack-row">
+    <div>
+      <strong>
+        {% if employee.clocked_in_at %}On shift since {{ employee.clocked_in_at.strftime('%H:%M') }}{% else %}Not clocked in{% endif %}
+      </strong>
+      <div class="stack-row__sub">View history →</div>
+    </div>
+    <span class="chip chip--{{ 'moss' if employee.clocked_in_at else 'ghost' }} chip--sm">
+      {{ 'Active' if employee.clocked_in_at else 'Off' }}
+    </span>
+  </a>
+</section>
+
+<section class="phone__section">
+  <h2 class="section-title">My leave</h2>
+  <ul class="task-list">
+    {% for lv in my_leaves %}
+      <li class="stack-row">
+        <div>
+          <strong>{{ lv.starts_on.strftime('%d %b') }} → {{ lv.ends_on.strftime('%d %b') }}</strong>
+          <div class="stack-row__sub">{{ lv.category|capitalize }} · {{ lv.note }}</div>
+        </div>
+        <span class="chip chip--sm chip--{{ 'moss' if lv.approved_at else 'sand' }}">
+          {{ 'Approved' if lv.approved_at else 'Pending' }}
+        </span>
+      </li>
+    {% else %}
+      <li class="empty-state empty-state--quiet">No leave on file.</li>
+    {% endfor %}
+  </ul>
+  <button class="btn btn--ghost">+ Request leave</button>
+</section>
+
+<section class="phone__section">
+  <h2 class="section-title">Issues I reported</h2>
+  <ul class="task-list">
+    {% for i in my_issues %}
+      <li class="stack-row">
+        <div>
+          <strong>{{ i.title }}</strong>
+          <div class="stack-row__sub">{{ property_by_id(i.property_id).name }} · {{ i.area }}</div>
+        </div>
+        <span class="chip chip--sm chip--{{ {'open':'sand','in_progress':'sky','resolved':'moss'}[i.status] }}">{{ i.status.replace('_',' ') }}</span>
+      </li>
+    {% else %}
+      <li class="empty-state empty-state--quiet">Nothing reported.</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="phone__section">
+  <h2 class="section-title">Capabilities</h2>
+  <ul class="cap-list">
+    {% for key, val in employee.capabilities.items() %}
+      <li>
+        <span class="cap-list__key">{{ key }}</span>
+        <span class="chip chip--sm chip--{{ 'moss' if val else 'ghost' }}">{{ 'On' if val else 'Off' }}</span>
+      </li>
+    {% endfor %}
+  </ul>
+  <p class="muted">Read-only. Ask the manager to change these.</p>
+</section>
+
+<section class="phone__section">
+  <h2 class="section-title">Passkeys</h2>
+  <ul class="task-list">
+    <li class="stack-row">
+      <div>
+        <strong>iPhone 14 · Face ID</strong>
+        <div class="stack-row__sub">Added 12 Mar 2025 · last used today</div>
+      </div>
+      <button class="btn btn--ghost btn--sm">Remove</button>
+    </li>
+  </ul>
+  <button class="btn btn--moss">+ Register another device</button>
+</section>
+
+<section class="phone__section">
+  <a href="/switch/manager" class="muted-link">Switch to manager preview →</a>
+</section>
+{% endblock %}

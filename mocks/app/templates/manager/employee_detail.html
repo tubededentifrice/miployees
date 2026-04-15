@@ -1,0 +1,55 @@
+{% extends "manager_base.html" %}
+{% block title %}{{ subject.name }} · miployees{% endblock %}
+{% block page_title %}{{ subject.name }}{% endblock %}
+{% block page_sub %}<p class="page-sub">{{ subject.roles | join(' · ') }} · {{ subject.phone }}</p>{% endblock %}
+{% block page_actions %}
+  <button class="btn btn--ghost">Message</button>
+  <button class="btn btn--ghost">Edit roles</button>
+{% endblock %}
+
+{% block desk_body %}
+<nav class="tabs tabs--h">
+  <a class="tab-link tab-link--active">Overview</a>
+  <a class="tab-link">Shifts</a>
+  <a class="tab-link">Payslips</a>
+  <a class="tab-link">Leaves</a>
+  <a class="tab-link">Capabilities</a>
+  <a class="tab-link">Passkeys</a>
+</nav>
+
+<section class="grid grid--split">
+  <div class="panel">
+    <header class="panel__head"><h2>Tasks</h2></header>
+    <ul class="task-list task-list--desk">
+      {% for t in subject_tasks %}
+        {% set prop = property_by_id(t.property_id) %}
+        <li class="task-row">
+          <span class="task-row__time table__mono">{{ t.scheduled_start.strftime('%d %b · %H:%M') }}</span>
+          <span class="task-row__title"><strong>{{ t.title }}</strong><span class="task-row__area">{{ t.area }}</span></span>
+          <span class="chip chip--{{ prop.color }} chip--sm">{{ prop.name }}</span>
+          <span class="chip chip--sm chip--{{ {'completed':'moss','in_progress':'sky','pending':'ghost','skipped':'rust'}[t.status] }}">{{ t.status }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="panel">
+    <header class="panel__head"><h2>Recent expenses</h2></header>
+    <ul class="expense-list">
+      {% for x in subject_expenses %}
+        <li class="expense-row">
+          <div class="expense-row__main">
+            <strong>{{ x.merchant }}</strong>
+            <span class="expense-row__note">{{ x.note }}</span>
+            <span class="expense-row__time">{{ x.submitted_at.strftime('%d %b') }}</span>
+          </div>
+          <div class="expense-row__side">
+            <span class="expense-row__amount">€{{ '%.2f' | format(x.amount_cents / 100) }}</span>
+            <span class="chip chip--sm chip--{{ {'pending':'sand','approved':'moss','rejected':'rust'}[x.status] }}">{{ x.status }}</span>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,115 @@
+{% extends "manager_base.html" %}
+{% block title %}Expenses · miployees{% endblock %}
+{% block page_title %}Expense approvals{% endblock %}
+{% block page_sub %}<p class="page-sub">Review submitted claims. LLM autofill flags low-confidence fields; approving snaps the exchange rate and attaches to the current open pay period.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--ghost">Export CSV</button>{% endblock %}
+
+{% set pending  = all_expenses | selectattr('status','equalto','pending')  | list %}
+{% set approved = all_expenses | selectattr('status','equalto','approved') | list %}
+{% set rejected = all_expenses | selectattr('status','equalto','rejected') | list %}
+{% set reimbursed = all_expenses | selectattr('status','equalto','reimbursed') | list %}
+
+{% block desk_body %}
+<section class="grid grid--stats">
+  <div class="stat-card {% if pending %}stat-card--warn{% endif %}">
+    <div class="stat-card__label">Needs decision</div>
+    <div class="stat-card__value">{{ pending|length }}</div>
+    <div class="stat-card__sub">€{{ '%.2f' | format((pending | sum(attribute='amount_cents')) / 100) }} total</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Approved (this period)</div>
+    <div class="stat-card__value">{{ approved|length }}</div>
+    <div class="stat-card__sub">€{{ '%.2f' | format((approved | sum(attribute='amount_cents')) / 100) }} · pay out on payslip</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Reimbursed</div>
+    <div class="stat-card__value">{{ reimbursed|length }}</div>
+    <div class="stat-card__sub">paid out via March payslip</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Rejected (90d)</div>
+    <div class="stat-card__value">{{ rejected|length }}</div>
+    <div class="stat-card__sub">—</div>
+  </div>
+</section>
+
+<div class="panel">
+  <header class="panel__head">
+    <h2>Pending · {{ pending|length }}</h2>
+    <span class="muted">Primary queue — work top to bottom.</span>
+  </header>
+
+  <ul class="approval-list approval-list--wide">
+    {% for x in pending %}
+      {% set emp = employee_by_id(x.employee_id) %}
+      {% set low_conf = x.ocr_confidence is not none and x.ocr_confidence < 0.95 %}
+      <li class="approval {% if x.amount_cents >= 10000 %}approval--medium{% endif %}">
+        <div class="approval__head">
+          <span class="avatar avatar--xs">{{ emp.avatar_initials }}</span>
+          <strong>{{ emp.name }}</strong>
+          <span class="chip chip--ghost chip--sm">{{ x.merchant }}</span>
+          {% if x.ocr_confidence is not none %}
+            <span class="chip chip--sm chip--{{ 'sand' if low_conf else 'sky' }}">
+              LLM autofill · {{ (x.ocr_confidence * 100) | round | int }}%
+            </span>
+          {% else %}
+            <span class="chip chip--sm chip--ghost">manual entry</span>
+          {% endif %}
+          <span class="approval__time">submitted {{ x.submitted_at.strftime('%d %b %H:%M') }}</span>
+        </div>
+
+        <div class="expense-approval__grid">
+          <div class="expense-approval__amount">
+            <span class="expense-approval__value">€{{ '%.2f' | format(x.amount_cents / 100) }}</span>
+            <span class="expense-approval__currency mono">{{ x.currency }}</span>
+          </div>
+          <div class="expense-approval__body">
+            <p class="expense-approval__note">{{ x.note }}</p>
+            <div class="expense-approval__meta">
+              <span>Category: <strong>{{ {'x-1':'supplies','x-2':'fuel','x-3':'maintenance','x-4':'food','x-5':'maintenance'}.get(x.id, 'other') }}</strong></span>
+              <span>· Attaches to <strong>April 2026</strong> pay period</span>
+              {% if low_conf %}<span class="chip chip--sm chip--sand">review flagged fields</span>{% endif %}
+            </div>
+          </div>
+          <div class="expense-approval__receipt">
+            <div class="receipt-thumb" aria-hidden="true">📷</div>
+            <span class="muted mono">receipt · 1 page</span>
+          </div>
+        </div>
+
+        <form method="post" action="/expenses/{{ x.id }}/approve" class="approval__actions">
+          <button class="btn btn--moss" type="submit">Approve</button>
+          <button class="btn btn--ghost" formaction="/expenses/{{ x.id }}/reject">Reject with reason</button>
+          <button class="btn btn--ghost" type="button">Edit fields</button>
+        </form>
+      </li>
+    {% else %}
+      <li class="empty-state">Queue empty. All submitted claims have been decided.</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="panel">
+  <header class="panel__head">
+    <h2>Recent decisions</h2>
+    <span class="muted">History — not actionable.</span>
+  </header>
+  <table class="table">
+    <thead><tr><th>Employee</th><th>Merchant</th><th>Amount</th><th>Submitted</th><th>State</th></tr></thead>
+    <tbody>
+      {% for x in (approved + reimbursed + rejected) %}
+        {% set emp = employee_by_id(x.employee_id) %}
+        <tr>
+          <td><span class="avatar avatar--xs">{{ emp.avatar_initials }}</span> {{ emp.name }}</td>
+          <td>{{ x.merchant }}<div class="table__sub">{{ x.note }}</div></td>
+          <td class="mono">€{{ '%.2f' | format(x.amount_cents / 100) }}</td>
+          <td class="mono">{{ x.submitted_at.strftime('%d %b %H:%M') }}</td>
+          <td><span class="chip chip--sm chip--{{ {'approved':'moss','rejected':'rust','reimbursed':'sky'}[x.status] }}">{{ x.status }}</span></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="empty-state empty-state--quiet">No decisions yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

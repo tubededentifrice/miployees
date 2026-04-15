@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Recover access · miployees{% endblock %}
+{% block body_class %}surface--login{% endblock %}
+{% block layout %}
+<main class="login">
+  <div class="login__card">
+    <div class="login__brand">
+      <span class="desk__logo" aria-hidden="true">◈</span>
+      <span class="desk__wordmark">miployees</span>
+    </div>
+    <h1 class="login__headline">Lost your device?</h1>
+    <p class="login__sub">
+      Ask your manager to run <code class="inline-code">miployees admin recover</code>
+      and send you a one-time recovery code. Then enter it below.
+    </p>
+    <form class="form">
+      <label class="field">
+        <span>Your email</span>
+        <input type="email" placeholder="you@example.com" required>
+      </label>
+      <label class="field">
+        <span>Recovery code</span>
+        <input class="recovery-code" placeholder="XXXX-XXXX-XXXX" required>
+      </label>
+      <button type="button" class="btn btn--moss btn--lg">Verify &amp; enroll new passkey</button>
+    </form>
+    <p class="login__footnote muted">
+      Codes expire after one use or 15 minutes, whichever comes first.
+      The manager has to kick off recovery from the host — there's no self-service
+      path, by design. See §03 of the spec.
+    </p>
+    <a href="/login" class="login__recover">← Back to sign in</a>
+  </div>
+</main>
+{% endblock %}

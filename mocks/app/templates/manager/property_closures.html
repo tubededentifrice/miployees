@@ -1,0 +1,65 @@
+{% extends "manager_base.html" %}
+{% block title %}{{ property.name }} — closures · miployees{% endblock %}
+{% block page_title %}{{ property.name }} — closures{% endblock %}
+{% block page_sub %}<p class="page-sub"><a href="/property/{{ property.id }}" class="link">← Back to property</a> · iCal "Not available" / "Blocked" events upsert here automatically.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--moss">+ Add closure</button>{% endblock %}
+
+{% block desk_body %}
+<div class="panel">
+  <table class="table table--roomy">
+    <thead><tr><th>Dates</th><th>Reason</th><th>Note</th><th>Source</th><th></th></tr></thead>
+    <tbody>
+      {% for c in closures %}
+        <tr>
+          <td class="mono">{{ c.starts_on.strftime('%d %b') }} → {{ c.ends_on.strftime('%d %b') }}</td>
+          <td><span class="chip chip--sm chip--{{ 'ghost' if c.reason != 'ical_unavailable' else 'sky' }}">{{ c.reason }}</span></td>
+          <td class="table__sub">{{ c.note }}</td>
+          <td>
+            {% if c.reason == 'ical_unavailable' %}
+              <span class="chip chip--sm chip--sky">Airbnb / VRBO</span>
+            {% else %}
+              <span class="chip chip--sm chip--ghost">manual</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if c.reason == 'ical_unavailable' %}
+              <span class="muted">Read-only — edit in Airbnb / VRBO</span>
+            {% else %}
+              <button class="btn btn--sm btn--ghost">Edit</button>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="empty-state empty-state--quiet">No closures scheduled.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <header class="panel__head"><h2>Calendar view</h2><span class="muted">April 2026</span></header>
+  <div class="mini-cal mini-cal--wide">
+    {% for d in range(1, 31) %}
+      {% set dt = today.replace(day=d) if d <= 30 else None %}
+      {% set ns = namespace(closed=False, reason=None) %}
+      {% for c in closures %}
+        {% if c.starts_on.day <= d <= c.ends_on.day %}
+          {% set ns.closed = True %}
+          {% set ns.reason = c.reason %}
+        {% endif %}
+      {% endfor %}
+      <div class="mini-cal__day {% if ns.closed %}mini-cal__day--closed{% endif %} {% if d == today.day %}mini-cal__day--today{% endif %}">
+        <span class="mini-cal__num">{{ d }}</span>
+        {% if ns.closed %}
+          <span class="mini-cal__bar mini-cal__bar--closed" title="{{ ns.reason }}"></span>
+        {% endif %}
+        {% for s in stays %}
+          {% if s.check_in.day <= d <= s.check_out.day %}
+            <span class="mini-cal__bar mini-cal__bar--{{ property.color }}" title="{{ s.guest }} ({{ s.source }})"></span>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "manager_base.html" %}
+{% block title %}Webhooks · miployees{% endblock %}
+{% block page_title %}Webhooks{% endblock %}
+{% block page_sub %}<p class="page-sub">Outbound notifications when things happen. HMAC-signed with a per-subscription secret.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--moss">+ New subscription</button>{% endblock %}
+
+{% block desk_body %}
+<div class="panel">
+  <table class="table table--roomy">
+    <thead><tr><th>URL</th><th>Events</th><th>Last delivery</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for w in webhooks %}
+        <tr>
+          <td class="mono">{{ w.url }}</td>
+          <td>{% for e in w.events %}<span class="chip chip--sm chip--ghost">{{ e }}</span>{% endfor %}</td>
+          <td class="mono">{{ w.last_delivery_at.strftime('%d %b %H:%M') }}</td>
+          <td>
+            {% if w.active and 200 <= w.last_delivery_status < 300 %}
+              <span class="chip chip--sm chip--moss">{{ w.last_delivery_status }} · active</span>
+            {% elif not w.active %}
+              <span class="chip chip--sm chip--ghost">disabled</span>
+            {% else %}
+              <span class="chip chip--sm chip--rust">{{ w.last_delivery_status }} · failing</span>
+            {% endif %}
+          </td>
+          <td>
+            <button class="btn btn--sm btn--ghost">Test</button>
+            <button class="btn btn--sm btn--ghost">Rotate secret</button>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

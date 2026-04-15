@@ -1,0 +1,20 @@
+{% extends "employee_base.html" %}
+{% block title %}Messages · miployees{% endblock %}
+
+{% block phone_body %}
+<section class="phone__section">
+  <h2 class="section-title">Messages</h2>
+  <ul class="thread-list">
+    {% for t in threads %}
+      <li class="thread {% if t.unread %}thread--unread{% endif %}">
+        <div class="thread__avatar avatar avatar--md">{{ t.with[:2] | upper }}</div>
+        <div class="thread__main">
+          <div class="thread__head"><strong>{{ t.with }}</strong><span class="thread__time">{{ t.time }}</span></div>
+          <div class="thread__last">{{ t.last }}</div>
+        </div>
+        {% if t.unread %}<span class="dot dot--moss" aria-label="Unread"></span>{% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

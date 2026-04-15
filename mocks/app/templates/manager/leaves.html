@@ -1,0 +1,53 @@
+{% extends "manager_base.html" %}
+{% block title %}Leaves · miployees{% endblock %}
+{% block page_title %}Leaves{% endblock %}
+{% block page_sub %}<p class="page-sub">Approve or reject time-off requests. Approved leave drops the employee out of assignment.</p>{% endblock %}
+
+{% block desk_body %}
+<div class="panel">
+  <header class="panel__head">
+    <h2>Pending · {{ pending|length }}</h2>
+  </header>
+  <table class="table table--roomy">
+    <thead><tr><th>Employee</th><th>Dates</th><th>Days</th><th>Category</th><th>Note</th><th></th></tr></thead>
+    <tbody>
+      {% for lv in pending %}
+        {% set emp = employee_by_id(lv.employee_id) %}
+        <tr>
+          <td><span class="avatar avatar--xs">{{ emp.avatar_initials }}</span> {{ emp.name }}</td>
+          <td class="mono">{{ lv.starts_on.strftime('%d %b') }} → {{ lv.ends_on.strftime('%d %b') }}</td>
+          <td>{{ (lv.ends_on - lv.starts_on).days + 1 }}</td>
+          <td><span class="chip chip--sm chip--ghost">{{ lv.category }}</span></td>
+          <td class="table__sub">{{ lv.note }}</td>
+          <td>
+            <form method="post" action="/leaves/{{ lv.id }}/approve" style="display:inline">
+              <button class="btn btn--sm btn--moss" type="submit">Approve</button>
+              <button class="btn btn--sm btn--ghost" formaction="/leaves/{{ lv.id }}/reject">Reject</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="empty-state empty-state--quiet">Inbox zero. Nice.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <header class="panel__head"><h2>Approved (upcoming)</h2></header>
+  <table class="table">
+    <thead><tr><th>Employee</th><th>Dates</th><th>Category</th><th>Note</th></tr></thead>
+    <tbody>
+      {% for lv in approved %}
+        {% set emp = employee_by_id(lv.employee_id) %}
+        <tr>
+          <td><span class="avatar avatar--xs">{{ emp.avatar_initials }}</span> {{ emp.name }}</td>
+          <td class="mono">{{ lv.starts_on.strftime('%d %b') }} → {{ lv.ends_on.strftime('%d %b') }}</td>
+          <td><span class="chip chip--sm chip--ghost">{{ lv.category }}</span></td>
+          <td class="table__sub">{{ lv.note }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Sign in · miployees{% endblock %}
+{% block body_class %}surface--login{% endblock %}
+{% block layout %}
+<main class="login">
+  <div class="login__card">
+    <div class="login__brand">
+      <span class="desk__logo" aria-hidden="true">◈</span>
+      <span class="desk__wordmark">miployees</span>
+    </div>
+    <h1 class="login__headline">Sign in with your passkey</h1>
+    <p class="login__sub">No passwords, ever. Tap once to unlock the house.</p>
+    <button class="btn btn--moss btn--lg login__primary" type="button">🔑 Use passkey</button>
+    <div class="login__divider"><span>or</span></div>
+    <button class="btn btn--ghost btn--lg" type="button">Email me a magic link</button>
+    <a href="/recover" class="login__recover">I lost my device</a>
+  </div>
+  <p class="login__footnote">
+    First time here? Your manager will email you an enrollment link.
+    <a href="/enroll/demo-abc123" class="link">See what enrollment looks like →</a>
+  </p>
+</main>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "manager_base.html" %}
+{% block title %}LLM &amp; agents · miployees{% endblock %}
+{% block page_title %}LLM &amp; agents{% endblock %}
+{% block page_sub %}<p class="page-sub">Per-capability model assignment. Budgets are soft — the system warns and stops when exceeded.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--ghost">Prompt library</button><button class="btn btn--moss">+ Provider</button>{% endblock %}
+
+{% block desk_body %}
+<section class="grid grid--stats">
+  <div class="stat-card">
+    <div class="stat-card__label">24h spend</div>
+    <div class="stat-card__value">${{ '%.2f' | format(total_spent) }}</div>
+    <div class="stat-card__sub">of ${{ '%.2f' | format(total_budget) }} budget</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Calls (24h)</div>
+    <div class="stat-card__value">{{ total_calls }}</div>
+    <div class="stat-card__sub">across {{ assignments | length }} capabilities</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">PII redactions</div>
+    <div class="stat-card__value">1</div>
+    <div class="stat-card__sub">blocked outbound in 24h</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Default model</div>
+    <div class="stat-card__value" style="font-size:1.2rem">gemma-4-31b-it</div>
+    <div class="stat-card__sub">via OpenRouter</div>
+  </div>
+</section>
+
+<div class="panel">
+  <header class="panel__head"><h2>Capabilities</h2></header>
+  <table class="table table--roomy">
+    <thead><tr><th>Capability</th><th>Model</th><th>24h calls</th><th>Budget</th><th>Spent</th><th></th></tr></thead>
+    <tbody>
+      {% for a in assignments %}
+        <tr>
+          <td>
+            <code class="inline-code">{{ a.capability }}</code>
+            <div class="table__sub">{{ a.description }}</div>
+          </td>
+          <td class="mono">{{ a.model_id }}<div class="table__sub">{{ a.provider }}</div></td>
+          <td class="mono">{{ a.calls_24h }}</td>
+          <td class="mono">${{ '%.2f' | format(a.daily_budget_usd) }}</td>
+          <td class="mono">
+            <span class="progress-bar progress-bar--slim"><span style="width:{{ ((a.spent_24h_usd / a.daily_budget_usd) * 100) if a.daily_budget_usd else 0 }}%"></span></span>
+            <span>${{ '%.2f' | format(a.spent_24h_usd) }}</span>
+          </td>
+          <td>
+            {% if a.enabled %}<span class="chip chip--sm chip--moss">on</span>
+            {% else %}<span class="chip chip--sm chip--ghost">off</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <header class="panel__head"><h2>Recent calls</h2></header>
+  <table class="table">
+    <thead><tr><th>When</th><th>Capability</th><th>Model</th><th>Tokens (in / out)</th><th>Cost</th><th>Latency</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for c in calls %}
+        <tr>
+          <td class="mono">{{ c.at.strftime('%H:%M:%S') }}</td>
+          <td><code class="inline-code">{{ c.capability }}</code></td>
+          <td class="mono muted">{{ c.model_id }}</td>
+          <td class="mono">{{ c.input_tokens }} / {{ c.output_tokens }}</td>
+          <td class="mono">${{ '%.3f' | format(c.cost_cents / 100) }}</td>
+          <td class="mono">{{ c.latency_ms }} ms</td>
+          <td>
+            <span class="chip chip--sm chip--{{ {'ok':'moss','error':'rust','redacted_block':'sand'}[c.status] }}">{{ c.status }}</span>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

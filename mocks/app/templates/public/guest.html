@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Welcome — {{ property.name }}{% endblock %}
+{% block body_class %}surface--guest{% endblock %}
+{% block layout %}
+<main class="guest">
+  <header class="guest__hero">
+    <span class="guest__eyebrow">Welcome to</span>
+    <h1 class="guest__name">{{ property.name }}</h1>
+    <p class="guest__stay">{{ stay.check_in.strftime('%a %d %b') }} → {{ stay.check_out.strftime('%a %d %b') }} · {{ stay.guests }} guests</p>
+  </header>
+
+  <section class="guest__grid">
+    <article class="guest-card">
+      <h2 class="guest-card__title">Wifi</h2>
+      <dl class="guest-card__kv">
+        <dt>Network</dt><dd class="mono">villa-sud-guest</dd>
+        <dt>Password</dt><dd class="mono">houseparty-2026!</dd>
+      </dl>
+    </article>
+
+    <article class="guest-card">
+      <h2 class="guest-card__title">Access</h2>
+      <p>Front door code: <code class="inline-code">★ 4 2 8 1 #</code></p>
+      <p>Parking: the spot marked "3B" in the garage.</p>
+      <p>If you get stuck: call Élodie, +33 6 01 02 03 04.</p>
+    </article>
+
+    <article class="guest-card">
+      <h2 class="guest-card__title">House rules</h2>
+      <ul class="guest-card__list">
+        <li>Quiet hours: 22:00 – 08:00.</li>
+        <li>No smoking indoors — the terrace is fine.</li>
+        <li>Pets welcome, please keep them off the sofas.</li>
+      </ul>
+    </article>
+
+    <article class="guest-card">
+      <h2 class="guest-card__title">Trash &amp; recycling</h2>
+      <p>Collection Mon &amp; Thu morning. Bins are in the courtyard — the
+         green one is recycling, yellow is general, brown is organics.</p>
+    </article>
+
+    <article class="guest-card guest-card--wide">
+      <h2 class="guest-card__title">Before you leave</h2>
+      <p class="muted">A short checklist — nothing scary, just what we always ask.</p>
+      <ul class="guest-checklist">
+        {% for item in guest_checklist %}
+          <li>
+            <span class="checklist__box" aria-hidden="true"></span>
+            <span>{{ item.label }}</span>
+          </li>
+        {% else %}
+          <li class="muted">(No check-out notes for this stay.)</li>
+        {% endfor %}
+      </ul>
+    </article>
+
+    <article class="guest-card">
+      <h2 class="guest-card__title">Emergency contacts</h2>
+      <ul class="guest-card__list">
+        <li>Host (Élodie): +33 6 01 02 03 04</li>
+        <li>Ambulance: 15</li>
+        <li>Police: 17</li>
+      </ul>
+    </article>
+  </section>
+
+  <footer class="guest__footer">
+    <a class="btn btn--ghost" href="mailto:hello@example.com?subject=Issue at {{ property.name }}">Report an issue</a>
+    <span class="muted">Link expires {{ stay.check_out.strftime('%d %b') }} · no login, no cookies.</span>
+  </footer>
+</main>
+{% endblock %}

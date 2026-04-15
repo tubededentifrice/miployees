@@ -1,0 +1,64 @@
+{% extends "employee_base.html" %}
+{% block title %}Report an issue · miployees{% endblock %}
+
+{% block phone_body %}
+<section class="phone__section">
+  <h2 class="section-title">Report an issue</h2>
+  <p class="muted">Tell the manager something is broken, missing, or unsafe. The more specific the better.</p>
+
+  <form class="form" method="post" action="/issues/new">
+    <label class="field">
+      <span>Short title</span>
+      <input name="title" placeholder="e.g. Bathroom tap dripping" required>
+    </label>
+
+    <label class="field">
+      <span>Property</span>
+      <select name="property_id" required>
+        {% for p in properties %}
+          <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Area</span>
+      <input name="area" placeholder="e.g. Master bathroom">
+    </label>
+
+    <label class="field">
+      <span>Category</span>
+      <div class="chip-group">
+        {% for c in ['damage', 'broken', 'supplies', 'safety', 'other'] %}
+          <label class="chip-radio">
+            <input type="radio" name="category" value="{{ c }}" {% if c == 'broken' %}checked{% endif %}>
+            <span>{{ c|capitalize }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </label>
+
+    <label class="field">
+      <span>Severity</span>
+      <div class="chip-group">
+        {% for s, label in [('low','Low'), ('medium','Medium'), ('high','High — unsafe or guest-facing')] %}
+          <label class="chip-radio">
+            <input type="radio" name="severity" value="{{ s }}" {% if s == 'medium' %}checked{% endif %}>
+            <span>{{ label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </label>
+
+    <label class="field">
+      <span>What happened?</span>
+      <textarea name="body" rows="4" placeholder="What you saw, what you tried, anything the manager should know."></textarea>
+    </label>
+
+    <div class="form__row">
+      <button type="button" class="btn btn--ghost">📷 Attach photo</button>
+      <button type="submit" class="btn btn--moss">Send to manager</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

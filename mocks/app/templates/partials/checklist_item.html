@@ -1,0 +1,9 @@
+<li class="checklist__item {% if item.done %}checklist__item--done{% endif %}"
+    id="check-{{ task.id }}-{{ loop.index0 if loop is defined else idx }}"
+    hx-post="/task/{{ task.id }}/check/{{ loop.index0 if loop is defined else idx }}"
+    hx-trigger="click"
+    hx-swap="outerHTML"
+    role="button" tabindex="0">
+  <span class="checklist__box" aria-hidden="true">{% if item.done %}✓{% endif %}</span>
+  <span class="checklist__label">{{ item.label }}</span>
+</li>

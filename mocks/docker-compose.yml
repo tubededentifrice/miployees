@@ -1,0 +1,51 @@
+# miployees — UI preview mocks.
+#
+# Exposed at https://dev.miployees.com via the shared Pangolin/Traefik
+# stack (same pattern as fj2). Binds locally to 127.0.0.1:8100 for
+# direct access, and registers Traefik labels for public routing with
+# badger auth.
+#
+# Pangolin needs a corresponding "resource" entry for dev.miployees.com
+# (add via the Pangolin dashboard once) — until that's set, requests
+# hit badger's forward-auth and land on the login flow.
+
+name: "miployees-mocks"
+
+services:
+  mocks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: miployees-mocks
+    restart: unless-stopped
+    user: "10001:10001"
+    volumes:
+      # Bind-mount keeps the container in sync with the host on every save.
+      # Paired with `uvicorn --reload` + Jinja auto_reload + StaticFiles,
+      # every .py / .html / .css / static change is picked up with zero
+      # `docker compose restart`. Read-only is fine: PYTHONDONTWRITEBYTECODE=1
+      # in the image keeps uvicorn from trying to write bytecode back.
+      - ./app:/app/app:ro
+    ports:
+      - "127.0.0.1:8100:8000"
+    networks:
+      - default
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      # Public (badger-gated) router
+      - "traefik.http.routers.miployees-dev.rule=Host(`dev.miployees.com`)"
+      - "traefik.http.routers.miployees-dev.entrypoints=websecure"
+      - "traefik.http.routers.miployees-dev.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.miployees-dev.middlewares=badger@file"
+      - "traefik.http.routers.miployees-dev.service=miployees-dev"
+      # Service
+      - "traefik.http.services.miployees-dev.loadbalancer.server.port=8000"
+      - "traefik.http.services.miployees-dev.loadbalancer.healthcheck.path=/healthz"
+      - "traefik.http.services.miployees-dev.loadbalancer.healthcheck.interval=5s"
+      - "traefik.http.services.miployees-dev.loadbalancer.healthcheck.hostname=dev.miployees.com"
+
+networks:
+  traefik-proxy:
+    external: true

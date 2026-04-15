@@ -1,0 +1,111 @@
+{% extends "manager_base.html" %}
+{% block title %}Dashboard · miployees{% endblock %}
+{% block page_title %}Good morning, {{ manager_name.split(' ')[0] }}{% endblock %}
+{% block page_sub %}<p class="page-sub">{{ today.strftime('%A, %d %B %Y') }} · {{ properties|length }} properties · 5 staff · {{ (by_status.completed|length) + (by_status.in_progress|length) + (by_status.pending|length) }} tasks today</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--ghost">New task</button><button class="btn btn--moss">Broadcast message</button>{% endblock %}
+
+{% block desk_body %}
+<section class="grid grid--stats">
+  <div class="stat-card">
+    <div class="stat-card__label">Tasks today</div>
+    <div class="stat-card__value">{{ by_status.completed|length }}<span class="stat-card__divider">/</span>{{ by_status.completed|length + by_status.in_progress|length + by_status.pending|length }}</div>
+    <div class="stat-card__sub">completed</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">On shift</div>
+    <div class="stat-card__value">{{ on_shift|length }}</div>
+    <div class="stat-card__sub">of 5 staff</div>
+  </div>
+  <div class="stat-card {% if pending_approvals %}stat-card--warn{% endif %}">
+    <div class="stat-card__label">Approvals</div>
+    <div class="stat-card__value">{{ pending_approvals|length }}</div>
+    <div class="stat-card__sub">agent actions awaiting review</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Stays in house</div>
+    <div class="stat-card__value">{{ stays_today|length }}</div>
+    <div class="stat-card__sub">across {{ properties|length }} properties</div>
+  </div>
+</section>
+
+<section class="grid grid--split">
+  <div class="panel">
+    <header class="panel__head"><h2>Today's tasks</h2><a class="link" href="/properties">By property →</a></header>
+    <table class="table">
+      <thead><tr><th>Time</th><th>Task</th><th>Property</th><th>Assignee</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for t in (by_status.in_progress + by_status.pending + by_status.completed) %}
+          {% set prop = property_by_id(t.property_id) %}
+          {% set emp = employee_by_id(t.assignee_id) %}
+          <tr>
+            <td class="mono">{{ t.scheduled_start.strftime('%H:%M') }}</td>
+            <td><strong>{{ t.title }}</strong><div class="table__sub">{{ t.area }}</div></td>
+            <td><span class="chip chip--{{ prop.color }} chip--sm">{{ prop.name }}</span></td>
+            <td><span class="avatar avatar--xs">{{ emp.avatar_initials }}</span> {{ emp.name.split(' ')[0] }}</td>
+            <td><span class="chip chip--sm chip--{{ {'completed':'moss','in_progress':'sky','pending':'ghost','skipped':'rust'}[t.status] }}">{{ t.status.replace('_',' ') }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <header class="panel__head"><h2>Agent approvals</h2><a class="link" href="/approvals">All →</a></header>
+    <ul class="approval-list">
+      {% for a in pending_approvals %}
+        <li class="approval approval--{{ a.risk }}">
+          <div class="approval__head">
+            <span class="chip chip--ghost chip--sm">{{ a.agent }}</span>
+            <span class="chip chip--sm chip--{{ {'low':'sky','medium':'sand','high':'rust'}[a.risk] }}">{{ a.risk }} risk</span>
+          </div>
+          <div class="approval__title"><strong>{{ a.action }}</strong> · {{ a.target }}</div>
+          <div class="approval__reason">{{ a.reason }}</div>
+          <form method="post" action="/approvals/{{ a.id }}/approve" class="approval__actions">
+            <button class="btn btn--moss btn--sm" type="submit">Approve</button>
+            <button class="btn btn--ghost btn--sm" formaction="/approvals/{{ a.id }}/reject">Reject</button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+
+<section class="grid grid--split">
+  <div class="panel">
+    <header class="panel__head"><h2>Open issues</h2><span class="muted">{{ open_issues|length }}</span></header>
+    <ul class="issue-list">
+      {% for i in open_issues %}
+        {% set reporter = employee_by_id(i.reported_by) %}
+        {% set prop = property_by_id(i.property_id) %}
+        <li class="issue-row">
+          <div>
+            <strong>{{ i.title }}</strong>
+            <div class="table__sub">{{ reporter.name.split(' ')[0] }} · {{ prop.name }} · {{ i.area }}</div>
+          </div>
+          <span class="chip chip--sm chip--{{ {'low':'ghost','medium':'sand','high':'rust'}[i.severity] }}">{{ i.severity }}</span>
+          <span class="chip chip--sm chip--{{ {'open':'sand','in_progress':'sky','resolved':'moss'}[i.status] }}">{{ i.status.replace('_',' ') }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="panel">
+    <header class="panel__head"><h2>Pending leaves</h2><a class="link" href="/leaves">All →</a></header>
+    <ul class="task-list task-list--desk">
+      {% for lv in pending_leaves %}
+        {% set emp = employee_by_id(lv.employee_id) %}
+        <li class="task-row">
+          <span class="task-row__time mono">{{ lv.starts_on.strftime('%d %b') }} → {{ lv.ends_on.strftime('%d %b') }}</span>
+          <span class="task-row__title"><strong>{{ emp.name }}</strong><span class="task-row__area">{{ lv.category }} · {{ lv.note }}</span></span>
+          <form method="post" action="/leaves/{{ lv.id }}/approve" style="display:inline">
+            <button class="btn btn--sm btn--moss" type="submit">Approve</button>
+            <button class="btn btn--sm btn--ghost" formaction="/leaves/{{ lv.id }}/reject">Reject</button>
+          </form>
+        </li>
+      {% else %}
+        <li class="empty-state empty-state--quiet">No pending leave requests.</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% endblock %}

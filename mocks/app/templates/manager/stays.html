@@ -1,0 +1,92 @@
+{% extends "manager_base.html" %}
+{% block title %}Stays · miployees{% endblock %}
+{% block page_title %}Stays{% endblock %}
+{% block page_sub %}<p class="page-sub">Imported from Airbnb, VRBO, and direct bookings. Four layers: stays, turnover bundles, closures, employee leave.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--ghost">+ Add stay</button><button class="btn btn--moss">Import iCal</button>{% endblock %}
+
+{% block desk_body %}
+<div class="panel">
+  <table class="table table--roomy">
+    <thead><tr><th>Guest</th><th>Property</th><th>Source</th><th>Check-in</th><th>Check-out</th><th>Guests</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for s in stays %}
+        {% set p = property_by_id(s.property_id) %}
+        <tr>
+          <td><strong>{{ s.guest }}</strong></td>
+          <td><span class="chip chip--{{ p.color }} chip--sm">{{ p.name }}</span></td>
+          <td><span class="chip chip--ghost chip--sm">{{ s.source }}</span></td>
+          <td class="mono">{{ s.check_in.strftime('%a %d %b') }}</td>
+          <td class="mono">{{ s.check_out.strftime('%a %d %b') }}</td>
+          <td>{{ s.guests }}</td>
+          <td><span class="chip chip--sm chip--{{ {'booked':'sky','in_house':'moss','checked_out':'ghost','cancelled':'rust'}[s.status] }}">{{ s.status.replace('_',' ') }}</span></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <header class="panel__head">
+    <h2>April 2026 — calendar</h2>
+    <div class="cal-legend">
+      <span class="cal-legend__item"><span class="swatch-dot swatch-dot--moss"></span>Villa Sud</span>
+      <span class="cal-legend__item"><span class="swatch-dot swatch-dot--sky"></span>Apt 3B</span>
+      <span class="cal-legend__item"><span class="swatch-dot swatch-dot--rust"></span>Chalet Cœur</span>
+      <span class="cal-legend__item"><span class="swatch-dot swatch-dot--turnover"></span>Turnover</span>
+      <span class="cal-legend__item"><span class="swatch-dot swatch-dot--closed"></span>Closure</span>
+      <span class="cal-legend__item"><span class="swatch-dot swatch-dot--leave"></span>Leave</span>
+    </div>
+  </header>
+
+  <div class="cal-wide">
+    <div class="cal-wide__headers">
+      <div class="cal-wide__corner">April</div>
+      {% for d in range(1, 31) %}
+        <div class="cal-wide__header {% if d == today.day %}cal-wide__header--today{% endif %}">
+          <span class="cal-wide__dow">{{ ['M','T','W','T','F','S','S'][(d - 1 + 2) % 7] }}</span>
+          <span class="cal-wide__num">{{ d }}</span>
+        </div>
+      {% endfor %}
+    </div>
+
+    {% for p in properties %}
+      <div class="cal-wide__row">
+        <div class="cal-wide__label"><span class="chip chip--{{ p.color }} chip--sm">{{ p.name }}</span></div>
+        {% for d in range(1, 31) %}
+          <div class="cal-wide__cell">
+            {% for s in stays %}
+              {% if s.property_id == p.id and s.check_in.day <= d <= s.check_out.day %}
+                <span class="cal-bar cal-bar--{{ p.color }}" title="{{ s.guest }} ({{ s.source }})">
+                  {% if d == s.check_in.day %}{{ s.guest.split(' ')[0] }}{% endif %}
+                </span>
+              {% endif %}
+              {% if s.property_id == p.id and s.check_out.day == d %}
+                <span class="cal-bar cal-bar--turnover" title="Turnover — {{ s.guest }}"></span>
+              {% endif %}
+            {% endfor %}
+            {% for c in closures %}
+              {% if c.property_id == p.id and c.starts_on.day <= d <= c.ends_on.day %}
+                <span class="cal-bar cal-bar--closed" title="Closure: {{ c.reason }}"></span>
+              {% endif %}
+            {% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endfor %}
+
+    <div class="cal-wide__row cal-wide__row--leaves">
+      <div class="cal-wide__label"><span class="chip chip--ghost chip--sm">Employee leave</span></div>
+      {% for d in range(1, 31) %}
+        <div class="cal-wide__cell">
+          {% for lv in leaves %}
+            {% if lv.starts_on.month == 4 and lv.starts_on.day <= d <= lv.ends_on.day %}
+              {% set emp = employee_by_id(lv.employee_id) %}
+              <span class="cal-bar cal-bar--leave" title="{{ emp.name }} — {{ lv.category }}">{% if d == lv.starts_on.day %}{{ emp.avatar_initials }}{% endif %}</span>
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

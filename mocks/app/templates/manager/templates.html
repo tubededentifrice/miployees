@@ -1,0 +1,38 @@
+{% extends "manager_base.html" %}
+{% block title %}Task templates · miployees{% endblock %}
+{% block page_title %}Task templates{% endblock %}
+{% block page_sub %}<p class="page-sub">Reusable definitions. Schedules materialize tasks from these. Edit once, update everywhere.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--moss">+ New template</button>{% endblock %}
+
+{% block desk_body %}
+<section class="grid grid--cards">
+  {% for tpl in templates_list %}
+    <article class="tpl-card">
+      <header class="tpl-card__head">
+        <h3 class="tpl-card__title">{{ tpl.name }}</h3>
+        <div class="tpl-card__chips">
+          <span class="chip chip--ghost chip--sm">{{ tpl.role }}</span>
+          <span class="chip chip--sm chip--{{ {'low':'ghost','normal':'ghost','high':'sand','urgent':'rust'}[tpl.priority] }}">{{ tpl.priority }}</span>
+          {% if tpl.photo_evidence != 'disabled' %}<span class="chip chip--sm chip--sky">📷 {{ tpl.photo_evidence }}</span>{% endif %}
+        </div>
+      </header>
+      <p class="tpl-card__desc">{{ tpl.description }}</p>
+      <div class="tpl-card__meta">
+        <span>⏱ {{ tpl.duration_minutes }} min</span>
+        <span>· scope {{ tpl.property_scope }}</span>
+      </div>
+      {% if tpl.checklist %}
+        <ul class="tpl-card__checklist">
+          {% for c in tpl.checklist %}
+            <li>
+              <span class="checklist__box" aria-hidden="true"></span>
+              <span>{{ c.label }}</span>
+              {% if c.get('guest_visible') %}<span class="chip chip--sm chip--moss">guest-visible</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </article>
+  {% endfor %}
+</section>
+{% endblock %}

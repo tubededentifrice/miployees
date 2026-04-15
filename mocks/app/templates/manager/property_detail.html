@@ -1,0 +1,54 @@
+{% extends "manager_base.html" %}
+{% block title %}{{ property.name }} · miployees{% endblock %}
+{% block page_title %}{{ property.name }}{% endblock %}
+{% block page_sub %}<p class="page-sub">{{ property.city }} · {{ property.timezone }}</p>{% endblock %}
+{% block page_actions %}
+  <button class="btn btn--ghost">New task</button>
+  <button class="btn btn--moss">Edit property</button>
+{% endblock %}
+
+{% block desk_body %}
+<nav class="tabs tabs--h">
+  <a class="tab-link tab-link--active">Overview</a>
+  <a class="tab-link">Areas</a>
+  <a class="tab-link">Stays</a>
+  <a class="tab-link">Inventory</a>
+  <a class="tab-link">Instructions</a>
+  <a class="tab-link">Closures</a>
+</nav>
+
+<section class="grid grid--split">
+  <div class="panel">
+    <header class="panel__head"><h2>Upcoming stays</h2></header>
+    <table class="table">
+      <thead><tr><th>Guest</th><th>Source</th><th>In</th><th>Out</th><th>Guests</th></tr></thead>
+      <tbody>
+        {% for s in stays %}
+          <tr>
+            <td><strong>{{ s.guest }}</strong></td>
+            <td>{{ s.source }}</td>
+            <td class="table__mono">{{ s.check_in.strftime('%d %b') }}</td>
+            <td class="table__mono">{{ s.check_out.strftime('%d %b') }}</td>
+            <td>{{ s.guests }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <header class="panel__head"><h2>Tasks for this property</h2></header>
+    <ul class="task-list task-list--desk">
+      {% for t in property_tasks %}
+        {% set emp = employee_by_id(t.assignee_id) %}
+        <li class="task-row">
+          <span class="task-row__time table__mono">{{ t.scheduled_start.strftime('%d %b · %H:%M') }}</span>
+          <span class="task-row__title"><strong>{{ t.title }}</strong><span class="task-row__area">{{ t.area }}</span></span>
+          <span class="task-row__assignee"><span class="avatar avatar--xs">{{ emp.avatar_initials }}</span> {{ emp.name.split(' ')[0] }}</span>
+          <span class="chip chip--sm chip--{{ {'completed':'moss','in_progress':'sky','pending':'ghost','skipped':'rust'}[t.status] }}">{{ t.status }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% endblock %}

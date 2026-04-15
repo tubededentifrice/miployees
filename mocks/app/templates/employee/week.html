@@ -1,0 +1,24 @@
+{% extends "employee_base.html" %}
+{% block title %}This week · miployees{% endblock %}
+
+{% block phone_body %}
+<section class="phone__section">
+  <h2 class="section-title">This week</h2>
+  <ul class="task-list">
+    {% for t in tasks %}
+      {% set prop = property_by_id(t.property_id) %}
+      <li>
+        <a href="/task/{{ t.id }}" class="task-card task-card--compact {% if t.status == 'completed' %}task-card--done{% endif %}">
+          <div class="task-card__head">
+            <span class="task-card__when">{{ t.scheduled_start.strftime('%a %H:%M') }}</span>
+            <span class="chip chip--{{ prop.color }} chip--sm">{{ prop.name }}</span>
+            {% if t.priority == 'high' %}<span class="dot dot--rust" title="High priority"></span>{% endif %}
+          </div>
+          <div class="task-card__title task-card__title--sm">{{ t.title }}</div>
+          <div class="task-card__meta">{{ t.area }} · {{ t.estimated_minutes }} min · {{ t.status }}</div>
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

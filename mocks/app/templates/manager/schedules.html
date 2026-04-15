@@ -1,0 +1,46 @@
+{% extends "manager_base.html" %}
+{% block title %}Schedules · miployees{% endblock %}
+{% block page_title %}Schedules{% endblock %}
+{% block page_sub %}<p class="page-sub">"Create a task from this template on these dates at these times." RRULE-backed, timezone-aware.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--moss">+ New schedule</button>{% endblock %}
+
+{% block desk_body %}
+<div class="panel">
+  <table class="table table--roomy">
+    <thead><tr><th>Name</th><th>Template</th><th>Property</th><th>Recurrence</th><th>Default assignee</th><th>Duration</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for s in schedules %}
+        {% set p = property_by_id(s.property_id) %}
+        {% set tpl = templates_by_id.get(s.template_id) %}
+        {% set emp = employee_by_id(s.default_assignee_id) if s.default_assignee_id else None %}
+        <tr>
+          <td><strong>{{ s.name }}</strong><div class="table__sub">since {{ s.active_from.strftime('%b %Y') }}</div></td>
+          <td>{{ tpl.name if tpl else '—' }}</td>
+          <td><span class="chip chip--{{ p.color }} chip--sm">{{ p.name }}</span></td>
+          <td class="table__sub">{{ s.rrule_human }}</td>
+          <td>{% if emp %}<span class="avatar avatar--xs">{{ emp.avatar_initials }}</span> {{ emp.name.split(' ')[0] }}{% else %}—{% endif %}</td>
+          <td class="mono">{{ s.duration_minutes }} min</td>
+          <td><span class="chip chip--sm chip--{{ 'sand' if s.paused else 'moss' }}">{{ 'Paused' if s.paused else 'Active' }}</span></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <header class="panel__head"><h2>Preview — next 7 days</h2></header>
+  <ul class="task-list task-list--desk">
+    {% for s in schedules %}
+      {% if not s.paused %}
+        {% set p = property_by_id(s.property_id) %}
+        <li class="task-row">
+          <span class="task-row__time mono">{{ s.rrule_human }}</span>
+          <span class="task-row__title"><strong>{{ s.name }}</strong></span>
+          <span class="chip chip--{{ p.color }} chip--sm">{{ p.name }}</span>
+          <span class="chip chip--sm chip--ghost">{{ s.duration_minutes }}m</span>
+        </li>
+      {% endif %}
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

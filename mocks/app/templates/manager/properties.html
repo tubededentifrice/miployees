@@ -1,0 +1,34 @@
+{% extends "manager_base.html" %}
+{% block title %}Properties · miployees{% endblock %}
+{% block page_title %}Properties{% endblock %}
+{% block page_actions %}<button class="btn btn--moss">+ Add property</button>{% endblock %}
+
+{% block desk_body %}
+<section class="grid grid--cards">
+  {% for p in properties %}
+    {% set stays = stays_for_property(p.id) %}
+    {% set closures = closures_for_property(p.id) %}
+    <article class="prop-card">
+      <a class="prop-card__link" href="/property/{{ p.id }}">
+        <div class="prop-card__swatch prop-card__swatch--{{ p.color }}">
+          <span class="prop-card__kind">{{ p.kind | upper }}</span>
+        </div>
+        <div class="prop-card__body">
+          <h3 class="prop-card__name">{{ p.name }}</h3>
+          <div class="prop-card__city">{{ p.city }} · {{ p.timezone }}</div>
+          <div class="prop-card__stats">
+            <span>{{ stays|length }} stays</span>
+            <span>·</span>
+            <span>{{ p.areas|length }} areas</span>
+            {% if closures %}<span>·</span><span class="muted">{{ closures|length }} closure{{ 's' if closures|length > 1 }}</span>{% endif %}
+          </div>
+        </div>
+      </a>
+      <div class="prop-card__footer">
+        <a href="/property/{{ p.id }}" class="link">Overview</a>
+        <a href="/property/{{ p.id }}/closures" class="link link--muted">Closures →</a>
+      </div>
+    </article>
+  {% endfor %}
+</section>
+{% endblock %}

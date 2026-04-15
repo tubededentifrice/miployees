@@ -1,0 +1,59 @@
+{% extends "manager_base.html" %}
+{% block title %}Settings · miployees{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block page_sub %}<p class="page-sub">Household-wide configuration. Sensitive actions live on the host CLI only — see the danger zone.</p>{% endblock %}
+
+{% block desk_body %}
+<section class="grid grid--split">
+  <div class="panel">
+    <header class="panel__head"><h2>Household</h2></header>
+    <dl class="settings-kv">
+      <dt>Name</dt><dd>{{ settings.name }}</dd>
+      <dt>Timezone</dt><dd class="mono">{{ settings.timezone }}</dd>
+      <dt>Currency</dt><dd class="mono">{{ settings.currency }}</dd>
+      <dt>Week starts on</dt><dd>{{ settings.week_start }}</dd>
+      <dt>Pay frequency</dt><dd>{{ settings.pay_frequency }}</dd>
+    </dl>
+  </div>
+
+  <div class="panel">
+    <header class="panel__head"><h2>Defaults</h2></header>
+    <dl class="settings-kv">
+      <dt>Photo evidence default</dt><dd><span class="chip chip--sm chip--sky">{{ settings.default_photo_evidence }}</span></dd>
+      <dt>Geofence radius</dt><dd class="mono">{{ settings.geofence_radius_m }} m</dd>
+      <dt>LLM call retention</dt><dd class="mono">{{ settings.retention_days.llm_calls }} days</dd>
+      <dt>Audit retention</dt><dd class="mono">{{ settings.retention_days.audit }} days</dd>
+      <dt>Task-photo retention</dt><dd class="mono">{{ settings.retention_days.task_photos }} days</dd>
+    </dl>
+  </div>
+</section>
+
+<div class="panel">
+  <header class="panel__head"><h2>Agent approvals</h2></header>
+  <p class="muted">Actions that require your manual approval before an agent can execute them.</p>
+
+  <h3 class="section-title section-title--sm">Always gated (cannot be disabled)</h3>
+  <ul class="settings-list">
+    {% for a in settings.approvals.always_gated %}
+      <li><code class="inline-code">{{ a }}</code></li>
+    {% endfor %}
+  </ul>
+
+  <h3 class="section-title section-title--sm">Configurable</h3>
+  <ul class="settings-list">
+    {% for a in settings.approvals.configurable %}
+      <li><code class="inline-code">{{ a }}</code> <span class="chip chip--sm chip--moss">gated</span></li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="panel panel--danger">
+  <header class="panel__head"><h2>Danger zone</h2></header>
+  <p class="muted">Host-CLI-only. No HTTP surface, no agent path (§15).</p>
+  <ul class="danger-list">
+    {% for d in settings.danger_zone %}
+      <li>{{ d }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

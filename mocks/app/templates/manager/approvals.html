@@ -1,0 +1,29 @@
+{% extends "manager_base.html" %}
+{% block title %}Approvals · miployees{% endblock %}
+{% block page_title %}Agent approvals{% endblock %}
+{% block page_sub %}<p class="page-sub">Actions an LLM agent has proposed — review before they happen.</p>{% endblock %}
+
+{% block desk_body %}
+<div class="panel">
+  <ul class="approval-list approval-list--wide">
+    {% for a in approvals %}
+      <li class="approval approval--{{ a.risk }}">
+        <div class="approval__head">
+          <span class="chip chip--ghost chip--sm">{{ a.agent }}</span>
+          <span class="chip chip--sm chip--{{ {'low':'sky','medium':'sand','high':'rust'}[a.risk] }}">{{ a.risk }} risk</span>
+          <span class="approval__time">requested {{ a.requested_at.strftime('%H:%M') }}</span>
+        </div>
+        <div class="approval__title"><strong>{{ a.action }}</strong> — {{ a.target }}</div>
+        <p class="approval__reason">{{ a.reason }}</p>
+        <form method="post" action="/approvals/{{ a.id }}/approve" class="approval__actions">
+          <button class="btn btn--moss" type="submit">Approve</button>
+          <button class="btn btn--ghost" formaction="/approvals/{{ a.id }}/reject">Reject</button>
+          <button class="btn btn--ghost" type="button">Ask for details</button>
+        </form>
+      </li>
+    {% else %}
+      <li class="empty-state">Nothing to review — agents are behaving.</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

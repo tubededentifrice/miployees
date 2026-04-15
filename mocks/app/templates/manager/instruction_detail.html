@@ -1,0 +1,48 @@
+{% extends "manager_base.html" %}
+{% block title %}{{ instruction.title }} · miployees{% endblock %}
+{% block page_title %}{{ instruction.title }}{% endblock %}
+{% block page_sub %}
+<p class="page-sub">
+  <a href="/instructions" class="link">← All instructions</a> ·
+  <span class="chip chip--sm chip--{{ {'global':'sky','property':'moss','area':'sand'}[instruction.scope] }}">
+    {% if instruction.scope == 'global' %}House-wide
+    {% elif instruction.scope == 'property' %}{{ property_by_id(instruction.property_id).name }}
+    {% else %}{{ property_by_id(instruction.property_id).name }} · {{ instruction.area }}
+    {% endif %}
+  </span>
+</p>
+{% endblock %}
+{% block page_actions %}
+<button class="btn btn--ghost">View revisions</button>
+<button class="btn btn--moss">Edit</button>
+{% endblock %}
+
+{% block desk_body %}
+<article class="panel panel--article">
+  <div class="kb-body">
+    {{ instruction.body_md | replace('\n', '<br>') | safe }}
+  </div>
+  <footer class="kb-footer">
+    <div>
+      {% for t in instruction.tags %}<span class="chip chip--sm chip--ghost">#{{ t }}</span>{% endfor %}
+    </div>
+    <div class="mono muted">Revision {{ instruction.version }} · saved {{ instruction.updated_at.strftime('%d %b %Y · %H:%M') }}</div>
+  </footer>
+</article>
+
+<section class="panel">
+  <header class="panel__head"><h2>Where this applies</h2></header>
+  <ul class="task-list task-list--desk">
+    <li class="task-row">
+      <span class="task-row__time mono">via scope</span>
+      <span class="task-row__title"><strong>All tasks matching the scope above</strong></span>
+      <span class="chip chip--sm chip--ghost">automatic</span>
+    </li>
+    <li class="task-row">
+      <span class="task-row__time mono">linked to template</span>
+      <span class="task-row__title"><strong>Linen change — master bedroom</strong></span>
+      <span class="chip chip--sm chip--moss">template link</span>
+    </li>
+  </ul>
+</section>
+{% endblock %}

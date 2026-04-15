@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body_class %}surface--manager{% endblock %}
+{% block layout %}
+<div class="desk">
+  <aside class="desk__nav" aria-label="Main navigation">
+    <div class="desk__brand">
+      <span class="desk__logo" aria-hidden="true">◈</span>
+      <span class="desk__wordmark">miployees</span>
+    </div>
+    <nav class="desk__nav-group">
+      <a href="/dashboard" class="nav-link {% if request.url.path == '/dashboard' %}nav-link--active{% endif %}">Dashboard</a>
+      <div class="nav-section">OPERATE</div>
+      <a href="/properties" class="nav-link {% if request.url.path.startswith('/propert') %}nav-link--active{% endif %}">Properties</a>
+      <a href="/stays" class="nav-link {% if request.url.path == '/stays' %}nav-link--active{% endif %}">Stays</a>
+      <a href="/employees" class="nav-link {% if request.url.path.startswith('/employee') %}nav-link--active{% endif %}">Employees</a>
+      <a href="/templates" class="nav-link {% if request.url.path == '/templates' %}nav-link--active{% endif %}">Templates</a>
+      <a href="/schedules" class="nav-link {% if request.url.path == '/schedules' %}nav-link--active{% endif %}">Schedules</a>
+      <a href="/instructions" class="nav-link {% if request.url.path.startswith('/instructions') %}nav-link--active{% endif %}">Instructions</a>
+      <a href="/inventory" class="nav-link {% if request.url.path == '/inventory' %}nav-link--active{% endif %}">Inventory</a>
+      <div class="nav-section">DECIDE</div>
+      <a href="/approvals" class="nav-link {% if request.url.path == '/approvals' %}nav-link--active{% endif %}">Approvals</a>
+      <a href="/leaves" class="nav-link {% if request.url.path == '/leaves' %}nav-link--active{% endif %}">Leaves</a>
+      <a href="/expenses" class="nav-link {% if request.url.path == '/expenses' %}nav-link--active{% endif %}">Expenses</a>
+      <a href="/pay" class="nav-link {% if request.url.path == '/pay' %}nav-link--active{% endif %}">Pay</a>
+      <div class="nav-section">ADMIN</div>
+      <a href="/audit" class="nav-link {% if request.url.path == '/audit' %}nav-link--active{% endif %}">Audit log</a>
+      <a href="/webhooks" class="nav-link {% if request.url.path == '/webhooks' %}nav-link--active{% endif %}">Webhooks</a>
+      <a href="/llm" class="nav-link {% if request.url.path == '/llm' %}nav-link--active{% endif %}">LLM &amp; agents</a>
+      <a href="/settings" class="nav-link {% if request.url.path == '/settings' %}nav-link--active{% endif %}">Settings</a>
+    </nav>
+    <div class="desk__me">
+      <div class="avatar avatar--md">EB</div>
+      <div>
+        <div class="desk__me-name">{{ manager_name }}</div>
+        <div class="desk__me-role">Manager</div>
+      </div>
+    </div>
+  </aside>
+
+  <section class="desk__main">
+    <header class="desk__topbar">
+      <div>
+        <h1 class="page-title">{% block page_title %}{% endblock %}</h1>
+        {% block page_sub %}{% endblock %}
+      </div>
+      <div class="desk__topbar-actions">
+        {% block page_actions %}{% endblock %}
+      </div>
+    </header>
+
+    <div class="desk__content">
+      {% block desk_body %}{% endblock %}
+    </div>
+  </section>
+</div>
+{% endblock %}

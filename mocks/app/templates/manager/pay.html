@@ -1,0 +1,81 @@
+{% extends "manager_base.html" %}
+{% block title %}Pay · miployees{% endblock %}
+{% block page_title %}Pay{% endblock %}
+{% block page_sub %}<p class="page-sub">Periods, payslips, pay rules. Gross only — taxes and social contributions are out of scope (§00, N2).</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--ghost">Export CSV</button><button class="btn btn--moss">Close period</button>{% endblock %}
+
+{% block desk_body %}
+<section class="grid grid--stats">
+  <div class="stat-card">
+    <div class="stat-card__label">Current period</div>
+    <div class="stat-card__value">April 2026</div>
+    <div class="stat-card__sub">open · closes 30 Apr</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Drafts</div>
+    <div class="stat-card__value">{{ current | length }}</div>
+    <div class="stat-card__sub">payslips pending issue</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">April gross (est.)</div>
+    <div class="stat-card__value">€{{ '%.0f' | format((current | sum(attribute='gross_cents')) / 100) }}</div>
+    <div class="stat-card__sub">before reimbursements</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card__label">Last period</div>
+    <div class="stat-card__value">€{{ '%.0f' | format((previous | sum(attribute='net_cents')) / 100) }}</div>
+    <div class="stat-card__sub">March · all paid</div>
+  </div>
+</section>
+
+<div class="panel">
+  <header class="panel__head"><h2>April 2026 — drafts</h2></header>
+  <table class="table table--roomy">
+    <thead><tr><th>Employee</th><th>Hours</th><th>Overtime</th><th>Gross</th><th>Reimbursements</th><th>Net</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for p in current %}
+        {% set emp = employee_by_id(p.employee_id) %}
+        <tr>
+          <td><span class="avatar avatar--xs">{{ emp.avatar_initials }}</span> {{ emp.name }}</td>
+          <td class="mono">{{ p.hours }} h</td>
+          <td class="mono">{{ p.overtime }} h</td>
+          <td class="mono">€{{ '%.2f' | format(p.gross_cents / 100) }}</td>
+          <td class="mono">€{{ '%.2f' | format(p.reimbursements_cents / 100) }}</td>
+          <td class="mono"><strong>€{{ '%.2f' | format(p.net_cents / 100) }}</strong></td>
+          <td><span class="chip chip--sm chip--{{ {'draft':'sand','issued':'sky','paid':'moss','voided':'rust'}[p.status] }}">{{ p.status }}</span></td>
+          <td><button class="btn btn--sm btn--ghost">Preview PDF</button></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <header class="panel__head"><h2>March 2026 — paid</h2></header>
+  <table class="table">
+    <thead><tr><th>Employee</th><th>Gross</th><th>Reimb.</th><th>Net</th><th>Paid</th></tr></thead>
+    <tbody>
+      {% for p in previous %}
+        {% set emp = employee_by_id(p.employee_id) %}
+        <tr>
+          <td>{{ emp.name }}</td>
+          <td class="mono">€{{ '%.2f' | format(p.gross_cents / 100) }}</td>
+          <td class="mono">€{{ '%.2f' | format(p.reimbursements_cents / 100) }}</td>
+          <td class="mono"><strong>€{{ '%.2f' | format(p.net_cents / 100) }}</strong></td>
+          <td><span class="chip chip--sm chip--moss">paid</span></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel panel--danger">
+  <header class="panel__head"><h2>Always-gated actions</h2></header>
+  <p class="muted">These payroll actions always require a manager passkey — the agent approval flow cannot bypass them (§11).</p>
+  <ul class="danger-list">
+    <li><code class="inline-code">payout_destination.create</code> · <code class="inline-code">payout_destination.update</code></li>
+    <li><code class="inline-code">employee.set_default_pay_destination</code></li>
+    <li><code class="inline-code">POST /payslips/:id/payout_manifest</code> <span class="chip chip--sm chip--rust">never-agent</span></li>
+  </ul>
+</div>
+{% endblock %}

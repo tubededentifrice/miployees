@@ -1,0 +1,82 @@
+{% extends "employee_base.html" %}
+{% block title %}Today · miployees{% endblock %}
+
+{% macro cta_label(t) %}{% if t.status == 'pending' %}Start{% elif t.photo_evidence == 'required' %}Complete with photo{% else %}Mark done{% endif %}{% endmacro %}
+
+{% block phone_body %}
+<section class="phone__section phone__section--hero">
+  <h2 class="section-title">Now</h2>
+  {% if now_task %}
+    {% set prop = property_by_id(now_task.property_id) %}
+    <a href="/task/{{ now_task.id }}" class="task-card task-card--now">
+      <div class="task-card__head">
+        <span class="chip chip--{{ prop.color }}">{{ prop.name }}</span>
+        {% if now_task.priority in ['high', 'urgent'] %}<span class="chip chip--rust">{{ now_task.priority|capitalize }} priority</span>{% endif %}
+        {% if now_task.photo_evidence == 'required' %}<span class="chip chip--sand chip--sm">📷 photo required</span>{% endif %}
+        <span class="task-card__when">{{ now_task.scheduled_start.strftime('%H:%M') }} · {{ now_task.estimated_minutes }} min</span>
+      </div>
+      <h3 class="task-card__title">{{ now_task.title }}</h3>
+      <div class="task-card__meta">{{ now_task.area }}</div>
+      {% if now_task.checklist %}
+        {% set done = now_task.checklist | selectattr('done') | list | length %}
+        <div class="task-card__progress">
+          <span class="progress-bar"><span style="width: {{ (done / (now_task.checklist|length) * 100) | int }}%"></span></span>
+          <span class="progress-label">{{ done }}/{{ now_task.checklist|length }} steps</span>
+        </div>
+      {% endif %}
+      <div class="task-card__cta">{{ cta_label(now_task) }} →</div>
+    </a>
+  {% else %}
+    <div class="empty-state empty-state--celebrate">
+      <span class="empty-state__glyph" aria-hidden="true">✓</span>
+      <p>All done for now. Nice work.</p>
+    </div>
+  {% endif %}
+</section>
+
+<section class="phone__section">
+  <h2 class="section-title">Upcoming today · {{ upcoming | length }}</h2>
+  <ul class="task-list">
+    {% for t in upcoming %}
+      {% set prop = property_by_id(t.property_id) %}
+      <li>
+        <a href="/task/{{ t.id }}" class="task-card task-card--compact">
+          <div class="task-card__head">
+            <span class="task-card__when">{{ t.scheduled_start.strftime('%H:%M') }}</span>
+            <span class="chip chip--{{ prop.color }} chip--sm">{{ prop.name }}</span>
+            {% if t.priority in ['high', 'urgent'] %}<span class="dot dot--rust" title="{{ t.priority|capitalize }} priority"></span>{% endif %}
+            {% if t.photo_evidence == 'required' %}<span class="dot dot--sand" title="Photo required"></span>{% endif %}
+          </div>
+          <div class="task-card__title task-card__title--sm">{{ t.title }}</div>
+          <div class="task-card__meta">{{ t.area }} · {{ t.estimated_minutes }} min</div>
+        </a>
+      </li>
+    {% else %}
+      <li class="empty-state empty-state--quiet">Nothing else scheduled.</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="phone__section">
+  <details class="completed-group" {% if completed %}{% endif %}>
+    <summary>
+      <span>Completed today</span>
+      <span class="chip chip--ghost chip--sm">{{ completed | length }}</span>
+    </summary>
+    <ul class="task-list">
+      {% for t in completed %}
+        {% set prop = property_by_id(t.property_id) %}
+        <li>
+          <a href="/task/{{ t.id }}" class="task-card task-card--compact task-card--done">
+            <div class="task-card__head">
+              <span class="task-card__when">✓ {{ t.scheduled_start.strftime('%H:%M') }}</span>
+              <span class="chip chip--{{ prop.color }} chip--sm">{{ prop.name }}</span>
+            </div>
+            <div class="task-card__title task-card__title--sm">{{ t.title }}</div>
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  </details>
+</section>
+{% endblock %}

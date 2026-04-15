@@ -1,0 +1,39 @@
+{% extends "manager_base.html" %}
+{% block title %}Instructions · miployees{% endblock %}
+{% block page_title %}Instructions{% endblock %}
+{% block page_sub %}<p class="page-sub">The house knowledge base. Global rules, property quirks, area-specific tips. Staff see the ones that apply to their task.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--moss">+ New instruction</button>{% endblock %}
+
+{% block desk_body %}
+<section class="panel">
+  <div class="desk-filters">
+    <span class="chip chip--ghost chip--sm chip--active">All</span>
+    <span class="chip chip--ghost chip--sm">Global · {{ instructions | selectattr('scope','equalto','global') | list | length }}</span>
+    <span class="chip chip--ghost chip--sm">Property · {{ instructions | selectattr('scope','equalto','property') | list | length }}</span>
+    <span class="chip chip--ghost chip--sm">Area · {{ instructions | selectattr('scope','equalto','area') | list | length }}</span>
+  </div>
+
+  <ul class="kb-list">
+    {% for i in instructions %}
+      <li class="kb-item">
+        <a href="/instructions/{{ i.id }}" class="kb-item__main">
+          <div class="kb-item__head">
+            <h3 class="kb-item__title">{{ i.title }}</h3>
+            <span class="chip chip--sm chip--{{ {'global':'sky','property':'moss','area':'sand'}[i.scope] }}">
+              {% if i.scope == 'global' %}House-wide
+              {% elif i.scope == 'property' %}{{ property_by_id(i.property_id).name }}
+              {% else %}{{ property_by_id(i.property_id).name }} · {{ i.area }}
+              {% endif %}
+            </span>
+          </div>
+          <p class="kb-item__preview">{{ i.body_md[:180] }}{% if i.body_md|length > 180 %}…{% endif %}</p>
+          <div class="kb-item__meta">
+            {% for t in i.tags %}<span class="chip chip--sm chip--ghost">#{{ t }}</span>{% endfor %}
+            <span class="mono muted">v{{ i.version }} · updated {{ i.updated_at.strftime('%d %b') }}</span>
+          </div>
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

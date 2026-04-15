@@ -1,0 +1,113 @@
+{% extends "employee_base.html" %}
+{% block title %}{{ task.title }} · miployees{% endblock %}
+
+{% block phone_body %}
+<section class="phone__section phone__section--detail">
+  <a href="/today" class="back-link">← Back</a>
+
+  {# Sticky CTA bar sits above the bottom nav. #}
+  {% if task.status != 'completed' and task.status != 'skipped' %}
+    <div class="task-detail__sticky">
+      <form method="post" action="/task/{{ task.id }}/complete" class="task-detail__sticky-form">
+        <button class="btn btn--moss btn--lg" type="submit">
+          {% if task.photo_evidence == 'required' %}📷 Complete with photo{% else %}Mark done{% endif %}
+        </button>
+      </form>
+      <button class="btn btn--ghost btn--lg" type="button" onclick="document.getElementById('skip-modal').showModal()">Skip</button>
+    </div>
+  {% endif %}
+
+  <header class="task-detail__head">
+    <div class="task-detail__chips">
+      <span class="chip chip--{{ property.color }}">{{ property.name }}</span>
+      <span class="chip chip--ghost">{{ task.area }}</span>
+      {% if task.priority in ['high', 'urgent'] %}<span class="chip chip--rust">{{ task.priority|capitalize }}</span>{% endif %}
+      {% if task.photo_evidence == 'required' %}<span class="chip chip--sand">📷 required</span>{% elif task.photo_evidence == 'optional' %}<span class="chip chip--sm chip--ghost">📷 optional</span>{% endif %}
+      <span class="chip chip--sm chip--{{ {'completed':'moss','in_progress':'sky','pending':'ghost','skipped':'rust'}[task.status] }}">{{ task.status.replace('_',' ') }}</span>
+    </div>
+    <h2 class="task-detail__title">{{ task.title }}</h2>
+    <div class="task-detail__meta">
+      {{ task.scheduled_start.strftime('%H:%M') }} · est. {{ task.estimated_minutes }} min
+    </div>
+  </header>
+
+  {% if task.checklist %}
+    <div class="checklist">
+      <h3 class="section-title section-title--sm">Checklist</h3>
+      <ul id="checklist-items">
+        {% for item in task.checklist %}
+          {% include 'partials/checklist_item.html' %}
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if instructions %}
+    <section class="instructions">
+      <h3 class="section-title section-title--sm">Instructions</h3>
+      {% for i in instructions %}
+        <details class="instruction-card {% if loop.first %}open{% endif %}" {% if loop.first %}open{% endif %}>
+          <summary>
+            <span class="instruction-card__title">{{ i.title }}</span>
+            <span class="chip chip--sm chip--ghost">
+              {% if i.scope == 'area' %}{{ i.area }}{% elif i.scope == 'property' %}{{ property_by_id(i.property_id).name }}{% else %}House-wide{% endif %}
+            </span>
+          </summary>
+          <div class="instruction-card__body">{{ i.body_md }}</div>
+        </details>
+      {% endfor %}
+    </section>
+  {% endif %}
+
+  {% if task.photo_evidence in ['optional', 'required'] %}
+    <section class="evidence">
+      <h3 class="section-title section-title--sm">
+        Evidence {% if task.photo_evidence == 'required' %}<span class="chip chip--sand chip--sm">required</span>{% endif %}
+      </h3>
+      <label class="evidence__picker">
+        <input type="file" accept="image/*" capture="environment">
+        <span class="evidence__picker-cta">📷 Take photo</span>
+        <span class="evidence__picker-sub">or choose from your gallery</span>
+      </label>
+      <label class="field">
+        <span>Note (optional)</span>
+        <textarea rows="2" placeholder="Anything the manager should know about what you saw…"></textarea>
+      </label>
+    </section>
+  {% endif %}
+
+  <section class="comments">
+    <h3 class="section-title section-title--sm">Comments</h3>
+    <article class="comment">
+      <div class="comment__head"><span class="avatar avatar--sm">EB</span><strong>Élodie</strong><span class="comment__time">08:32</span></div>
+      <p>Fresh sheets are on shelf 2 of cupboard A — the lavender-scented ones.</p>
+    </article>
+    <form class="comment__compose">
+      <textarea placeholder="Add a comment…" rows="2"></textarea>
+      <button class="btn btn--moss" type="button">Send</button>
+    </form>
+  </section>
+
+  {% if task.status == 'completed' %}
+    <div class="done-banner">✓ Completed</div>
+  {% elif task.status == 'skipped' %}
+    <div class="done-banner done-banner--rust">⊘ Skipped</div>
+  {% endif %}
+</section>
+
+{# Skip-with-reason modal per spec §14. #}
+<dialog id="skip-modal" class="modal">
+  <form method="post" action="/task/{{ task.id }}/skip" class="modal__body">
+    <h3 class="modal__title">Skip this task?</h3>
+    <p class="modal__sub">Give a quick reason so the manager knows. It'll go in the audit log.</p>
+    <label class="field">
+      <span>Reason</span>
+      <textarea name="reason" rows="3" required placeholder="e.g. Guest still in the room — came back early from their day."></textarea>
+    </label>
+    <div class="modal__actions">
+      <button class="btn btn--ghost" type="button" onclick="document.getElementById('skip-modal').close()">Cancel</button>
+      <button class="btn btn--rust" type="submit">Skip task</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

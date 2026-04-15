@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Welcome · miployees{% endblock %}
+{% block body_class %}surface--login{% endblock %}
+{% block layout %}
+<main class="login">
+  <div class="login__card login__card--wide">
+    <div class="login__brand">
+      <span class="desk__logo" aria-hidden="true">◈</span>
+      <span class="desk__wordmark">miployees</span>
+    </div>
+    <h1 class="login__headline">Welcome to the household, Maria</h1>
+    <p class="login__sub">Élodie has added you as <strong>Housekeeper</strong> at Villa Sud and Apt 3B.</p>
+
+    <ol class="enroll-steps">
+      <li class="enroll-step enroll-step--done">
+        <span class="enroll-step__num">1</span>
+        <div>
+          <strong>Confirm it's you</strong>
+          <p>This link was sent to <code class="inline-code">maria@example.com</code>. If that isn't you, close this page.</p>
+        </div>
+      </li>
+      <li class="enroll-step enroll-step--active">
+        <span class="enroll-step__num">2</span>
+        <div>
+          <strong>Register a passkey</strong>
+          <p>Your phone, Face ID, fingerprint — whatever your device already uses to unlock itself. No password to remember.</p>
+          <button type="button" class="btn btn--moss btn--lg">🔑 Register this device</button>
+        </div>
+      </li>
+      <li class="enroll-step">
+        <span class="enroll-step__num">3</span>
+        <div>
+          <strong>Install the app shortcut</strong>
+          <p>After signing in, tap "Add to home screen". The app works offline for today's tasks.</p>
+        </div>
+      </li>
+    </ol>
+    <p class="login__footnote muted">Enrollment link: <code class="inline-code">/enroll/{{ token }}</code> — valid once, expires in 24 hours.</p>
+  </div>
+</main>
+{% endblock %}

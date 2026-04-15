@@ -1,0 +1,46 @@
+{% extends "manager_base.html" %}
+{% block title %}Inventory · miployees{% endblock %}
+{% block page_title %}Inventory{% endblock %}
+{% block page_sub %}<p class="page-sub">Per-property stock. Items at or below par trigger a procurement task.</p>{% endblock %}
+{% block page_actions %}<button class="btn btn--ghost">Export CSV</button><button class="btn btn--moss">+ New item</button>{% endblock %}
+
+{% block desk_body %}
+{% set items_by_prop = {} %}
+{% for item in inventory %}
+  {% if items_by_prop.get(item.property_id) is none %}
+    {% set _ = items_by_prop.update({item.property_id: []}) %}
+  {% endif %}
+  {% set _ = items_by_prop[item.property_id].append(item) %}
+{% endfor %}
+
+{% for pid, items in items_by_prop.items() %}
+  {% set p = property_by_id(pid) %}
+  <div class="panel">
+    <header class="panel__head">
+      <h2><span class="chip chip--{{ p.color }} chip--sm">{{ p.name }}</span> Inventory</h2>
+      <span class="muted mono">{{ items | length }} items</span>
+    </header>
+    <table class="table">
+      <thead><tr><th>Item</th><th>SKU</th><th>Area</th><th>On hand</th><th>Par</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for item in items %}
+          {% set low = item.on_hand < item.par %}
+          {% set empty = item.on_hand == 0 %}
+          <tr class="{% if empty %}row--critical{% elif low %}row--warn{% endif %}">
+            <td><strong>{{ item.name }}</strong></td>
+            <td class="mono muted">{{ item.sku }}</td>
+            <td>{{ item.area }}</td>
+            <td class="mono"><strong>{{ item.on_hand }}</strong> {{ item.unit }}</td>
+            <td class="mono muted">{{ item.par }}</td>
+            <td>
+              {% if empty %}<span class="chip chip--sm chip--rust">out of stock</span>
+              {% elif low %}<span class="chip chip--sm chip--sand">below par</span>
+              {% else %}<span class="chip chip--sm chip--moss">ok</span>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endfor %}
+{% endblock %}
