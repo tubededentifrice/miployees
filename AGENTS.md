@@ -11,6 +11,22 @@ the two disagree, this file wins.
 > and [`docs/specs/13-cli.md`](docs/specs/13-cli.md) instead. This file
 > is for agents writing code in the repo.
 
+## Ask first
+
+- **Use `AskUserQuestion` for any non-obvious decision.** When in doubt,
+  ask. Batch related questions so you are not pinging the user every
+  thirty seconds, but do not silently guess at ambiguous requirements —
+  especially in auth, privacy, payroll, and anything touching PII.
+- **Use `AskUserQuestion` before any irreversible operation.** Never
+  delete, purge, force-push, or overwrite production data or committed
+  work without explicit user approval. Destructive git and destructive
+  DB operations are confirmed per-invocation, not once-per-session.
+- **Shared codebase, shared worktree.** Multiple agents may be working
+  concurrently. Before `git checkout`, `git stash`, `git clean`, or any
+  reset, run `git status` and understand what's there. Never discard
+  changes you did not make. If you see unexpected edits mid-task, stop
+  and ask.
+
 ## Session bootstrap
 
 At the start of every session:
@@ -25,6 +41,14 @@ At the start of every session:
    truth; the code follows.** If code and spec diverge, default to
    updating the code — unless the divergence was an explicit decision
    recorded in a postmortem, ADR, or spec revision.
+4. If the `bd` CLI is available (`command -v bd` succeeds), skim
+   `bd ready` — Beads is the task queue (see §"Issue tracking with
+   Beads" below). If a task covers what you are about to do, claim it
+   (`bd update <id> --claim`) rather than starting fresh. If `bd` is
+   not installed in your environment, skip this step and proceed from
+   specs and `git log`; leave a note for a Beads-equipped agent if
+   you notice something worth tracking. Do **not** block session
+   start on Beads availability.
 
 ## Autonomy and persistence
 
@@ -91,7 +115,13 @@ live in the skill files themselves.
 |-------|------|
 | `/commit` | Every commit (enforces Conventional Commits + signed-off) |
 | `/create-pr` | Every PR body, rebase merges, description upkeep |
-| `/audit-spec` | After any feature adding or removing behavior |
+| `/audit-spec` | After any feature adding or removing behavior — see `.claude/skills/audit-spec/` |
+| `/selfreview` | Skeptical pass on your own changes before handoff — `.claude/skills/selfreview/` |
+| `/security-check` | Red-team pass on a feature or spec — `.claude/skills/security-check/` |
+| `/gap-finder` | Pre-implementation walk of a spec section, filing Beads tasks for gaps — `.claude/skills/gap-finder/` |
+| `/director` | Top-level planning across specs / modules — `.claude/skills/director/` |
+| `/beads` | Create well-formed Beads tasks from a prompt — `.claude/skills/beads/` |
+| `/ai-slop` | Strip AI-generated noise from a branch before it ships — `.claude/commands/ai-slop.md` |
 | `/update-openapi` | After any change under `app/api/` |
 | `/bump-deps` | Periodic dependency bump (uv + Python + JS tooling) |
 | `/fix-osv-finding` | Every OSV finding is a blocker |
@@ -99,6 +129,67 @@ live in the skill files themselves.
 | `/new-entity` | Adding a new domain entity (see checklist) |
 | `/new-migration` | Every Alembic migration (see checklist + backfill rules) |
 | `/record-demo` | After any UI change (tape + GIF committed) |
+
+## Specialised agents
+
+For larger changes, split the work across the agents in
+[`.claude/agents/`](.claude/agents/):
+
+| Agent | Role |
+|-------|------|
+| `director` (skill) | Plans, tracks via Beads, delegates |
+| `coder` | Implements within a narrow scope; runs only its module's tests |
+| `reviewer` | Returns `APPROVED` or `CHANGES_REQUIRED`; runs only its module's tests |
+| `documenter` | Updates specs, READMEs, codebase maps, OpenAPI |
+| `commiter` | Stages, signs off, commits, pushes — nothing else |
+| `oracle` | Deep research for hard decisions; no edits, just advice |
+
+The default flow is
+`director → coder → reviewer → documenter → commiter`, with
+`oracle` pulled in when a decision is genuinely hard. See
+[`.claude/README.md`](.claude/README.md) for details.
+
+## Issue tracking with Beads
+
+Miployees uses **Beads** (`bd` CLI) as its task queue. Non-trivial
+work — anything bigger than a typo, a one-line clarification, or an
+obvious same-file fix — should have a Beads issue so follow-ups don't
+get lost between sessions. Day-to-day tweaks can skip it.
+
+**Installing `bd`** is out of scope for this repo. If `bd` is not on
+your `PATH`, install it through your environment's normal package
+channel (system package manager, Homebrew, `uv tool install`, or
+whatever Beads publishes). Do **not** `curl … | bash` or pull binaries
+ad-hoc — see §"Tooling conventions". Until `bd` is available, every
+Beads instruction in this file is optional: fall back to specs and
+`git log`, and leave a note for a Beads-equipped agent to pick up
+anything you noticed.
+
+```bash
+bd ready                              # what's unblocked right now
+bd show <id>                          # full task context
+bd update <id> --claim                # claim it
+# … do the work …
+bd close <id>                         # done
+bd sync                               # export jsonl → git
+```
+
+- **Create issues** for anything you discover but won't do this turn —
+  don't leak follow-ups into commit messages only.
+- **Keep tasks atomic** — one concern per task (see
+  [`.claude/skills/beads/SKILL.md`](.claude/skills/beads/SKILL.md)).
+- **Link dependencies** with `bd dep <blocker> --blocks <blocked>` only
+  when one task literally cannot start before another.
+- **Commit the jsonl** — after any `bd` change, run `bd sync` and
+  include the `.beads/` updates in the same commit as the code
+  change. The `commiter` agent does this automatically.
+- **Close what you finished** — if you claimed an issue, `bd close
+  <id>` it before handing off, so `bd ready` stays honest for the next
+  agent.
+
+Pushing is never implicit. Commits land locally by default; push only
+when the user has asked (or durable instructions in this repo say so).
+See §"Editing constraints" and §"Session wrap-up" below.
 
 ## Presenting your work
 
@@ -127,3 +218,37 @@ Plain text to the user. CLI handles styling.
 - **Time is UTC at rest, local for display.** Every timestamp column is
   `TIMESTAMP WITH TIME ZONE` (Postgres) or ISO-8601 UTC text in SQLite.
   Property-local time is computed on the fly from `property.timezone`.
+
+## Session wrap-up
+
+Before handing a session back to the user:
+
+- **File follow-ups.** Anything you discovered but deliberately did not
+  do becomes a Beads issue, not a line in the commit message.
+- **Close what you finished.** `bd close <id>` for anything you claimed
+  and completed; `bd update <id> --status blocked` (with a comment) for
+  anything stuck.
+- **Sync Beads.** `bd sync` so the jsonl matches the Dolt state.
+- **Run the quality gates** that apply to what changed — whichever of
+  `/pre-commit-check`, `pytest <scope>`, `mypy`, `ruff` the situation
+  calls for.
+- **Commit locally.** Prefer narrow, Conventional-Commits commits via
+  `/commit` (or the `commiter` agent). Include `.beads/` changes in the
+  same commit as the code change.
+- **Do not push** unless the user has asked (or durable instructions
+  say so). Local commits are the default handoff.
+- **Summarise briefly.** One short paragraph: what changed, where it
+  lives, what's still open, what the next agent should pick up from
+  `bd ready`.
+
+If a push *has* been authorised:
+
+```bash
+git pull --rebase
+bd sync
+git push
+git status   # expect "up to date with origin/<branch>"
+```
+
+If a push fails, diagnose the root cause — do not force-push, do not
+`--no-verify`, do not bypass hooks.
