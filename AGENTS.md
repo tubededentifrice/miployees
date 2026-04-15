@@ -113,7 +113,6 @@ live in the skill files themselves.
 
 | Skill | When |
 |-------|------|
-| `/commit` | Every commit (enforces Conventional Commits + signed-off) |
 | `/create-pr` | Every PR body, rebase merges, description upkeep |
 | `/audit-spec` | After any feature adding or removing behavior — see `.claude/skills/audit-spec/` |
 | `/selfreview` | Skeptical pass on your own changes before handoff — `.claude/skills/selfreview/` |
@@ -187,9 +186,9 @@ bd sync                               # export jsonl → git
   <id>` it before handing off, so `bd ready` stays honest for the next
   agent.
 
-Pushing is never implicit. Commits land locally by default; push only
-when the user has asked (or durable instructions in this repo say so).
-See §"Editing constraints" and §"Session wrap-up" below.
+Push after every commit. `git pull --rebase && git push` — never
+force-push, never push to `main` without an explicit user instruction
+(the default is a branch + PR).
 
 ## Presenting your work
 
@@ -242,23 +241,13 @@ Before handing a session back to the user:
 - **Run the quality gates** that apply to what changed — whichever of
   `/pre-commit-check`, `pytest <scope>`, `mypy`, `ruff` the situation
   calls for.
-- **Commit locally.** Prefer narrow, Conventional-Commits commits via
-  `/commit` (or the `commiter` agent). Include `.beads/` changes in the
-  same commit as the code change.
-- **Do not push** unless the user has asked (or durable instructions
-  say so). Local commits are the default handoff.
+- **Commit and push.** Delegate to the `commiter` agent
+  (`.claude/agents/commiter.md`) for narrow Conventional-Commits
+  commits; include `.beads/` changes in the same commit. Then
+  `git pull --rebase && git push`.
 - **Summarise briefly.** One short paragraph: what changed, where it
   lives, what's still open, what the next agent should pick up from
   `bd ready`.
-
-If a push *has* been authorised:
-
-```bash
-git pull --rebase
-bd sync
-git push
-git status   # expect "up to date with origin/<branch>"
-```
 
 If a push fails, diagnose the root cause — do not force-push, do not
 `--no-verify`, do not bypass hooks.
