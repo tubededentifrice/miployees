@@ -86,11 +86,15 @@ fix the offender.
   response; a second fetch within 5 minutes raises a digest alert.
   Once the payout secrets are GDPR-erased, the endpoint returns 410
   Gone (§09, §15).
-- **Never-agent endpoint.** An endpoint that refuses agent tokens
-  unconditionally and is not reachable through the approval flow,
-  because approving would persist decrypted secret material in
-  `agent_action.result_json`. v1 list (§11): payout manifest,
-  envelope-key rotation, offline recovery magic-link.
+- **Never-agent endpoint.** An HTTP endpoint that refuses agent
+  tokens unconditionally and is not reachable through the approval
+  flow, because approving would persist decrypted secret material
+  in `agent_action.result_json`. v1 list (§11): the payout
+  manifest. Manager passkey session only.
+- **Host-CLI-only administrative command.** A `miployees admin`
+  verb with no HTTP surface at all, agent or human: envelope-key
+  rotation, offline lockout recovery, hard-delete purge (§11). Run
+  on the deployment host; authorisation is by shell access.
 - **Payslip.** A computed pay document for one (employee, pay_period).
 - **Pending (task).** A task whose `scheduled_for_utc` is within the
   next hour (or already past for a one-off). Distinct from

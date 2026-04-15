@@ -164,18 +164,21 @@ A per-household AES-256-GCM key, itself encrypted by the host's
 Every secret (OpenRouter API key, SMTP password, iCal feed URL
 containing tokens, property wifi password, property access codes,
 **full payout account numbers** — see §09) is stored as
-`secret_envelope` with per-row nonce. Full payout numbers decrypt
-only in two paths, both **manager-session authenticated** (passkey,
-not a bearer token) and short-lived:
+`secret_envelope` with per-row nonce. Decryption paths are
+deliberately narrow:
 
-1. Rendering a payslip's **payout manifest** (§09) — streamed, not
-   stored; on the never-agent list (§11).
-2. Administrative envelope-key rotation (no plaintext leaves the
-   server).
+1. **Payout manifest** (HTTP, §09) — manager passkey session only;
+   on §11's never-agent list; not stored; not cached by the
+   idempotency layer.
+2. **Envelope-key rotation** (host CLI, §15 below) — no HTTP
+   surface; authorised by host shell access; plaintext never leaves
+   the server process.
 
-Agent tokens cannot reach either path, even with approval, because
-the approval pipeline would persist the decrypted response in
-`agent_action.result_json`. See §11 "Never-agent endpoints".
+Agent tokens cannot reach either path. For (1), the approval
+pipeline would persist the decrypted response in
+`agent_action.result_json` — so the endpoint is refused outright
+(see §11 "Never-agent endpoints"). For (2), there is no endpoint
+at all (see §11 "Host-CLI-only administrative commands").
 
 The stored payslip PDF and all API responses use only `display_stub`.
 
@@ -193,7 +196,13 @@ secret_envelope
 
 `miployees admin rotate-root-key --new <base64>` decrypts every
 envelope with the old key and re-encrypts with the new. Bounded
-progress reporter. Requires manager approval.
+progress reporter. **Host-CLI only** — there is no HTTP endpoint for
+this operation, and therefore no agent path (see §11 "Host-CLI-only
+administrative commands"). The operator authorises the rotation by
+virtue of having shell access to the deployment host and supplying
+the new key material on the command line. The command writes its
+own `audit_log` rows directly as `system` actor with
+`via = 'cli'`.
 
 ### Token hashing
 

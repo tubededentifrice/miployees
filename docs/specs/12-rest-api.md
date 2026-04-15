@@ -99,10 +99,13 @@ Canonical error `type` URIs:
 - Different body hash with the same key → 409
   `idempotency_conflict`.
 - **Exempt endpoints** (never-agent, §11): `POST /payslips/{id}/
-  payout_manifest`, `POST /admin/rotate-root-key`, `POST /admin/
-  recover`. These do not record into the idempotency cache; the
-  header is accepted but ignored. A replay re-executes, re-audits,
-  and re-decrypts from the current secret store.
+  payout_manifest`. Its response is not stored in the idempotency
+  cache; the header is accepted but ignored. A replay re-executes,
+  re-audits, and re-decrypts from the current secret store. (Other
+  sensitive admin operations — envelope-key rotation, offline
+  recovery, hard purge — have no HTTP surface; they run via
+  `miployees admin <verb>` on the host and are covered under §11
+  "Host-CLI-only administrative commands".)
 
 ### Rate limiting
 
