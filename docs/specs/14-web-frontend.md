@@ -91,10 +91,13 @@ Everything above plus:
 
 ```
 /properties               → property list
-/property/<id>            → property hub (areas, stays, tasks, inventory, instructions)
+/property/<id>            → property hub (areas, stays, tasks, inventory, instructions, closures)
+/property/<id>/closures   → property closure calendar (incl. iCal unavailable markers)
 /stays                    → stays list & calendar
 /employees                → staff list
-/employee/<id>            → profile, roles, capabilities, shifts, payslips
+/employee/<id>            → profile, roles, capabilities, shifts, payslips, leaves
+/employee/<id>/leaves     → leave ledger (approve/reject)
+/leaves                   → cross-employee leave inbox (pending approvals)
 /templates                → task templates
 /schedules                → schedule list & previews
 /instructions             → knowledge base
@@ -108,12 +111,28 @@ Everything above plus:
 /settings                 → household settings
 ```
 
+### Calendar surfaces
+
+- The `/stays` calendar overlays four layers: stays (coloured by
+  source), turnover bundles (neutral pattern), property closures
+  (greyed), and employee leave (narrow strip per employee, toggle-
+  able). The same component is reused on `/property/<id>/closures`
+  with the stay/turnover layers hidden.
+- Closure rows with `reason = ical_unavailable` render read-only
+  (the source is the upstream iCal feed); editing them surfaces an
+  inline "Edit in Airbnb / VRBO" hint linked to the feed.
+
 ## HTMX patterns
 
 - Every form `hx-post`s to its canonical REST endpoint with
   `hx-target` and `hx-swap`. No manual fetch in JS.
 - **Optimistic UI** on task completion: the DOM swaps to "Completed"
   first; server confirms with `hx-swap-oob` correcting if rejected.
+  If a second actor completed the same task between the optimistic
+  swap and the server response (see §06 last-write-wins), the server
+  returns the winning completion record and the UI shows a subtle
+  "Completed by <name> · your note was kept in the audit log" toast —
+  no data is silently lost.
 - **Inline validation**: `hx-post` a small validator endpoint with
   `hx-trigger="blur changed delay:200ms"`; server returns an OOB
   error fragment.

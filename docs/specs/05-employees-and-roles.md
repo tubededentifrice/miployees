@@ -18,21 +18,36 @@ A person who performs tasks for the household.
 | timezone           | text      | defaults to default property's tz |
 | languages          | text[]    | BCP-47 tags; informational in v1 |
 | started_on         | date      | employment start                 |
-| ended_on           | date?     | set when off-boarded; soft-off   |
+| archived_on        | date?     | set when archived (off-boarded); cleared on reinstate |
 | notes_md           | text      | manager-visible                  |
 | emergency_contact  | jsonb     | `{name, phone_e164, relation}`   |
+| pay_destination_id | ULID FK?  | default payout for payslips (§09) |
+| reimbursement_destination_id | ULID FK? | default for expense reimbursements; null → falls back to pay_destination_id |
 | deleted_at         | tstz?     |                                  |
 
 An employee without any role is invalid; creation requires at least
 one `employee_role`.
 
-### Off-boarding
+### Archive / reinstate
 
-"Ending" an employee sets `ended_on = today`, revokes all passkeys,
-revokes active sessions, and removes them from forward-looking task
-assignments. Historical assignments and payslips are preserved.
-Manager can "rehire" by clearing `ended_on` and re-issuing a magic
-link.
+The canonical verbs are **archive** and **reinstate** (matching the
+REST endpoints `POST /employees/{id}/archive` and `/reinstate` in §12).
+
+**Archive** sets `archived_on = today`, revokes all passkeys, revokes
+active sessions, and removes the employee from forward-looking task
+assignments (scheduled/pending tasks with `assigned_employee_id =
+employee.id` are unassigned; the next generation tick re-runs the
+assignment algorithm). Historical assignments, completions, shifts,
+and payslips are preserved. An archive webhook fires
+`employee.archived`.
+
+**Reinstate** clears `archived_on`, re-issues a magic link (required —
+the prior passkeys are gone), and restores the employee in the
+staff list. Fires `employee.reinstated`.
+
+The words "end", "terminate", "off-board", "rehire", "soft-off" are
+**not** used in the schema, API, or UI. When writing new code or
+docs, use archive/reinstate.
 
 ## Role
 
@@ -47,7 +62,7 @@ starter set but they are regular rows, renameable and addable.
 |-------------------|----------|-----------------------------------------|
 | id                | ULID PK  |                                         |
 | household_id      | ULID FK  |                                         |
-| key               | text     | stable slug: `maid`, `cook`             |
+| key               | text     | stable slug: `maid`, `cook`. Unique per `(household_id, key)`. Editable but changing it audit-logs as `role.rekey` and breaks external references that hard-code the slug. |
 | name              | text     | display: "Maid", "Cuisinier/ère"        |
 | description_md    | text     |                                         |
 | default_capabilities | jsonb | capabilities enabled by default (see below) |
@@ -134,7 +149,12 @@ For a given (employee, task) pair, resolve a capability as:
 3. Per-`role.default_capabilities`
 4. Compile-time default in the catalog above.
 
-First non-null wins.
+**First "present" wins, where present includes explicit `false`.**
+Sparse JSON semantics: a key being absent means "inherit"; a key
+being `false` means "explicitly off, stop inheritance here". This
+lets a manager disable a capability at a specific property for a
+specific employee even when the role default is on. Setting a key
+back to `null` (or deleting it) re-enables inheritance.
 
 ### UI
 

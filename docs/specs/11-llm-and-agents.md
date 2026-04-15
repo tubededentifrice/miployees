@@ -120,6 +120,7 @@ A redaction layer sits between the domain and the `LLMClient`:
 
 Every `llm_call` row stores both the **redacted** payload sent and
 the response received. Original values are never stored on `llm_call`.
+Retention: 90 days by default, configurable per household (§02).
 
 ## Agent audit trail
 
@@ -148,7 +149,7 @@ commit, regardless of token scope.
 The canonical list, configurable per household:
 
 - Any `*.delete` that would affect more than **10 rows**.
-- Employee termination (`employees.archive`).
+- Employee archive (`employees.archive`).
 - Payslip issuance and paid transition (`payroll.issue`, `payroll.pay`).
 - Granting a new scope to an existing token.
 - Rotating another token.
@@ -196,6 +197,16 @@ A token carrying `admin:*` scope can **not** bypass approval on
 default-approvable actions. The only way to disable approval on an
 action is for a manager to flip the household-level setting in
 `/settings/approvals`.
+
+### TTL
+
+`expires_at` defaults to **7 days** from `requested_at`. Per-action
+overrides are allowed (some households may want shorter windows for
+sensitive actions like `payroll.pay`). When `expires_at` passes
+without a decision, a worker flips `state` to `expired`, emits
+`approval.decided` with `decision = expired`, and records
+`decision_note_md = "auto-expired"`. Expired approvals cannot be
+revived — the agent must re-request.
 
 ## Natural-language task intake
 
@@ -247,8 +258,29 @@ Anomaly detection query (simplified):
 - Inventory consumption deviating > 3σ from rolling mean.
 
 The LLM ranks candidates and writes a one-line explanation per
-anomaly. Falsely-flagged items can be "Ignore — stop suggesting this"
-(stored as per-household suppression rules).
+anomaly. Falsely-flagged items can be "Ignore — stop suggesting this",
+persisted in the `anomaly_suppression` table.
+
+### `anomaly_suppression`
+
+| field            | type     | notes                                   |
+|------------------|----------|-----------------------------------------|
+| id               | ULID PK  |                                         |
+| household_id     | ULID FK  |                                         |
+| anomaly_kind     | text     | e.g. `task_missed`, `completion_rate_drop`, `consumption_spike` |
+| subject_kind     | text     | `task_template` \| `employee` \| `inventory_item` \| ... |
+| subject_id       | ULID     |                                         |
+| suppressed_until | tstz     | **required** — the UI forces the manager to pick an explicit window when suppressing |
+| reason           | text?    | free-form, shown in the digest once the suppression expires |
+| suppressed_by    | ULID FK  | manager id                              |
+| created_at       | tstz     |                                         |
+
+Scope is `(household_id, anomaly_kind, subject_id)`. Permanent
+suppression is not offered: chronic "false positives" usually stop
+being false when the underlying pattern shifts, and a forced revisit
+keeps the digest honest. A manager who wants a long suppression
+enters a correspondingly long `suppressed_until` — the UI defaults
+to 90 days, accepts any future date.
 
 ## Staff chat assistant
 

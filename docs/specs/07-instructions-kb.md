@@ -110,9 +110,15 @@ the highest-specificity label.
 
 - Every save creates a new `instruction_revision` and points
   `current_revision_id` at it.
-- Tasks capture the **revision in effect at task creation** in
-  `linked_instruction_ids` (it's already an array of instruction ids,
-  not revision ids — see below).
+- Tasks do **not** own the instruction list as a source of truth;
+  `instruction_link` is canonical. `task.linked_instruction_ids` is a
+  denormalized cache of `instruction_link` rows where
+  `target_kind = task AND target_id = task.id`, refreshed on every
+  link insert/delete in the same transaction. Readers must not write
+  to it directly.
+- Tasks capture the **revision in effect at task creation** in the
+  audit log, but the cached `linked_instruction_ids` array stores
+  instruction ids, not revision ids — see below.
 - Evidence of which **revision** was surfaced at completion time lives
   in the audit log (`instruction.render` action with
   `instruction_id + revision_id`).

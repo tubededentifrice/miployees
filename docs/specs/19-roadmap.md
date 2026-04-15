@@ -29,7 +29,7 @@ log.
 
 ## Phase 2 — Places and people
 
-- Properties, areas, employees, roles, capability flags.
+- Properties, areas, employees, roles, capabilities.
 - Property detail manager UI.
 - Employee profile and capability management.
 - CLI covers all of the above.
@@ -124,7 +124,8 @@ Items explicitly deferred, in rough priority order:
    model for tasks and instructions.
 2. SMS / WhatsApp channels.
 3. Local LLM provider (Ollama) adapter.
-4. Multi-tenant SaaS mode.
+4. Multi-tenant SaaS mode (including SaaS lockout recovery that does
+   not require host shell access — see §03).
 5. Native mobile apps (only if PWA limitations become painful).
 6. QuickBooks / Xero accounting export (beyond CSV).
 7. OIDC for managers.

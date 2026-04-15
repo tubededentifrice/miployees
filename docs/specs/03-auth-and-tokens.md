@@ -35,10 +35,13 @@
 2. Owner clicks the link, chooses a display name and timezone,
    registers a passkey on their current device.
 3. System generates **break-glass recovery codes** (8 codes, 10 chars
-   Crockford base32, shown once, stored hashed). Owner must confirm
-   "I wrote them down" before proceeding. Each code is single-use and
-   can re-trigger a magic-link email to the owner's address if the
-   primary passkey is ever lost on all devices.
+   Crockford base32, shown once, stored argon2id-hashed in
+   `break_glass_code`). Owner must confirm "I wrote them down" before
+   proceeding. Each code is single-use: a successful code
+   redemption generates exactly one magic link (15-min TTL) and marks
+   the code row `used_at = now()`. The consumed code is inert even if
+   the resulting magic link expires unused — the owner must consume
+   another code to get a fresh link.
 
 ### Manager (additional)
 
@@ -67,6 +70,21 @@
   Up to 5 passkeys per user.
 - Each passkey carries a user-editable `nickname` ("work phone",
   "wife's iPad").
+
+### Re-enrollment side-effects
+
+When a manager re-issues a magic link to a user ("Employee lost
+phone" or "Manager lost device" paths below), accepting the link and
+registering a fresh passkey:
+
+1. Revokes **all existing passkeys** for that user (the new one is
+   written after revocation in the same transaction).
+2. Revokes **all active sessions** for that user; they must log in
+   again on every previously-signed-in browser.
+3. For managers: regenerates the break-glass code set (old codes
+   invalidated).
+
+All three events land in the audit log under `auth.reenroll`.
 
 ## Login
 
@@ -166,8 +184,28 @@ narrow escape hatch.
 | Employee lost phone                        | Any manager clicks "re-issue magic link" on their profile; current passkeys are revoked on registration. |
 | Manager lost only device, has backup code  | Enter recovery code → magic link emailed → register passkey; one backup code is burnt. |
 | Manager lost device + all backup codes, another manager exists | Any other manager can re-issue a magic link to their email. |
-| Last manager locked out completely         | Documented offline recovery: stop service, run `miployees admin recover --email ...` on the host, which emits a one-time magic link to stdout. |
+| Last manager locked out completely         | **Host-CLI recovery only in v1.** Stop service, run `miployees admin recover --email ...` on the host, which emits a one-time magic link to stdout. Operator must have shell access to the deployment host. Hosted / SaaS recovery flows (support escalation, out-of-band identity verification) are **out of scope for v1** — see §19. |
 | Employee email address wrong / changed     | Manager updates email on their profile; next magic link goes to the new one. |
+
+## Break-glass codes
+
+```
+break_glass_code
+├── id                   ULID PK
+├── household_id         ULID FK
+├── manager_id           ULID FK
+├── hash                 argon2id digest of the code
+├── hash_params          argon2id parameters (for upgrade)
+├── created_at           tstz
+├── used_at              tstz?  (null until redeemed)
+└── consumed_magic_link_id ULID?  populated on redemption
+```
+
+Redemption: the manager submits the plaintext code to
+`POST /auth/magic/consume` with their email. On success the code's
+`used_at` is set, a fresh `magic_link` is issued (15-min TTL), and its
+id is stored in `consumed_magic_link_id`. A used code is inert even
+if the resulting magic link expires unused.
 
 ## Magic link format
 

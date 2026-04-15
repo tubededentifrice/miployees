@@ -77,9 +77,19 @@ MIPLOYEES_BIND: "100.x.y.z:8000"     # passes if that address is on tailscale0
 
 - SQLite is a single file. The `miployees admin backup` command:
   1. Runs `PRAGMA wal_checkpoint(FULL)`.
-  2. Copies `miployees.db` and `data/uploads/` into a tar.zst,
-     optionally AES-GCM encrypted with a passphrase.
+  2. Copies `miployees.db`, `data/files/`, and the encrypted
+     `secret_envelope` rows into a tar.zst.
   3. Rotates old backups (keep last 30 daily + 12 monthly, tunable).
+
+v1 writes backups **unencrypted to the local filesystem**. Encryption
+at rest, transport to offsite storage, and key management for those
+backups are the operator's responsibility (host-volume encryption,
+offsite rsync/restic, cloud snapshot policies). We deliberately do not
+ship a built-in remote-backup pipeline because the choice is
+environment-specific and mis-shipping one is worse than none.
+
+The optional passphrase flag (`--encrypt-with-passphrase`) exists for
+ad-hoc transfer scenarios but is **not** used by the default cron.
 
 Cron:
 
@@ -87,6 +97,12 @@ Cron:
 # Run from the directory containing your compose.yaml.
 0 3 * * * cd /srv/miployees && docker compose exec -T app miployees admin backup --to /backups/
 ```
+
+**Lockout recovery** is host-CLI-only in v1. If the last manager is
+locked out, the operator stops the service, runs
+`miployees admin recover --email ...` on the host, and opens the
+magic link printed to stdout. SaaS / hosted-operator recovery flows
+are out of scope (see §03 recovery paths).
 
 ## Recipe B — Compose full-stack (Postgres + MinIO + Caddy)
 

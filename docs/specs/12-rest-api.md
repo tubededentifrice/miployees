@@ -137,12 +137,15 @@ POST   /auth/webauthn/finish_registration
 POST   /auth/webauthn/begin_login
 POST   /auth/webauthn/finish_login
 POST   /auth/magic/send            # manager only
+POST   /auth/magic/consume         # consume a break-glass code → magic link
 GET    /auth/me
 POST   /auth/logout
 POST   /auth/tokens                # create
 GET    /auth/tokens                # list (manager)
 POST   /auth/tokens/{id}/revoke
 POST   /auth/tokens/{id}/rotate
+
+POST   /managers/invite            # existing manager invites another
 ```
 
 ### Properties / areas / stays
@@ -169,6 +172,11 @@ DELETE /stays/{id}/welcome_link
 GET    /ical_feeds
 POST   /ical_feeds
 POST   /ical_feeds/{id}/poll           # manual poll trigger
+
+GET    /property_closures              # filter: ?property_id=…&from=…&to=…
+POST   /property_closures
+PATCH  /property_closures/{id}
+DELETE /property_closures/{id}
 ```
 
 ### Employees / roles / capabilities
@@ -193,7 +201,41 @@ PATCH  /roles/{id}
 
 GET    /capabilities              # resolved per-employee view
 PATCH  /capabilities/{employee_id}
+
+GET    /employee_leaves           # ?employee_id=…&from=…&to=…&approved=true|false
+POST   /employee_leaves
+PATCH  /employee_leaves/{id}
+POST   /employee_leaves/{id}/approve
+POST   /employee_leaves/{id}/reject
+DELETE /employee_leaves/{id}
 ```
+
+**`GET /capabilities` response shape** — resolved map per (employee,
+property_role_assignment). Flat JSON:
+
+```json
+{
+  "data": [
+    {
+      "employee_id": "emp_…",
+      "property_role_assignment_id": "pra_…",
+      "resolved": {
+        "time.clock_in": {"value": true, "source": "property_role_assignment"},
+        "tasks.photo_evidence_required": {"value": true, "source": "property_role_assignment"},
+        "messaging.comments": {"value": true, "source": "role_default"}
+      }
+    }
+  ]
+}
+```
+
+`source` is one of `property_role_assignment | employee_role |
+role_default | catalog_default`.
+
+**`PATCH /capabilities/{employee_id}`** — body is a sparse JSON map
+of `capability_key → (true | false | null)` plus an
+`assignment_id` selector naming which `property_role_assignment`
+to write to. `null` deletes the override key (restores inheritance).
 
 ### Tasks / templates / schedules
 
@@ -222,6 +264,11 @@ POST   /schedules/{id}/pause
 POST   /schedules/{id}/resume
 
 POST   /turnover_templates/{property_id}/apply_to_upcoming
+       # body: {"from": "2026-04-15", "to": "2026-07-15",
+       #        "rebuild_patched": false}
+       # default window: [today, today+90d]. `rebuild_patched=true`
+       # forces full regeneration even for stays that would otherwise
+       # patch in place (§04).
 ```
 
 ### Instructions
@@ -262,6 +309,11 @@ GET    /pay_rules
 POST   /pay_rules
 PATCH  /pay_rules/{id}
 
+GET    /employees/{id}/payout_destinations
+POST   /employees/{id}/payout_destinations
+PATCH  /payout_destinations/{id}
+POST   /payout_destinations/{id}/archive
+
 GET    /pay_periods
 POST   /pay_periods
 POST   /pay_periods/{id}/lock
@@ -279,8 +331,23 @@ POST   /expenses                   # multipart for receipts
 POST   /expenses/{id}/submit
 POST   /expenses/{id}/approve
 POST   /expenses/{id}/reject
-POST   /expenses/autofill          # image in → structured JSON out
+POST   /expenses/autofill          # multipart/form-data; image in → structured JSON out
 ```
+
+**`POST /expenses/autofill` request.** `Content-Type:
+multipart/form-data` with fields:
+
+- `images[]` (1..2, total ≤ 5 MB, `image/jpeg | image/png | image/heic | application/pdf`)
+- `hint_currency` (optional ISO-4217, improves accuracy for ambiguous receipts)
+- `hint_vendor` (optional text)
+
+Response is the `llm_autofill_json` shape defined in §09.
+
+**`PATCH /shifts/{id}` adjustment rules.** If the patch touches
+`started_at`, `ended_at`, `break_seconds`, or `expected_started_at`,
+the body must include a non-empty `adjustment_reason`; the server sets
+`adjusted = true`. Otherwise `adjustment_reason` is optional and
+`adjusted` is unchanged. See §09.
 
 ### LLM and approvals
 
@@ -315,6 +382,12 @@ POST   /files                      # multipart
 GET    /files/{id}                 # metadata
 GET    /files/{id}/blob            # signed redirect or stream
 ```
+
+Files are stored through a pluggable backend driver (§02 `file`
+entity). v1 ships the `local` driver only, writing under
+`$MIPLOYEES_DATA_DIR/files/{household_id}/{sha256[0:2]}/{sha256}`.
+Setting `MIPLOYEES_STORAGE=s3` (recipe B) routes to the S3/MinIO
+driver. API callers never see the storage path — only the ULID.
 
 ### Exports
 

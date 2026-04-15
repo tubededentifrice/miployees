@@ -261,9 +261,17 @@ much of the data is personal.
   trumps erasure for payroll).
 - **Data portability**: CSV exports of timesheets, payslips, and
   expenses (§09).
-- **Retention defaults**: audit log 2 years; llm_call 1 year;
-  sessions 90 days after revocation; email_delivery 1 year. All
-  configurable.
+- **Retention defaults** (see §02 for the canonical table):
+  - `audit_log`: 2 years.
+  - `session`: 90 days after revocation.
+  - `llm_call`: 90 days.
+  - `email_delivery`: 90 days.
+  - `webhook_delivery`: 90 days.
+
+  All configurable per household. The worker job
+  `rotate_operational_logs` runs daily and applies the current
+  retention to every table listed above; archived rows land in
+  `$DATA_DIR/archive/<table>.jsonl.gz`.
 
 ## LLM data handling
 
@@ -281,8 +289,8 @@ See §11 redaction details. Additional rules:
 
 ## Backup / restore security
 
-- Backups include the DB, `data/uploads/`, and the encrypted
-  `secret_envelope` table.
+- Backups include the DB, `data/files/` (§02 `file` entity storage
+  root), and the encrypted `secret_envelope` rows.
 - **The root key is not included** in backups. Restoring a backup to
   a new host requires supplying the same root key; otherwise envelopes
   cannot be decrypted and the operator is warned before the server

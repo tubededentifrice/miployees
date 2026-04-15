@@ -45,10 +45,18 @@
 
 ### Tenancy seam
 
-Every user-editable row carries `household_id CHAR(26) NOT NULL`. v1
-ships with a single household row seeded at first boot; multi-tenancy
-just means lifting the uniqueness scoping and adding RLS in Postgres
-(§15). No code change elsewhere.
+Every user-editable row carries `household_id CHAR(26) NOT NULL`.
+
+**Uniqueness constraints are scoped to `household_id` from day one.**
+Any `UNIQUE` on a user-editable column is a composite unique on
+`(household_id, <col>)`. Examples: `role.key`, `instruction.slug`,
+`property.name`, `inventory_item.sku`. System-seeded catalog values
+(capability keys, webhook event types) are globally unique because
+they are not user-editable.
+
+v1 ships with a single household row seeded at first boot; multi-
+tenancy is then purely a matter of allowing more rows and adding RLS
+in Postgres (§15). No code change elsewhere.
 
 ## Entity catalog
 
@@ -66,15 +74,15 @@ erDiagram
     PROPERTY ||--o{ STAY : hosts
     PROPERTY ||--o{ INVENTORY_ITEM : stocks
     PROPERTY ||--o{ PROPERTY_ROLE_ASSIGNMENT : scopes
+    PROPERTY ||--o{ PROPERTY_CLOSURE : blacks_out
 
     EMPLOYEE ||--o{ EMPLOYEE_ROLE : fills
     ROLE ||--o{ EMPLOYEE_ROLE : defines
     EMPLOYEE_ROLE ||--o{ PROPERTY_ROLE_ASSIGNMENT : at
-    EMPLOYEE ||--o{ CAPABILITY_FLAG : has
+    EMPLOYEE ||--o{ EMPLOYEE_LEAVE : takes
 
     TASK_TEMPLATE ||--o{ TASK : generates
     TASK_TEMPLATE ||--o{ SCHEDULE : described_by
-    TASK ||--o{ TASK_ASSIGNMENT : assigned_via
     TASK ||--o{ TASK_CHECKLIST_ITEM : contains
     TASK ||--o{ TASK_COMPLETION : completed_by
     TASK ||--o{ TASK_COMMENT : discussed_in
@@ -98,33 +106,54 @@ erDiagram
 
     INSTRUCTION ||--o{ INSTRUCTION_REVISION : versioned_by
 
+    FILE ||--o{ TASK_EVIDENCE : backs
+    FILE ||--o{ EXPENSE_ATTACHMENT : backs
+    FILE ||--o{ ISSUE_REPORT : backs
+
     WEBHOOK_SUBSCRIPTION ||--o{ WEBHOOK_DELIVERY : records
 
     AUDIT_LOG }o--|| HOUSEHOLD : within
 ```
 
+Entities in the diagram but not detailed inline here have their
+columns defined in the section referenced in the catalog below.
+`task_assignment` is not an entity — task assignment is captured as
+`task.assigned_employee_id` (see §06). `capability_flag` is not an
+entity either — capabilities are sparse JSON blobs on `role` and
+`employee_role` (see §05).
+
 ### Core entities (by document)
 
 - **Auth / identity** (§03): `manager`, `employee`, `passkey_credential`,
-  `magic_link`, `api_token`, `session`.
+  `magic_link`, `break_glass_code`, `api_token`, `session`.
 - **Places** (§04): `property`, `area`, `stay`, `guest_link`,
   `ical_feed`.
 - **People & roles** (§05): `role`, `employee_role`,
-  `property_role_assignment`, `capability_flag`.
-- **Work** (§06): `task_template`, `schedule`, `task`, `task_assignment`,
+  `property_role_assignment`.
+- **Work** (§06): `task_template`, `schedule`, `task`,
   `task_checklist_item`, `task_completion`, `task_evidence`,
-  `task_comment`, `turnover_bundle`.
+  `task_comment`, `turnover_bundle`, `employee_leave`,
+  `property_closure`.
 - **Instructions / SOPs** (§07): `instruction`, `instruction_revision`,
   `instruction_link`.
 - **Inventory** (§08): `inventory_item`, `inventory_movement`.
 - **Time / pay / expenses** (§09): `shift`, `pay_rule`, `pay_period`,
-  `pay_period_entry`, `payslip`, `expense_claim`, `expense_line`,
-  `expense_attachment`.
-- **Comms** (§10): `digest_run`, `email_delivery`, `webhook_subscription`,
-  `webhook_delivery`, `issue_report`.
+  `pay_period_entry`, `payslip`, `payout_destination`, `expense_claim`,
+  `expense_line`, `expense_attachment`.
+- **Comms** (§10): `digest_run`, `email_delivery`, `email_opt_out`,
+  `webhook_subscription`, `webhook_delivery`, `issue_report`.
 - **LLM** (§11): `model_assignment`, `llm_call`, `agent_action`,
-  `agent_approval`.
+  `anomaly_suppression`.
+- **Files** (§02 "Shared tables", storage backend in §15): `file` —
+  shared blob-reference table used by `task_evidence`,
+  `expense_attachment`, `issue_report.attachment_file_ids`,
+  `instruction_revision.attachment_file_ids`, and
+  `employee.avatar_file_id`.
 - **Cross-cutting** (§15): `audit_log`, `secret_envelope`.
+
+There is no `person.*` event family or `person` row type. Managers
+and employees emit their own events (`manager.*`, `employee.*`); see
+§10.
 
 Each subsequent document defines its entities' columns, invariants, and
 state machines in detail. This file holds only the shared rules.
@@ -148,7 +177,7 @@ Append-only. Written in the same transaction as every mutation.
 |--------------------|---------|---------------------------------------|
 | id                 | ULID PK |                                       |
 | household_id       | ULID FK |                                       |
-| correlation_id     | ULID    | request-level; groups multi-row edits |
+| correlation_id     | ULID    | request-level by default; groups multi-row edits |
 | occurred_at        | tstz    |                                       |
 | actor_kind         | text    | `manager`, `employee`, `agent`, `system` |
 | actor_id           | ULID    | nullable only for `system`            |
@@ -161,9 +190,41 @@ Append-only. Written in the same transaction as every mutation.
 | after_json         | jsonb   | nullable (delete)                     |
 | reason             | text    | optional, agent-supplied              |
 
+**Correlation scope.** `correlation_id` defaults to the HTTP request
+ID (generated server-side if the caller did not pass
+`X-Correlation-Id`). A caller that wants to group multiple HTTP
+requests into one logical workflow may pass the same
+`X-Correlation-Id` on each; the server does not validate grouping
+semantics. `audit_log` rows emitted by a single transaction always
+share the same `correlation_id`.
+
 Retention: default 2 years; configurable per household. Worker job
 `rotate_audit_log` moves rows older than retention into
 `audit_log_archive.jsonl.gz` under `$DATA_DIR/archive/`.
+
+### `file`
+
+Shared blob reference row. The backend storage driver is pluggable
+(local disk in v1, S3/GCS post-v1); the row is the durable identifier.
+
+| column           | type    | notes                                  |
+|------------------|---------|----------------------------------------|
+| id               | ULID PK |                                        |
+| household_id     | ULID FK |                                        |
+| sha256           | text    | content hash; unique per household     |
+| byte_size        | int     |                                        |
+| mime_type        | text    | server-sniffed (§15)                   |
+| original_name    | text    | user-supplied; never trusted for paths |
+| storage_driver   | text    | `local` (v1) \| `s3` (post-v1)         |
+| storage_key      | text    | driver-specific locator                |
+| uploaded_by_kind | text    | `manager` \| `employee` \| `agent`     |
+| uploaded_by_id   | ULID    |                                        |
+| created_at       | tstz    |                                        |
+| deleted_at       | tstz?   |                                        |
+
+Local driver writes to `$DATA_DIR/files/{household_id}/{sha256[0:2]}/
+{sha256}`. See §15 for MIME sniffing, EXIF stripping, and PDF script
+rejection.
 
 ### `secret_envelope`
 
@@ -230,9 +291,43 @@ CI job asserts no drift in test fixtures.
 Defined once per document where the enum lives; summarized here.
 
 - `actor_kind`: `manager | employee | agent | system`
-- `task_state`: `scheduled | in_progress | completed | skipped | cancelled | overdue`
+- `task_state`: `scheduled | pending | in_progress | completed | skipped | cancelled | overdue`
 - `stay_source`: `manual | airbnb | vrbo | booking | google_calendar | ical`
 - `pay_rule_kind`: `hourly | monthly_salary | per_task | piecework`
+- `pay_period_status`: `open | locked | paid`
+- `payslip_status`: `draft | issued | paid | voided`
+- `shift_status`: `open | closed | disputed`
 - `expense_state`: `draft | submitted | approved | rejected | reimbursed`
+- `expense_line_source`: `ocr | manual` (see §09 for interaction with `edited_by_user`)
+- `inventory_movement_reason`: `restock | consume | adjust | waste | transfer_in | transfer_out | audit_correction`
 - `delivery_state`: `queued | sent | delivered | bounced | failed`
+- `property_kind`: `residence | vacation | str | mixed` (semantics in §04)
 - `capability`: see §05.
+
+## Full-text search ranking
+
+The unified `search.search_tasks(q, scope)` interface returns rows
+ranked by a simple weighted sum:
+
+- title: weight 4
+- checklist item text: weight 2
+- description_md: weight 2
+- completion_note_md: weight 1
+- task_comment.body_md: weight 1
+
+SQLite uses FTS5 `bm25()` with the same weight vector; Postgres uses
+`ts_rank_cd` against a `tsvector` built with the same weights.
+
+## Operational-log retention defaults
+
+| table              | default retention | note                              |
+|--------------------|-------------------|-----------------------------------|
+| `audit_log`        | 2 years           | see above; archived to JSONL.gz   |
+| `session`          | 90 days after revocation | §03                        |
+| `llm_call`         | 90 days           | configurable per household (§11)  |
+| `email_delivery`   | 90 days           | configurable per household (§10)  |
+| `webhook_delivery` | 90 days           | configurable per household (§10)  |
+
+Retention is enforced by worker job `rotate_operational_logs` (daily).
+All durations are household-level settings; raising a duration takes
+effect immediately, lowering it purges on next rotation.

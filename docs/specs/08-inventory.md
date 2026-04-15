@@ -53,10 +53,15 @@ Task templates carry `inventory_consumption_json`, a map of
 `item_id → qty` (or `sku → qty` during authoring). On task completion:
 
 - If `inventory.consume_on_task` capability is on for the completing
-  employee, insert one `inventory_movement` per entry with
-  `source_task_id` set and negative delta.
-- If consumption would take `on_hand` below 0, still apply; flag in the
-  daily digest. (Staff know more than the model; counts can be wrong.)
+  employee, insert one `inventory_movement` with `reason = consume`,
+  `source_task_id` set, and negative delta per entry.
+- If consumption would take `on_hand` below 0: the movement **still
+  applies** (the item ends the transaction with a negative `on_hand`).
+  The item is flagged in both the manager's daily digest and an
+  `inventory.stock_drift` event. Rationale: staff know more than the
+  model; counts can be wrong, and blocking task completion on a
+  bookkeeping disagreement punishes the wrong person. Managers
+  reconcile by recording a restock or running the adjust flow.
 
 This is a soft coupling: completing the task never fails because
 consumption disagrees with reality.
@@ -72,8 +77,9 @@ Periodic worker job `check_reorder_points` (hourly):
   role the manager has set for restocks at that property
   (default `property_manager`).
 - When the restock task is completed, the completion UI prompts the
-  employee/manager to enter the actual restocked quantity, creating a
-  `restock` movement.
+  employee/manager to enter the actual restocked quantity, creating
+  a single positive-delta `inventory_movement` with
+  `reason = restock` and `source_task_id` set.
 
 ## Adjustments
 

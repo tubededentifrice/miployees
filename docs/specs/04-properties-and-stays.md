@@ -12,7 +12,7 @@ residence, a vacation home, an STR unit, or a yacht all count.
 | id                    | ULID PK     |                                |
 | household_id          | ULID FK     |                                |
 | name                  | text        | "Villa Sud", "Apt 3B"          |
-| kind                  | enum        | `residence | vacation | str | mixed` |
+| kind                  | enum        | `residence | vacation | str | mixed` (behavior below) |
 | address_json          | jsonb/text  | structured address             |
 | timezone              | text        | IANA (`Europe/Paris`)          |
 | default_currency      | text        | ISO 4217, inherits household   |
@@ -23,6 +23,22 @@ residence, a vacation home, an STR unit, or a yacht all count.
 
 A property has many **areas** and many **stays**. It may have one or
 more **iCal feeds** (multiple platforms for the same unit).
+
+### `kind` semantics
+
+`kind` drives defaults for turnover generation and area seeding;
+managers can always override per-stay or per-task.
+
+| kind       | auto-seed areas | turnover generation                                         |
+|------------|-----------------|-------------------------------------------------------------|
+| `residence`| no              | none — a residence does not turn over on guest checkout     |
+| `vacation` | yes             | every stay generates a turnover bundle                      |
+| `str`      | yes             | every stay generates a turnover bundle                      |
+| `mixed`    | yes             | turnover only for stays where `guest_kind != owner`         |
+
+Stays carry an optional `guest_kind` (`owner | guest | staff | other`;
+default `guest`). The turnover decision is made by §06 at stay-create
+time.
 
 ### Welcome defaults
 
@@ -90,6 +106,7 @@ A reservation of a property by a guest for a range of dates.
 | check_out_at       | tstz    |                                          |
 | guest_name         | text    | best-effort (iCal often redacts)         |
 | guest_count        | int     |                                          |
+| guest_kind         | enum    | `owner | guest | staff | other` (default `guest`); gates turnover for `property.kind = mixed` |
 | nightly_rate_cents | int     | optional, only for owner stays           |
 | status             | enum    | `tentative | confirmed | in_house | checked_out | cancelled` |
 | notes_md           | text    |                                          |
@@ -102,14 +119,23 @@ manager action.
 
 ### Turnover bundles
 
-When a stay's `check_out_at` lands in the future, the worker creates a
+When a stay's `check_out_at` lands in the future **and** the property's
+`kind` permits turnover (see table above), the worker creates a
 **turnover bundle** — one `TURNOVER_BUNDLE` row and 1..N `task` rows
 generated from the household's turnover template for that property
 (see §06). Tasks in a bundle share `turnover_bundle_id`.
 
-Turnover is created once per stay, lives across stay edits (we patch
-tasks in place if times shift <4 hours, otherwise we re-create),
-and shows in the UI as a coherent group.
+Turnover is created once per stay, lives across stay edits, and shows
+in the UI as a coherent group. **Edit semantics:**
+
+- If `|new.check_out_at - old.check_out_at| < 4h` **and** the stay is
+  not yet in `checked_out` state: patch `scheduled_for_local`,
+  `scheduled_for_utc`, `due_by_utc`, and `assigned_employee_id` on the
+  existing bundle's tasks in place (state-gated to
+  `scheduled | pending`).
+- Otherwise: cancel the existing bundle's `scheduled | pending` tasks
+  with `cancellation_reason = 'stay rescheduled'` and generate a new
+  bundle from the template.
 
 ### Overlap detection
 
@@ -141,10 +167,15 @@ Each feed is a URL the worker polls on schedule. Stays are upserted by
 ### Polling behavior
 
 - Use `If-None-Match` / `If-Modified-Since` to avoid re-downloads.
-- Parse with `icalendar`. Ignore VEVENTs whose `SUMMARY` signals
-  "Not available" or "Blocked" (Airbnb conventions), converting them
-  to `unavailable` markers rather than stays.
-- Diff against existing stays: create, update, or cancel.
+- Parse with `icalendar`. VEVENTs whose `SUMMARY` signals
+  "Not available" or "Blocked" (Airbnb conventions) are upserted as
+  **`property_closure`** rows (§06) with `reason = ical_unavailable`
+  and `source_ical_feed_id` set — not as stays. Managers see them on
+  the calendar with a distinct swatch; deleting them manually is
+  allowed (the next poll will not recreate them unless the underlying
+  VEVENT reappears upstream).
+- Diff ordinary VEVENTs against existing stays: create, update, or
+  cancel.
 - Surface parse errors as `issue_report` against the feed.
 - Rate-limit per host; respect provider 429s.
 
@@ -193,7 +224,12 @@ A tokenized URL shared with each guest. No login. Read-only.
 
 - The link is unpredictable (see §03 for token format).
 - Link can be revoked by the manager at any time → page returns 410
-  Gone with a polite message.
+  Gone with a friendly "This welcome link has been turned off. If you
+  need the information again, please ask your host." message. The
+  check-out checklist is hidden; no stay data is rendered.
+- The same 410 page is served on natural expiry (`expires_at` reached);
+  only the wording differs ("This link has expired"). Both cases log
+  the access with no stay payload.
 - Access log captures hashed-IP-prefix + UA-family only, never full IP.
 - No cookies on the guest page. No JS beyond the small manifest that
   renders the check-out checklist.
