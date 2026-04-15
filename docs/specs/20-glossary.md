@@ -7,6 +7,17 @@ fix the offender.
   on `audit_log` and shift/claim rows: `manager | employee | agent |
   system`.
 - **Agent.** A non-human actor authenticated by an API token.
+- **Agent (embedded).** The manager-side or employee-side chat
+  agent described in §11. Default model `google/gemma-4-31b-it`;
+  tool surface defined per side (manager = full CLI + REST,
+  employee = narrow: issue-report, expense-upload, clock-in /
+  clock-out, task-complete, instruction-lookup, leave-request,
+  message-manager). Voice input is capability-gated.
+- **Auto-clock.** The `auto` value of `time.clock_mode` (§05, §09).
+  First checklist tick or task action of the day opens a shift;
+  `time.auto_clock_idle_minutes` of inactivity closes it. Per-villa
+  override can force `manual` or `disabled`. See §09 "Disputed
+  auto-close" for the re-open semantics.
 - **Anomaly suppression.** A manager-recorded rule that silences a
   specific `(anomaly_kind, subject_id)` pair until a required
   `suppressed_until` timestamp (§11). Permanent suppression is not
@@ -41,12 +52,19 @@ fix the offender.
   requests do not affect assignment.
 - **Evidence.** Artifact attached to a completion — photo, note, or
   checklist snapshot.
+- **Evidence policy.** Photo-evidence requirement resolved by
+  walking a four-layer stack workspace → villa → employee → task
+  (§05 "Evidence-policy stack", §06 "Evidence policy inheritance").
+  Values are `inherit | require | optional | forbid`; the workspace
+  root is always concrete. First concrete value, root-first, wins.
+  `forbid` at any layer is absolute.
 - **File.** Shared blob-reference row (§02 `file`). Pluggable backend;
   local disk in v1.
 - **Handle.** Optional user-friendly slug (`maid-maria`) stored in a
   per-entity `handle` column where useful. Unique per parent scope.
-- **Household.** The single tenant in a v1 deployment. All uniqueness
-  constraints on user-editable rows are scoped to `household_id`.
+- **Household.** **v0 term; replaced by Workspace in v1.** Retained
+  here so historical references in migrations, ADRs, and older code
+  remain resolvable. New code and new docs use Workspace.
 - **Instruction.** A standing SOP attached at global / property /
   area / link scope (§07). `instruction_link` is canonical;
   `task.linked_instruction_ids` is a denormalized cache.
@@ -127,3 +145,11 @@ fix the offender.
 - **Welcome link.** Tokenized public URL exposing the guest welcome
   page for a stay. Revocation or expiry both serve a 410 with the
   same layout; wording differs.
+- **Workspace.** The tenancy boundary in v1. One workspace = one
+  employer entity. Every user-editable row carries `workspace_id`.
+  All uniqueness constraints on user-editable rows are scoped to
+  `workspace_id`. The v1 deployment ships a **single workspace**
+  seeded at first boot, but the schema, auth, and API surface are
+  already multi-tenant-ready — see §02 "Migration" and §19 "Beyond
+  v1" for the path to true multitenancy. Replaces the v0
+  "household."

@@ -1,11 +1,129 @@
 # 11 — LLM integration and agents
 
-Per the user's direction: **Google Gemma 4 31B IT via OpenRouter** is
-the default model, with a per-capability assignment table so other
-models can substitute for specific jobs. All in-app agentic features
-(natural-language task intake, daily digest, anomaly detection,
-receipt OCR, staff chat assistant, agent audit trail, action approval)
-share the same plumbing.
+Per the user's direction: **Google Gemma 4 31B IT via OpenRouter**
+(`google/gemma-4-31b-it`) is the default model, with a per-capability
+assignment table so other models can substitute for specific jobs.
+All in-app agentic features (natural-language task intake, daily
+digest, anomaly detection, receipt OCR, staff chat assistant, agent
+audit trail, action approval, embedded manager and employee chat
+agents) share the same plumbing.
+
+## The agent-first invariant
+
+miployees is built around a hard rule: **every human UI verb exists
+as a CLI or REST command first, and the UI is a shell around those
+commands.** There is no manager-only button, no employee-only
+button, that cannot also be driven by the CLI (§13) or by an agent
+holding the appropriate token (subject to the approval gates below).
+Concretely:
+
+- Every form in §14 posts to an endpoint documented in §12.
+- Every endpoint in §12 has a matching CLI command in §13.
+- Every action in §13 is reachable as a tool call from one of the
+  two embedded chat agents described below.
+- Dangerous actions are not hidden from agents; they are **gated**
+  by §11's approval pipeline, by the "never-agent endpoints" list,
+  or by the "host-CLI-only" fence — categories that exist precisely
+  because agents can, in principle, reach everything else.
+
+This inversion — CLI and REST first, UI last — is why the two
+embedded agents below can drive the product end-to-end.
+
+## Embedded agents
+
+Two chat agents are embedded in the product. Each is scoped to a
+persona and a tool surface; they share plumbing (client, redaction,
+audit, approval) but differ in what they are allowed to do.
+
+### Manager-side agent
+
+Lives in the right sidebar (`.desk__agent`) of the manager desktop
+shell (§14). Its tool surface is **the full CLI + REST surface**,
+including but not limited to:
+
+- **Review / plan / gap-find** — thread-local introspection tools
+  that summarise the current manager view, list upcoming work,
+  and surface spec-to-code gaps.
+- **Scheduling and reassignments** — `tasks.create`,
+  `tasks.assign`, `tasks.skip`, `schedules.add`, `schedules.pause`,
+  `schedules.apply-edits`.
+- **Instructions drafting** — `instructions.add`,
+  `instructions.publish`, `instructions.link`, with a built-in
+  "draft from this conversation" helper.
+- **Payroll issuance** — `payslips.issue`, `payslips.mark-paid`,
+  `pay.periods.lock`, **all gated** by the always-approved money-
+  routing actions below.
+- **Employee lifecycle** — `employees.archive`, `.reinstate`,
+  `.magic-link`, capability flips (gated for mass changes).
+- **LLM admin** — `llm.assignments.set`, `llm.calls.list`.
+
+High-impact tools are routed through the approval pipeline (§ "Agent
+action approval" below). The manager-side agent does **not** bypass
+its own approval: when it proposes a payroll issuance it still goes
+to the `/approvals` queue, where the same manager clicks "Approve"
+before execution. This costs one extra tap and buys a canonical
+audit trail identical to an external agent's.
+
+Default model: `google/gemma-4-31b-it`. Overridable via
+`llm.assignments.set` under capability `chat.manager`.
+
+Voice input is capability-gated (`voice.manager`); when on, audio
+is transcribed via `voice.transcribe` before being dispatched to
+the agent.
+
+### Employee-side agent
+
+Lives as the `Chat` tab in the employee PWA footer (§14). A narrow
+tool surface designed for on-the-job questions and simple writes:
+
+- `issue-report` — file an `issue_report` scoped to the employee's
+  properties.
+- `expense-upload` — upload a receipt photo and kick off
+  `expenses.autofill` (§09).
+- `clock-in` / `clock-out` — only when `time.clock_mode = manual`;
+  in `auto` mode, the agent explains that the shift has already
+  been opened/closed.
+- `task-complete` — mark a task done with an optional photo and
+  note; respects the resolved evidence policy (§06).
+- `instruction-lookup` — resolve applicable instructions by scope
+  (§07) and surface them inline.
+- `leave-request` — create a pending `employee_leave` row.
+- `message-manager` — post into the workspace agent thread
+  (routes via the workspace agent so the manager sees it in their
+  chat thread, not as a bare notification).
+
+The employee agent cannot read other employees' data, cannot
+mutate other employees' rows, and cannot reach payroll or audit
+endpoints. Its tool descriptors are filtered at session start so
+the model never sees a forbidden tool.
+
+Default model: `google/gemma-4-31b-it`. Capability keys
+`chat.employee` (default on for the employee) and `voice.employee`
+(default off).
+
+### Conversation compaction
+
+Both agents accumulate long chat histories. Token budget grows with
+thread length; "attention drag" on older, resolved topics degrades
+answer quality. Every thread is therefore subject to **compaction**:
+
+- The agent marks a **topic** as resolved when it has produced an
+  accepted reply, a completed action, or an explicit "thanks" /
+  dismissal from the human.
+- Turns belonging to a resolved topic are compacted into a **short
+  summary message** (one system-kind row) that replaces them in
+  the live context window.
+- The original, uncompacted turns are retained in the `chat_archive`
+  table (scoped by workspace + thread) and remain **full-text
+  searchable** from the agent's `search_chat_archive(q)` tool. The
+  agent can therefore pull the original back into context on
+  demand when a follow-up references an older topic.
+- Compaction itself is an `llm_call` under capability
+  `chat.compact`; the summary is verified against numeric claims
+  the same way digests are (see "Daily digest / anomaly detection").
+
+Compaction windows default to "30 days or 200 turns, whichever
+first," overridable per workspace.
 
 ## Provider
 
@@ -46,7 +164,7 @@ class LLMClient(Protocol):
 
 Each feature names a **capability** key. The model assignment table
 maps capability → model. If a capability has no explicit mapping, the
-household default is used.
+workspace default is used.
 
 | capability key             | description                                                             |
 |----------------------------|-------------------------------------------------------------------------|
@@ -60,6 +178,11 @@ household default is used.
 | `issue.triage`             | Classify severity/category of an employee-reported issue                |
 | `stay.summarize`           | Summarize a stay (for guest welcome blurb drafting)                     |
 | `voice.transcribe`         | Turn a voice note into text (for chat assistant / issue reports)        |
+| `chat.manager`             | Manager-side embedded chat agent (§14 right sidebar)                    |
+| `chat.employee`            | Employee-side embedded chat agent (§14 Chat tab)                        |
+| `chat.compact`             | Summarise resolved topics in a chat thread (see "Conversation compaction") |
+| `chat.detect_language`     | Detect message language for auto-translation (§10, §18)                 |
+| `chat.translate`           | Translate a message into the workspace default language (§10, §18)      |
 
 ## Model assignment
 
@@ -120,7 +243,7 @@ A redaction layer sits between the domain and the `LLMClient`:
 
 Every `llm_call` row stores both the **redacted** payload sent and
 the response received. Original values are never stored on `llm_call`.
-Retention: 90 days by default, configurable per household (§02).
+Retention: 90 days by default, configurable per workspace (§02).
 
 ## Agent audit trail
 
@@ -146,7 +269,7 @@ commit, regardless of token scope.
 
 ### Which actions
 
-The canonical list, configurable per household:
+The canonical list, configurable per workspace:
 
 - Any `*.delete` that would affect more than **10 rows**.
 - Employee archive (`employees.archive`).
@@ -254,13 +377,13 @@ agent_action
 
 A token carrying `admin:*` scope can **not** bypass approval on
 default-approvable actions. The only way to disable approval on an
-action is for a manager to flip the household-level setting in
+action is for a manager to flip the workspace-level setting in
 `/settings/approvals`.
 
 ### TTL
 
 `expires_at` defaults to **7 days** from `requested_at`. Per-action
-overrides are allowed (some households may want shorter windows for
+overrides are allowed (some workspaces may want shorter windows for
 sensitive actions like `payroll.pay`). When `expires_at` passes
 without a decision, a worker flips `state` to `expired`, emits
 `approval.decided` with `decision = expired`, and records
@@ -325,7 +448,7 @@ persisted in the `anomaly_suppression` table.
 | field            | type     | notes                                   |
 |------------------|----------|-----------------------------------------|
 | id               | ULID PK  |                                         |
-| household_id     | ULID FK  |                                         |
+| workspace_id     | ULID FK  |                                         |
 | anomaly_kind     | text     | e.g. `task_missed`, `completion_rate_drop`, `consumption_spike` |
 | subject_kind     | text     | `task_template` \| `employee` \| `inventory_item` \| ... |
 | subject_id       | ULID     |                                         |
@@ -334,7 +457,7 @@ persisted in the `anomaly_suppression` table.
 | suppressed_by    | ULID FK  | manager id                              |
 | created_at       | tstz     |                                         |
 
-Scope is `(household_id, anomaly_kind, subject_id)`. Permanent
+Scope is `(workspace_id, anomaly_kind, subject_id)`. Permanent
 suppression is not offered: chronic "false positives" usually stop
 being false when the underlying pattern shifts, and a forced revisit
 keeps the digest honest. A manager who wants a long suppression

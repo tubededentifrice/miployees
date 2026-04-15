@@ -14,7 +14,7 @@ sprints. A phase ships when its goals are met and its quality gates
 - Docker images; single + compose recipes baseline.
 
 **Exit:** CI green on empty build; `miployees admin init` creates a
-household row and prints a magic link in the dev profile.
+workspace row and prints a magic link in the dev profile.
 
 ## Phase 1 — Identity
 
@@ -92,10 +92,21 @@ expenses → reimbursement included → CSV export.
 - OpenRouter client, model assignment table, redaction layer.
 - Natural-language task intake, daily digests, anomaly detection,
   staff chat assistant, agent approval workflow.
+- Embedded **manager-side** and **employee-side** chat agents (§11)
+  with conversation compaction.
+- **WhatsApp (agent-mediated) + SMS fallback** for agent-originated
+  outbound reach-out (§10). Moved from "Beyond v1" into v1.
+- **Chat auto-translation** between employee-preferred and workspace-
+  default languages on the employee agent (§10, §18). Moved from
+  "deferred" into v1.
 
 **Exit:** all capabilities run against Gemma 4 31B via OpenRouter with
 bounded budget and audit; an agent driving the CLI experiences
-approval-gated actions correctly.
+approval-gated actions correctly; an employee writing in their own
+language gets the agent replying in kind and the manager seeing the
+workspace-default translation with a toggle for the original;
+agent-originated WhatsApp reach-out respects quiet hours and per-
+employee daily caps.
 
 ## Phase 9 — PWA and offline
 
@@ -120,16 +131,25 @@ tasks with photos, back online) syncs within 60s with zero loss.
 
 Items explicitly deferred, in rough priority order:
 
-1. Additional locales (ES, FR, PT-BR, TL) and the multilingual content
-   model for tasks and instructions.
-2. SMS / WhatsApp channels.
-3. Local LLM provider (Ollama) adapter.
-4. Multi-tenant SaaS mode (including SaaS lockout recovery that does
-   not require host shell access — see §03).
-5. Native mobile apps (only if PWA limitations become painful).
-6. QuickBooks / Xero accounting export (beyond CSV).
-7. OIDC for managers.
-8. Owner-only dashboard (when a second-party manages on behalf of an
+1. Additional locales (ES, FR, PT-BR, TL) for UI chrome, instruction
+   bodies, and digests. Chat auto-translation for the employee
+   agent already ships in v1 (see Phase 8).
+2. Local LLM provider (Ollama) adapter.
+3. **True multi-tenancy** — more than one workspace per deployment,
+   with a workspace-switcher UI and workspace-admin roles. The
+   **schema is already ready** (every user-editable row carries
+   `workspace_id`; junction tables `villa_workspace` and
+   `employee_workspace` exist; RLS seam is `workspace_id` per §15),
+   so lifting the single-workspace lock is a policy + auth change,
+   not a data migration. Bundled with SaaS lockout recovery that
+   does not require host shell access — see §03.
+4. Native mobile apps (only if PWA limitations become painful).
+5. QuickBooks / Xero accounting export (beyond CSV).
+6. OIDC for managers.
+7. Owner-only dashboard (when a second-party manages on behalf of an
    owner).
-9. Realtime chat.
-10. Integrated guest messaging (Airbnb-style threads).
+8. Realtime chat (presence, typing indicators) — v1 uses SSE for
+   task-state freshness; true realtime is separate.
+9. Integrated guest messaging (Airbnb-style threads).
+10. Additional outbound channels beyond email / WhatsApp / SMS
+    (push, Slack, Matrix).

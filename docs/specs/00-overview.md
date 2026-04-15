@@ -2,7 +2,7 @@
 
 ## Vision
 
-**miployees** is a self-hosted household operations platform: one owner,
+**miployees** is a self-hosted workspace operations platform: one owner,
 one or more properties, several employees, and many tasks repeating across
 days, weeks, and seasons. It is designed so that the day-to-day operator is
 an LLM agent and the humans are free to live in their house instead of
@@ -12,6 +12,32 @@ The working mental model is **a hotel of one to fifty rooms, minus the
 front desk**: guest stays flow in from Airbnb/VRBO; turnovers, cleanings,
 and check-in prep auto-generate; the cook sees what to prepare tomorrow;
 the driver sees tomorrow's airport run; the head of house sees everything.
+
+## Glossary orientation
+
+- **Workspace.** The tenancy boundary. One workspace = one employer
+  entity (a family, an estate, a small property-management outfit).
+  Every user-editable row carries `workspace_id`. The v1 deployment
+  ships with a **single workspace** seeded at first boot, but the
+  schema, auth, and API surface are already multi-tenant-ready so that
+  future releases can host more than one workspace per deployment
+  without a data migration. "Workspace" replaces the v0 term
+  `household` everywhere in the schema, API, and UI; see §20.
+- **Villa (property).** A managed physical place. A villa is a
+  **multi-belonging unit**: the same villa can belong to more than one
+  workspace (e.g. a rental manager and the owning family both oversee
+  the same house from their own workspaces). Employees can therefore
+  work across villas that live in different workspaces, and an
+  employee's workspace membership is the set of workspaces reachable
+  through their assigned villas plus any explicit direct membership.
+  See §02 for the junction tables.
+- **Agent-first guarantee.** Every user-facing action in miployees is
+  also exposed as a **CLI command** (host CLI or the embedded REST
+  tool surface) — there is no human-only verb. An LLM agent driving
+  the manager-side or employee-side chat can do anything a human can
+  do in the same UI, subject to the approval gates in §11. The UI is a
+  shell around those commands, not a separate capability. See §11 for
+  the invariant, §13 for the CLI catalog.
 
 ## Personas
 
@@ -82,9 +108,9 @@ the driver sees tomorrow's airport run; the head of house sees everything.
 
 ## Non-goals (v1)
 
-- **N1. Multi-tenant SaaS.** One deployment = one household. Tenancy may
-  be added later; the schema leaves a seam (§02) but no enforcement is
-  built.
+- **N1. Multi-tenant SaaS.** One deployment = one workspace in v1.
+  Tenancy may be added later; the schema already names every seam
+  `workspace_id` (§02) but no multi-workspace enforcement is built.
 - **N2. Tax & statutory HR.** We compute gross pay; taxes, social
   contributions, and statutory leave rules are out of scope. Export CSV
   to your accountant.
@@ -105,7 +131,7 @@ the driver sees tomorrow's airport run; the head of house sees everything.
 
 ## Success criteria
 
-- **Operational.** A household with 3 properties, 5 employees, 30
+- **Operational.** A workspace with 3 properties, 5 employees, 30
   weekly recurring tasks, and 2 STR calendars can be set up end-to-end
   (from empty DB to first completed task) in **under 60 minutes** by a
   non-technical manager following the Getting Started guide.
@@ -125,7 +151,7 @@ the driver sees tomorrow's airport run; the head of house sees everything.
 - **Stack.** FastAPI + HTMX + Tailwind. SQLite default, Postgres 15+
   supported. See §01.
 - **Hosting.** The binary/image must run on a $5/month VPS with 1 vCPU
-  and 1 GB RAM for a 5-employee household without swapping. Compose
+  and 1 GB RAM for a 5-employee workspace without swapping. Compose
   deployments assume 2 vCPU / 2 GB.
 - **Privacy.** No PII leaves the deployment without explicit manager
   consent per capability (see §11 §15).

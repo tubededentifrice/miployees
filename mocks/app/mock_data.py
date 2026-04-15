@@ -26,6 +26,7 @@ class Property:
     color: str
     kind: Literal["str", "vacation", "residence", "mixed"]
     areas: list[str] = field(default_factory=list)
+    evidence_policy: Literal["inherit", "require", "optional", "forbid"] = "inherit"
 
 
 @dataclass
@@ -46,6 +47,13 @@ class Employee:
     started_on: date
     clocked_in_at: datetime | None = None
     capabilities: dict[str, bool | None] = field(default_factory=dict)
+    workspaces: list[str] = field(default_factory=list)
+    villas: list[str] = field(default_factory=list)
+    clock_mode: Literal["manual", "auto", "disabled"] = "manual"
+    auto_clock_idle_minutes: int = 30
+    language: str = "fr"
+    weekly_availability: dict[str, tuple[str, str] | None] = field(default_factory=dict)
+    evidence_policy: Literal["inherit", "require", "optional", "forbid"] = "inherit"
 
 
 @dataclass
@@ -73,6 +81,9 @@ class Task:
     status: Literal["pending", "in_progress", "completed", "skipped"]
     checklist: list[dict] = field(default_factory=list)
     photo_evidence: Literal["disabled", "optional", "required"] = "disabled"
+    # Forward-looking policy used by the agent-first model; kept parallel to
+    # photo_evidence so existing templates/checks still work.
+    evidence_policy: Literal["inherit", "require", "optional", "forbid"] = "inherit"
     instructions_ids: list[str] = field(default_factory=list)
     template_id: str | None = None
     schedule_id: str | None = None
@@ -304,26 +315,50 @@ EMPLOYEES: list[Employee] = [
         "MA", "+33 6 12 34 56 78", "maria@example.com", date(2024, 3, 1),
         clocked_in_at=datetime(2026, 4, 15, 8, 12),
         capabilities=_caps(**{"chat.assistant": True}),
+        workspaces=["ws-bernard"],
+        villas=["p-villa-sud", "p-apt-3b"],
+        clock_mode="auto", auto_clock_idle_minutes=30, language="fr",
+        weekly_availability={
+            "mon": ("08:00", "17:00"),
+            "tue": ("08:00", "17:00"),
+            "wed": None,
+            "thu": ("08:00", "17:00"),
+            "fri": ("08:00", "13:00"),
+            "sat": None,
+            "sun": None,
+        },
     ),
     Employee(
         "e-arun", "Arun Patel", ["Driver"], ["p-villa-sud"],
         "AP", "+33 6 22 45 67 89", "arun@example.com", date(2024, 9, 14),
         capabilities=_caps(**{"time.geofence_required": True}),
+        workspaces=["ws-bernard"],
+        villas=["p-villa-sud"],
+        clock_mode="manual", language="en",
     ),
     Employee(
         "e-ben", "Ben Traoré", ["Gardener", "Pool care"], ["p-villa-sud"],
         "BT", "+33 6 33 56 78 90", "ben@example.com", date(2023, 5, 20),
         capabilities=_caps(),
+        workspaces=["ws-bernard"],
+        villas=["p-villa-sud"],
+        clock_mode="auto", auto_clock_idle_minutes=20, language="fr",
     ),
     Employee(
         "e-ana", "Ana Rossi", ["Housekeeper", "Cook"], ["p-apt-3b", "p-chalet"],
         "AR", "+33 6 44 67 89 01", "ana@example.com", date(2024, 11, 2),
         capabilities=_caps(**{"chat.assistant": True, "voice.assistant": True}),
+        workspaces=["ws-bernard"],
+        villas=["p-apt-3b", "p-chalet"],
+        clock_mode="auto", auto_clock_idle_minutes=30, language="fr",
     ),
     Employee(
         "e-sam", "Sam Leclerc", ["Handyman"], ["p-villa-sud", "p-chalet"],
         "SL", "+33 6 55 78 90 12", "sam@example.com", date(2025, 1, 9),
         capabilities=_caps(),
+        workspaces=["ws-bernard"],
+        villas=["p-villa-sud", "p-chalet"],
+        clock_mode="manual", language="fr",
     ),
 ]
 
@@ -652,6 +687,97 @@ HOUSEHOLD_SETTINGS: dict[str, Any] = {
 
 
 GUEST_STAY_ID = "s-3"  # the preview guest page renders this stay
+
+
+# ── Agent sidebar (manager) ─────────────────────────────────────────
+
+@dataclass
+class AgentMessage:
+    at: datetime
+    kind: Literal["agent", "user", "action"]
+    body: str
+
+
+@dataclass
+class AgentAction:
+    id: str
+    title: str
+    detail: str
+    risk: Literal["low", "medium", "high"]
+
+
+MANAGER_AGENT_LOG: list[AgentMessage] = [
+    AgentMessage(datetime(2026, 4, 15, 9, 14), "agent",
+        "Morning. Ben is on approved leave 18–21 Apr; pool service on the 18th "
+        "needs a cover — Sam is available. Shall I reassign?"),
+    AgentMessage(datetime(2026, 4, 15, 9, 15), "user",
+        "Yes, go ahead."),
+    AgentMessage(datetime(2026, 4, 15, 9, 16), "agent",
+        "Reassigned. Also: Maria flagged a burnt-out vacuum on the 12th. I drafted "
+        "a €449 replacement (Dyson V11). Review in the actions tray →"),
+    AgentMessage(datetime(2026, 4, 15, 10, 2), "user",
+        "What's the pending turnover for Apt 3B on the 18th?"),
+    AgentMessage(datetime(2026, 4, 15, 10, 2), "agent",
+        "Assigned to Ana, starts 12:00, 120 min. Checklist set, welcome basket in "
+        "stock. All evidence required. Nothing blocking."),
+]
+
+MANAGER_AGENT_ACTIONS: list[AgentAction] = [
+    AgentAction("aa-1", "Reassign pool check to Sam",
+                "Ben on leave 18–21; Sam is the configured backup.", "low"),
+    AgentAction("aa-2", "Purchase Dyson V11 — €449",
+                "Vacuum motor burnt out; Maria photo attached; budget remaining €820.", "medium"),
+    AgentAction("aa-3", "Draft April payslips",
+                "Period closed; all shifts reconciled. Totals within 4% of March.", "medium"),
+]
+
+
+# ── Agent chat (employee) ────────────────────────────────────────────
+
+EMPLOYEE_CHAT_LOG: list[AgentMessage] = [
+    AgentMessage(datetime(2026, 4, 15, 8, 10), "agent",
+        "Bonjour Maria ! Tu as 4 tâches aujourd'hui. La première : changer le linge "
+        "de la chambre principale à 10:30. Les draps lavande sont sur l'étagère 2."),
+    AgentMessage(datetime(2026, 4, 15, 8, 11), "user",
+        "Ok merci. I bought cleaning supplies yesterday — Carrefour, 12.40 EUR."),
+    AgentMessage(datetime(2026, 4, 15, 8, 12), "action",
+        "J'ai enregistré ton reçu Carrefour de 12,40 €. À approuver ?"),
+    AgentMessage(datetime(2026, 4, 15, 9, 2), "user",
+        "Le vacuum de Villa Sud fait un bruit bizarre, je pense qu'il va lâcher."),
+    AgentMessage(datetime(2026, 4, 15, 9, 3), "agent",
+        "Noté. Je propose à Élodie de commander un remplacement (Dyson V11, ~449 €) — "
+        "elle voit ta photo et décide. Tu peux continuer avec le balai pour la journée."),
+    AgentMessage(datetime(2026, 4, 15, 9, 48), "user",
+        "Ben est en congé le 18, qui prend la piscine ?"),
+    AgentMessage(datetime(2026, 4, 15, 9, 48), "agent",
+        "Sam couvre — c'est déjà acté ce matin. Rien à faire de ton côté."),
+]
+
+
+# ── History (archived side views per §14) ────────────────────────────
+
+HISTORY: dict[str, list[dict[str, str]]] = {
+    "chats": [
+        {
+            "id": "h-chat-1",
+            "title": "Fuite sous l'évier — Villa Sud",
+            "last_at": "Mar 28",
+            "summary": "Sam a changé le siphon; classé après vérification le lendemain.",
+        },
+        {
+            "id": "h-chat-2",
+            "title": "Welcome basket — Apt 3B",
+            "last_at": "Mar 12",
+            "summary": "Ajout de deux pâtisseries au panier; standard mis à jour.",
+        },
+        {
+            "id": "h-chat-3",
+            "title": "Clés perdues — Chalet Cœur",
+            "last_at": "Feb 22",
+            "summary": "Clés retrouvées dans la boîte à lettres du voisin. Boîte code changé.",
+        },
+    ],
+}
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

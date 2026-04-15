@@ -31,6 +31,17 @@
 </section>
 
 <section class="phone__section">
+  <h2 class="section-title">History</h2>
+  <a href="/history" class="stack-row">
+    <div>
+      <strong>Past tasks, chats, expenses, leaves</strong>
+      <div class="stack-row__sub">Browse what's been wrapped up →</div>
+    </div>
+    <span class="chip chip--ghost chip--sm">View</span>
+  </a>
+</section>
+
+<section class="phone__section">
   <h2 class="section-title">My leave</h2>
   <ul class="task-list">
     {% for lv in my_leaves %}
@@ -50,34 +61,56 @@
   <button class="btn btn--ghost">+ Request leave</button>
 </section>
 
+{% set _lang_label = {'fr': 'Français', 'en': 'English', 'es': 'Español', 'pt': 'Português'} %}
 <section class="phone__section">
-  <h2 class="section-title">Issues I reported</h2>
-  <ul class="task-list">
-    {% for i in my_issues %}
-      <li class="stack-row">
-        <div>
-          <strong>{{ i.title }}</strong>
-          <div class="stack-row__sub">{{ property_by_id(i.property_id).name }} · {{ i.area }}</div>
-        </div>
-        <span class="chip chip--sm chip--{{ {'open':'sand','in_progress':'sky','resolved':'moss'}[i.status] }}">{{ i.status.replace('_',' ') }}</span>
-      </li>
-    {% else %}
-      <li class="empty-state empty-state--quiet">Nothing reported.</li>
-    {% endfor %}
-  </ul>
+  <h2 class="section-title">Language</h2>
+  <div class="stack-row">
+    <div>
+      <strong>{{ _lang_label.get(employee.language, employee.language) }}</strong>
+      <div class="stack-row__sub">Used for the agent, digests and reminders.</div>
+    </div>
+    <button type="button" class="btn btn--ghost btn--sm">Change</button>
+  </div>
 </section>
 
+{% set _clock_chip = {'auto': 'moss', 'manual': 'ghost', 'disabled': 'rust'} %}
 <section class="phone__section">
-  <h2 class="section-title">Capabilities</h2>
-  <ul class="cap-list">
-    {% for key, val in employee.capabilities.items() %}
-      <li>
-        <span class="cap-list__key">{{ key }}</span>
-        <span class="chip chip--sm chip--{{ 'moss' if val else 'ghost' }}">{{ 'On' if val else 'Off' }}</span>
-      </li>
-    {% endfor %}
-  </ul>
+  <h2 class="section-title">Clock mode</h2>
+  <div class="stack-row">
+    <div>
+      <strong>Clock-in: {{ employee.clock_mode }}</strong>
+      <div class="stack-row__sub">
+        {% if employee.clock_mode == 'auto' %}Idle after {{ employee.auto_clock_idle_minutes }} min
+        {% elif employee.clock_mode == 'manual' %}Tap Clock in at the top of this page
+        {% else %}Clock-in disabled for your account
+        {% endif %}
+      </div>
+    </div>
+    <span class="chip chip--sm chip--{{ _clock_chip.get(employee.clock_mode, 'ghost') }}">{{ employee.clock_mode }}</span>
+  </div>
+</section>
+
+{% set _days = [('mon', 'Mon'), ('tue', 'Tue'), ('wed', 'Wed'), ('thu', 'Thu'), ('fri', 'Fri'), ('sat', 'Sat'), ('sun', 'Sun')] %}
+<section class="phone__section">
+  <h2 class="section-title">Weekly availability</h2>
   <p class="muted">Read-only. Ask the manager to change these.</p>
+  <div class="avail-grid">
+    {% for key, label in _days %}
+      {% set slot = employee.weekly_availability.get(key) %}
+      {% if slot %}
+        <div class="avail-cell">
+          <span class="avail-cell__day">{{ label }}</span>
+          <span class="avail-cell__hours">{{ slot[0] }}</span>
+          <span class="avail-cell__hours">{{ slot[1] }}</span>
+        </div>
+      {% else %}
+        <div class="avail-cell avail-cell--off">
+          <span class="avail-cell__day">{{ label }}</span>
+          <span class="avail-cell__hours">Off</span>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
 </section>
 
 <section class="phone__section">
@@ -92,9 +125,5 @@
     </li>
   </ul>
   <button class="btn btn--moss">+ Register another device</button>
-</section>
-
-<section class="phone__section">
-  <a href="/switch/manager" class="muted-link">Switch to manager preview →</a>
 </section>
 {% endblock %}

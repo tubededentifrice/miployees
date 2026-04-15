@@ -11,7 +11,7 @@ phone's notes app.
 ```
 shift
 ├── id
-├── household_id
+├── workspace_id
 ├── employee_id
 ├── property_id              # optional; unassigned shifts for remote drivers, etc.
 ├── status                   # enum: open | closed | disputed (§02)
@@ -36,7 +36,16 @@ shift (see "Open shift recovery").
 
 ### Clock-in / clock-out
 
-Capabilities (`time.clock_in`, `time.geofence_required`) gate UI.
+Driven by the `time.clock_mode` capability (§05), which takes one of
+three values: `manual`, `auto`, `disabled`. The companion capability
+`time.auto_clock_idle_minutes` (default `30`) controls the idle
+timer used by `auto` mode. `time.geofence_required` and the legacy
+`time.clock_in` capability still gate UI affordances and are
+evaluated alongside the mode.
+
+#### `manual` mode (default)
+
+Same behaviour as today:
 
 - **Clock-in.** Employee taps a big green button on the PWA "home"
   screen; the server records `started_at = now()`, property defaulted
@@ -50,6 +59,70 @@ Capabilities (`time.clock_in`, `time.geofence_required`) gate UI.
 - **QR kiosk.** Managers can print a property-specific QR that opens
   a simple clock-in/out page with passkey assertion. Useful when
   staff share a family phone.
+
+#### `auto` mode
+
+The employee never taps a clock-in button. The server derives the
+shift from work activity:
+
+- The **first** checklist tick or task action (start, complete,
+  comment, evidence upload) of the day opens a shift with
+  `started_at = now()` and `method_in = agent`. The shift's
+  `property_id` is derived from that first-ticked task's villa.
+- Each subsequent action extends an "idle timer" on the open shift.
+  When the timer exceeds `time.auto_clock_idle_minutes` with no
+  further action, the worker closes the shift at
+  `ended_at = last_action_at`, `method_out = agent`.
+- If a subsequent checklist tick happens on a task at a **different
+  villa**, the current shift is closed at the previous action's
+  timestamp and a **new shift segment** is opened on the new villa.
+  Shift segments are independent `shift` rows — one employee can
+  accumulate several segments in a day.
+- The PWA shows an ambient "You're on the clock since 08:12 at
+  Villa Sud" indicator; the employee can still tap "Clock out now"
+  to close the shift early, which overrides the idle timer.
+
+#### `disabled` mode
+
+Hours are not tracked — useful for a salaried manager or a family
+friend who helps out. No shift rows are created; the `time.clock_in`
+affordance is hidden; payroll for this employee must use a
+`monthly_salary` or `per_task` pay rule (§ "Pay rules") because
+`hourly` has no hours to multiply.
+
+#### Disputed auto-close
+
+If the idle timer closes an `auto` shift but the employee resumes
+activity on the **same local calendar day** before midnight, the
+worker **re-opens** the shift (`status = open`, `ended_at = NULL`)
+and flags the interval between the auto-close timestamp and the
+resumed action as **disputed**:
+
+- The shift gets an additional `dispute_gap` row (or a flag on the
+  shift, recorded in `audit_log`) describing the auto-closed window
+  `[auto_close_at, resumed_at)` so a manager can decide whether
+  those minutes count.
+- The shift's `status` transitions to `disputed` on re-open and the
+  manager is notified via the daily digest. Manager resolution is
+  either "keep the gap as a break" (shift stays re-opened; gap
+  subtracted) or "count it as worked" (shift closed/re-closed with
+  the gap included).
+- Cross-midnight resumes do **not** re-open; the employee is
+  treated as starting a fresh shift on the new day.
+
+#### Per-villa `clock_mode` override
+
+A villa can override the employee's default mode. The resolution
+order is: **villa override → employee capability → workspace
+default**. A villa that sets `clock_mode = manual` forces manual
+clock-in/out even for employees whose default is `auto` (useful
+when a specific property has a shared kiosk or strict audit needs).
+A villa set to `auto` likewise forces auto for visiting employees.
+`disabled` at the villa layer is legal but unusual — it turns off
+tracking on that property even for hourly staff.
+
+The resolved mode is surfaced on the task detail screen so the
+employee knows whether their taps will produce shift rows.
 
 ### Manager adjustments
 
@@ -168,13 +241,13 @@ auto-picked, to avoid surprise.
 
 ## Pay period
 
-`pay_period {id, household_id, employee_id?, starts_on, ends_on,
+`pay_period {id, workspace_id, employee_id?, starts_on, ends_on,
 frequency, status}`. `status` is the canonical `pay_period_status`
 enum in §02 (`open | locked | paid`). `employee_id` is populated when
-a household has divergent per-employee pay rules; otherwise null
+a workspace has divergent per-employee pay rules; otherwise null
 (the period applies to all employees).
 
-Periods are created per household based on the household's default
+Periods are created per workspace based on the workspace's default
 frequency (monthly by default; bi-weekly supported). Periods may
 overlap across employees when their pay rules diverge.
 
@@ -231,7 +304,7 @@ Rendered with WeasyPrint from a Jinja template. Line items include:
 - Expense reimbursements (line per approved claim, linking the
   claim id, grouped by payout destination — see "Payout
   destinations" below).
-- Deductions (rare in a household context; we leave a line for
+- Deductions (rare in a workspace context; we leave a line for
   manager-entered adjustments with a mandatory reason).
 
 ### Distribution
@@ -242,7 +315,7 @@ Email to the employee with the PDF attached, or a download link
 ## Payout destinations
 
 An employee can receive **pay** and **expense reimbursements** at
-different destinations. A common case: the household opens a small
+different destinations. A common case: the workspace opens a small
 pre-funded account in the employee's name for operational expenses
 so they don't have to front cash; reimbursements land there while
 their main paycheque lands in their personal account.
@@ -259,7 +332,7 @@ someone's pay. The rules below are written with that threat in mind.
 | field          | type     | notes                                                         |
 |----------------|----------|---------------------------------------------------------------|
 | id             | ULID PK  |                                                               |
-| household_id   | ULID FK  | scoping                                                       |
+| workspace_id   | ULID FK  | scoping                                                       |
 | employee_id    | ULID FK  | **row belongs to exactly one employee**; every read/write validates the caller has rights to that employee |
 | label          | text     | "Personal BNP", "Expense float — Revolut" — display only      |
 | kind           | enum     | `bank_account | card_reload | wallet | cash | other`          |
@@ -314,7 +387,7 @@ webhook. In addition:
   approval. `payout_destination.create`, `.update`,
   `.set_default_pay`, `.set_default_reimbursement`, and
   `expense_claim.set_destination_override` are added to §11's
-  approvable-action list unconditionally — no household setting
+  approvable-action list unconditionally — no workspace setting
   disables the gate.
 - Setting or changing an `employee.pay_destination_id` or
   `employee.reimbursement_destination_id` to a row that does not yet
@@ -330,7 +403,7 @@ webhook. In addition:
   reimbursements land. If null, falls back to `pay_destination_id`.
 
 Both must reference a non-archived destination whose
-`employee_id = employee.id` and whose `household_id` matches — the
+`employee_id = employee.id` and whose `workspace_id` matches — the
 FK is enforced with a `CHECK` trigger in SQLite and a constraint
 function in Postgres. Attempting to set a pointer to another
 employee's destination is a 422.
@@ -352,7 +425,7 @@ An `expense_claim` carries an optional
 the server validates that the referenced destination:
 
 - has `employee_id = claim.employee_id`,
-- has `household_id = claim.household_id`,
+- has `workspace_id = claim.workspace_id`,
 - is not archived.
 
 The approval UI lets the manager pick any destination satisfying
@@ -595,7 +668,7 @@ A claim becomes `reimbursed` when the containing payslip moves to
   - <0.6 left blank with "review" placeholder, never pre-filled.
 - All extractions recorded in `llm_call` (§11). Cost is attributed to
   `expenses.autofill` capability.
-- If the household disabled `expenses.autofill_llm` for the employee
+- If the workspace disabled `expenses.autofill_llm` for the employee
   or the capability globally, the photo is attached but no extraction
   runs.
 - When a user edits an OCR line, `expense_line.source` stays `ocr`

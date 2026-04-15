@@ -1,0 +1,63 @@
+<aside class="desk__agent {% if agent_sidebar_collapsed %}desk__agent--collapsed{% endif %}" data-agent-sidebar aria-label="Agent sidebar">
+  <button type="button" class="desk__agent-head" data-agent-toggle aria-expanded="{{ 'false' if agent_sidebar_collapsed else 'true' }}" aria-controls="agent-body">
+    <span class="desk__agent-title">Agent</span>
+    <span class="desk__agent-status">
+      <span class="desk__agent-dot" aria-hidden="true"></span>
+      <span>online</span>
+    </span>
+    <span class="desk__agent-chevron" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+    </span>
+  </button>
+
+  <div class="desk__agent-body" id="agent-body" data-agent-body>
+    <div class="agent-log" role="log" aria-live="polite" data-lazy-chat="manager" data-chat-page-size="20">
+      {% for msg in manager_agent_log %}
+      <div class="agent-msg agent-msg--{{ msg.kind }}">
+        <span class="agent-msg__body">{{ msg.body }}</span>
+        <span class="agent-msg__time">{{ msg.at.strftime('%H:%M') }}</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if manager_agent_actions %}
+    <div class="agent-actions" aria-label="Pending agent actions">
+      <div class="agent-actions__title">
+        <span>Pending approvals</span>
+        <span class="agent-actions__count">{{ manager_agent_actions|length }}</span>
+      </div>
+      <div class="agent-actions__list">
+        {% for action in manager_agent_actions %}
+        <div class="agent-action agent-action--{{ action.risk }}">
+          <div class="agent-action__title">{{ action.title }}</div>
+          <div class="agent-action__detail">{{ action.detail }}</div>
+          <div class="agent-action__ctas">
+            <form method="post" action="/agent/manager/action/{{ action.id }}/approve" class="agent-action__form">
+              <button type="submit" class="btn btn--approve">Approve</button>
+            </form>
+            <form method="post" action="/agent/manager/action/{{ action.id }}/deny" class="agent-action__form">
+              <button type="submit" class="btn btn--deny">Deny</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <form class="agent-composer" method="post" action="/agent/manager/message" data-chat-composer>
+      <div class="agent-composer__field">
+        <textarea name="body" rows="1" placeholder="Ask the agent…" aria-label="Message agent" data-chat-textarea></textarea>
+      </div>
+      <button type="submit" class="agent-composer__send" aria-label="Send">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m4 12 16-8-6 18-3-8-7-2Z"/>
+        </svg>
+      </button>
+    </form>
+  </div>
+</aside>
+
+<script src="/static/chat.js" defer></script>

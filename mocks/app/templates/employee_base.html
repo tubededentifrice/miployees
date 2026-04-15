@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block body_class %}surface--employee{% endblock %}
 {% block layout %}
-<main class="phone">
+<main class="phone {% block phone_class %}{% endblock %}">
   <header class="phone__header">
     <div class="phone__greet">
       <span class="phone__hello">Hi, {{ employee.name.split(' ')[0] }}</span>
@@ -20,12 +20,6 @@
 
   {% block phone_body %}{% endblock %}
 
-  {% if employee.capabilities.get('chat.assistant') %}
-    <a href="/messages" class="chat-fab" aria-label="Open assistant">
-      <span class="chat-fab__glyph">✦</span>
-    </a>
-  {% endif %}
-
   <nav class="phone__tabs" aria-label="Bottom navigation">
     <a href="/today" class="tab {% if request.url.path == '/today' %}tab--active{% endif %}">
       <span class="tab__glyph" aria-hidden="true">◎</span><span>Today</span>
@@ -33,13 +27,13 @@
     <a href="/week" class="tab {% if request.url.path == '/week' %}tab--active{% endif %}">
       <span class="tab__glyph" aria-hidden="true">⋮⋮</span><span>Week</span>
     </a>
-    <a href="/issues/new" class="tab {% if request.url.path.startswith('/issues') %}tab--active{% endif %}">
-      <span class="tab__glyph" aria-hidden="true">!</span><span>Issues</span>
+    <a href="/chat" class="tab {% if request.url.path == '/chat' %}tab--active{% endif %}">
+      <span class="tab__glyph" aria-hidden="true">✦</span><span>Chat</span>
     </a>
-    <a href="/expenses" class="tab {% if request.url.path == '/expenses' %}tab--active{% endif %}">
+    <a href="/my/expenses" class="tab {% if request.url.path == '/my/expenses' %}tab--active{% endif %}">
       <span class="tab__glyph" aria-hidden="true">€</span><span>Expenses</span>
     </a>
-    <a href="/me" class="tab {% if request.url.path == '/me' or request.url.path == '/shifts' %}tab--active{% endif %}">
+    <a href="/me" class="tab {% if request.url.path == '/me' or request.url.path == '/shifts' or request.url.path == '/history' %}tab--active{% endif %}">
       <span class="tab__glyph" aria-hidden="true">◌</span><span>Me</span>
     </a>
   </nav>

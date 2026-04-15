@@ -78,12 +78,22 @@ Motion:
 /today                    → today's tasks (home)
 /week                     → week list
 /task/<id>                → task detail + complete/skip/comment/evidence
-/issues/new               → report an issue
-/messages                 → comments with open threads
-/shifts                   → clock in/out + history
+/chat                     → full agent conversation (inbox for all task
+                            notes, issue reports, expense photos, Q&A)
 /expenses                 → submit + list own
-/me                       → profile + passkeys + capabilities (read only)
+/me                       → profile + language + passkeys
+/history                  → Tasks / Chats / Expenses / Leaves tabs
+/issues/new               → fallback issue form (still reachable from
+                            chat attach flow; no footer entry)
+/shifts                   → clock in/out + history (manual mode only;
+                            hidden when `time.clock_mode = auto | disabled`)
 ```
+
+**Footer (bottom nav):** exactly five items —
+`Today · Week · Chat · Expenses · Me`. The `Issues` tab from v0 is
+**removed**; issues are filed through the chat page's attach flow
+(which emits to `/issues/new` under the hood). There is **no
+floating chat FAB**; chat is a first-class footer tab.
 
 ### Manager
 
@@ -108,8 +118,42 @@ Everything above plus:
 /audit                    → audit log viewer
 /webhooks                 → subscriptions
 /llm                      → model assignments, call log, budget
-/settings                 → household settings
+/settings                 → workspace settings
 ```
+
+### Manager desktop shell
+
+The desktop manager UI is framed by three layout regions:
+
+- `.desk__nav` — left-hand primary navigation (the list above).
+- `.desk__main` — central content pane.
+- `.desk__agent` — right-hand sidebar hosting the **workspace agent**
+  conversation (§11 "Manager-side agent"). Components:
+    - A compact header with the agent title and an **online
+      indicator**. The active model assignment for capability
+      `chat.manager` (default `google/gemma-4-31b-it`) is *not*
+      surfaced here — the model picker lives on `/llm` (§11), not
+      in the chat surface, to keep the conversation UI focused.
+    - The running **chat log** with the workspace agent — markdown
+      bubbles, voice-input button when capability is on. The log
+      lazy-loads older messages when the user scrolls up and pins
+      to the latest message on open.
+    - A **pending-actions tray** listing `agent_action` rows that
+      the agent has queued for approval (§11); each row has
+      `approve` / `reject` buttons wired to the same endpoints as
+      `/approvals`. The tray sits between the log and the
+      composer, sized to its content, so approvals are always
+      visible without scrolling the sidebar.
+    - A **composer** fixed at the bottom of the sidebar — the
+      manager can always ask the agent something without scrolling
+      or hunting.
+    - A **collapse toggle** so the sidebar can be hidden on narrow
+      laptops; collapsed state renders as a thin vertical rail and
+      is persisted per user.
+
+The sidebar is load-bearing for the agent-first invariant (§11):
+any verb the manager can click in `.desk__nav` or `.desk__main` can
+also be requested of the agent in `.desk__agent`.
 
 ### Calendar surfaces
 
@@ -207,8 +251,9 @@ The most-used screen. Anatomy:
 - **Now:** the task with the nearest start time; full details inline.
 - **Upcoming today:** list of collapsed cards.
 - **Completed today:** collapsed count + expandable list.
-- **Bottom nav** (PWA): Today · Week · Issues · Expenses · Me (+
-  Chat bubble if capability).
+- **Bottom nav** (PWA): Today · Week · Chat · Expenses · Me. No
+  floating chat FAB; chat is the third footer tab. The Issues tab
+  from v0 is removed — attach an issue from the chat page.
 
 Each task card shows:
 
@@ -225,9 +270,63 @@ Each task card shows:
 - Big primary CTA sticky to the top on scroll.
 - Checklist as tappable rows; each tap saves via HTMX.
 - Instructions accordion (area → property → global).
-- Comments threaded; `@mentions` dropdown.
+- Task-scoped chat (§06 "Task notes are the agent inbox") embedded
+  inline; the same conversation lives on `/chat` filtered to this
+  task.
 - Evidence: photo picker, note text area.
 - Skip flow opens a modal with reason textarea.
+
+## Chat page (employee)
+
+`/chat` is a full agent conversation — the employee's **universal
+inbox** for task notes, comments, issue reports, expense photos,
+and Q&A grounded in instructions (§07).
+
+- Voice-input mic button (capability-gated on `voice.employee`);
+  audio transcribed via `voice.transcribe` before dispatch.
+- **Auto-language detection** on inbound: the employee writes in
+  their own language; the agent stores both the original and the
+  workspace-language translation per §10. The employee always sees
+  their own original.
+- Issue reporting: the attach flow includes a "Report as issue"
+  button that routes the thread segment into `/issues/new`.
+- Expense uploads: the attach flow includes "Receipt" → camera
+  picker → background `expenses.autofill` (§09).
+- Task notes: when the employee opens a task, a sub-thread filtered
+  to that task is shown; messages written there also appear on the
+  task detail inline chat.
+
+No DMs, no group chats outside a task thread — just the one
+per-employee conversation with the workspace agent.
+
+## Me page (employee)
+
+Simplified from v0. Contents:
+
+- **Profile** — display name, avatar, timezone, emergency contact.
+- **Language preference** — BCP-47 picker (§05 `languages[0]`),
+  used as the agent's reply language and the auto-translation
+  source (§10, §18).
+- **Passkeys** — list + "add passkey" + revoke.
+
+Explicitly **not** on the Me page:
+
+- No capabilities list (capabilities are manager-configured; the
+  employee sees them implicitly through the features that work).
+- No "switch to manager preview" link.
+
+## History (employee)
+
+`/history` is a new employee route with four tabs:
+
+- **Tasks** — completed + skipped + cancelled tasks with filters.
+- **Chats** — archived chat topics (post-compaction; full-text
+  searchable, see §11 "Conversation compaction").
+- **Expenses** — all submitted claims, with states.
+- **Leaves** — one-off `employee_leave` rows and upcoming weekly-
+  availability exceptions.
+
+History is read-only.
 
 ## Manager screens
 
@@ -252,6 +351,11 @@ Each task card shows:
 - Color never the sole indicator of state (icons + text too).
 - No layout jumps > 100ms; loading states use `aria-busy`.
 - Buttons are buttons; links are links; no `div` onclick.
+- **Click targets are at least 44x44 CSS pixels** on any interactive
+  element — back-links, footer tabs, task-card CTAs, checklist
+  ticks, chat mic, icon-only buttons. Icons inside smaller graphic
+  boundaries get transparent padding to reach the 44x44 minimum.
+  This is the floor; many primary CTAs are larger.
 - Test with NVDA on Windows, VoiceOver on iOS, TalkBack on Android
   in the release playbook.
 

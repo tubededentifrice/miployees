@@ -5,6 +5,18 @@ interface**. It is a thin client over the REST API (§12) — no
 server-side logic, no local DB, no local state beyond config profiles.
 Every command can be executed against a remote deployment.
 
+## Agent-first invariant
+
+**Every human UI action is also a CLI command.** There is no
+manager- or employee-facing verb in §14 that cannot be invoked from
+this CLI (or its underlying REST endpoint in §12). The manager-side
+and employee-side embedded chat agents in §11 expose the CLI + REST
+surface as their tool set — so anything a human can do in the UI,
+an agent can do from chat, subject to the approval gates in §11.
+
+See §11 "The agent-first invariant" for the broader principle and
+§14 for how each UI surface maps back to a command.
+
 ## Why CLI-first for agents
 
 Agents driving HTTP directly end up spending hundreds of tokens on
@@ -237,11 +249,50 @@ miployees audit
 miployees admin
   init --email <owner-email>                  # bootstrap (§16)
   recover --email <manager-email>             # emit magic link to stdout
+  rotate-root-key --new-key-file <path> | --new-key-stdin
   backup --to <path>
   restore --from <path>
   purge --dry-run                             # GDPR hard-delete flow
   version
 ```
+
+### Host-CLI-only admin commands vs never-agent endpoints
+
+Two distinct security classes coexist in this CLI — easy to confuse,
+important to keep separate:
+
+1. **Host-CLI-only admin commands.** No HTTP surface at all, agent
+   or human. The verbs below are only callable from
+   `miployees admin …` on the deployment host, with shell access to
+   the running service's environment. The approval pipeline (§11)
+   does not apply because there is no request to intercept. v1
+   members:
+
+   - `miployees admin rotate-root-key` — envelope-key rotation
+     (§15).
+   - `miployees admin recover` — offline lockout magic-link
+     issuance (§03).
+   - `miployees admin purge` — hard-delete per-person payload
+     (§02, §15).
+
+2. **Never-agent endpoints.** These **do** have an HTTP surface,
+   but they refuse agent tokens unconditionally and are **not
+   offered to either embedded agent as a tool** — the tool
+   descriptor is filtered out at session start. Approval does not
+   help, because the approval pipeline would persist the decrypted
+   response in `agent_action.result_json`. v1 member:
+
+   - `POST /payslips/{id}/payout_manifest` — full decrypted
+     account numbers for treasury use (§09).
+
+   The CLI exposes the endpoint (a manager can still curl/CLI it
+   from their workstation with a passkey session), but the manager-
+   side agent's tool surface omits it. See §11 "Never-agent
+   endpoints" for the canonical list and rationale.
+
+These two classes together form the **short-list of verbs the
+agent cannot reach** — everything else is agent-reachable, subject
+to the approval gates in §11.
 
 ## Streaming and piping
 

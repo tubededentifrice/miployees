@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+.env
+
+# Editors / OS
+.DS_Store
+*.swp
+*.swo
+
+# Claude / tooling scratch
+.claude/scheduled_tasks.lock
+.playwright-mcp/
+
+# Ad-hoc preview screenshots and recordings dropped at the repo root
+# (the `/` prefix scopes this to the root only, so legitimate UI
+# assets under mocks/app/static/, docs/, or /record-demo GIFs under
+# their documented paths are *not* affected).
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+/*.mp4
+/*.webm

@@ -10,7 +10,7 @@ room/area scope, and can be attached to tasks.*
 
 ## Properties of the system
 
-- **Scope-aware**: three scopes — `global` (whole household),
+- **Scope-aware**: three scopes — `global` (whole workspace),
   `property`, `area`.
 - **Attachable**: can be linked to a task template, a schedule, a
   specific task, or a role. Links are the *only* connection between an
@@ -36,7 +36,7 @@ room/area scope, and can be attached to tasks.*
 | field              | type    | notes                                 |
 |--------------------|---------|---------------------------------------|
 | id                 | ULID PK |                                       |
-| household_id       | ULID FK |                                       |
+| workspace_id       | ULID FK |                                       |
 | scope              | enum    | `global | property | area`            |
 | property_id        | ULID FK?| required iff scope != global          |
 | area_id            | ULID FK?| required iff scope == area            |
@@ -166,10 +166,22 @@ markdown compilation.
 version: when the assistant is invoked in a task context, the in-scope
 instructions are injected into the system prompt as a labeled
 knowledge block. Instruction bodies are never sent upstream unless
-the household's `llm.send_instructions` setting is on (default:
+the workspace's `llm.send_instructions` setting is on (default:
 **on**, as they are manager-authored and rarely sensitive). Global
 instructions are injected into every assistant call even without a
 task context.
+
+The **employee-side chat agent** (§11) is a first-class reader of
+instructions. When an employee asks a question in the chat page —
+"how do I reset the pool pump?", "what temperature for the linens?",
+"what do I do if the oven alarm goes off?" — the agent resolves the
+applicable instruction set using the same scope rules above (area >
+property > global, plus link-based overrides), injects the relevant
+bodies into its context, and answers inline. When the employee is
+on a task screen, the agent also reads the instructions linked via
+that task's template/schedule/role. Instructions are therefore the
+primary grounding context for the employee agent; missing or out-of-
+date instructions directly degrade answer quality.
 
 ## Search
 

@@ -2,14 +2,22 @@
 
 ## Employee
 
-A person who performs tasks for the household.
+A person who performs tasks for one or more workspaces.
+
+Employees can belong to **many properties** (across one or more
+workspaces) **and many workspaces (via villas)**. The explicit
+membership rows live in `employee_villa(employee_id, villa_id)` and
+`employee_workspace(employee_id, workspace_id)` — see §02. The
+`employee` row itself carries a "primary workspace" (the one that
+created it), but authorisation, listing, and RLS all key off the
+junction tables.
 
 ### Fields
 
 | field              | type      | notes                            |
 |--------------------|-----------|----------------------------------|
 | id                 | ULID PK   |                                  |
-| household_id       | ULID FK   |                                  |
+| workspace_id       | ULID FK   | primary workspace; additional memberships live in `employee_workspace` (§02) |
 | display_name       | text      | shown to everyone                |
 | full_legal_name    | text      | payroll only; manager-visible    |
 | email              | text      | magic links and digest           |
@@ -51,9 +59,9 @@ docs, use archive/reinstate.
 
 ## Role
 
-A role is a named capability-bundle the household uses: maid, cook,
+A role is a named capability-bundle the workspace uses: maid, cook,
 driver, gardener, pool_tech, handyman, nanny, personal_assistant,
-concierge, etc. Roles are **household-defined** — the system ships a
+concierge, etc. Roles are **workspace-defined** — the system ships a
 starter set but they are regular rows, renameable and addable.
 
 ### Fields
@@ -61,8 +69,8 @@ starter set but they are regular rows, renameable and addable.
 | field             | type     | notes                                   |
 |-------------------|----------|-----------------------------------------|
 | id                | ULID PK  |                                         |
-| household_id      | ULID FK  |                                         |
-| key               | text     | stable slug: `maid`, `cook`. Unique per `(household_id, key)`. Editable but changing it audit-logs as `role.rekey` and breaks external references that hard-code the slug. |
+| workspace_id      | ULID FK  |                                         |
+| key               | text     | stable slug: `maid`, `cook`. Unique per `(workspace_id, key)`. Editable but changing it audit-logs as `role.rekey` and breaks external references that hard-code the slug. |
 | name              | text     | display: "Maid", "Cuisinier/ère"        |
 | description_md    | text     |                                         |
 | default_capabilities | jsonb | capabilities enabled by default (see below) |
@@ -107,7 +115,7 @@ might work both Villa Sud and Apt 3B at different rates.
 | property_pay_rule_id     | ULID FK? | rarer: per-property rate override       |
 
 If no property assignments exist, the employee_role is eligible for
-**all** properties of the household — useful for generalists.
+**all** properties of the workspace — useful for generalists.
 
 ## Capabilities
 
@@ -121,6 +129,8 @@ itself may be unset, meaning "feature off".
 | key                           | default off/on | meaning                                        |
 |-------------------------------|----------------|-------------------------------------------------|
 | `time.clock_in`               | off            | Can clock in/out                                |
+| `time.clock_mode`             | `manual`       | `manual | auto | disabled` — see §09. `manual`: employee taps clock-in/out. `auto`: first checklist tick or task action of the day opens a shift; idle timer closes it. `disabled`: hours not tracked. |
+| `time.auto_clock_idle_minutes`| `30`           | Integer; inactivity window (minutes) that closes an `auto` shift. Ignored unless `time.clock_mode = auto`. |
 | `time.geofence_required`      | off            | Must be within property radius to clock in     |
 | `time.manager_edit_only`      | off            | Shifts editable only by manager                 |
 | `tasks.photo_evidence`        | off            | Can attach photos to completions                |
@@ -162,6 +172,28 @@ back to `null` (or deleting it) re-enables inheritance.
 Each capability is shown as a three-state control: **On / Off /
 Inherit**, with a live preview of the resolved value underneath. The
 same blob drives both manager UI and API.
+
+### Evidence-policy stack
+
+A separate resolution stack, parallel to the capability stack above,
+computes whether a task needs photo evidence. Four layers, evaluated
+root-first:
+
+1. **Workspace default** — always concrete (`require | optional |
+   forbid`), seeded at first boot; never `inherit`.
+2. **Villa** (`property`) — `inherit | require | optional | forbid`.
+3. **Employee** (`employee_role` or a per-employee override) —
+   `inherit | require | optional | forbid`.
+4. **Task** (template-derived, with per-task override) —
+   `inherit | require | optional | forbid`.
+
+Walking from the workspace root outward, the first **concrete**
+(non-`inherit`) value wins; layers set to `inherit` pass through.
+Non-root layers default to `inherit`, so the common case is "follow
+the workspace default unless a villa, an employee, or a specific
+task deliberately narrows or widens the rule." See §06 "Evidence
+policy inheritance" for the per-task resolution and §09 for how
+`require | optional | forbid` interact with completion.
 
 ## Permissions (web UI)
 

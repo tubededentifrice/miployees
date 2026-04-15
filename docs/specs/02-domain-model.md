@@ -45,18 +45,40 @@
 
 ### Tenancy seam
 
-Every user-editable row carries `household_id CHAR(26) NOT NULL`.
+Every user-editable row carries `workspace_id CHAR(26) NOT NULL`.
+(v0 called this column `household_id`; see the "Migration" note at
+the bottom of this document.)
 
-**Uniqueness constraints are scoped to `household_id` from day one.**
+**Uniqueness constraints are scoped to `workspace_id` from day one.**
 Any `UNIQUE` on a user-editable column is a composite unique on
-`(household_id, <col>)`. Examples: `role.key`, `instruction.slug`,
+`(workspace_id, <col>)`. Examples: `role.key`, `instruction.slug`,
 `property.name`, `inventory_item.sku`. System-seeded catalog values
 (capability keys, webhook event types) are globally unique because
 they are not user-editable.
 
-v1 ships with a single household row seeded at first boot; multi-
+v1 ships with a single workspace row seeded at first boot; multi-
 tenancy is then purely a matter of allowing more rows and adding RLS
 in Postgres (§15). No code change elsewhere.
+
+### Villa belongs to many workspaces
+
+A `property` (informally "villa") is **not** owned by a single
+workspace. The same physical place can appear in more than one
+workspace simultaneously — for example a rental manager's workspace
+and the owning family's workspace both see the same house. The link
+is carried by the junction table `villa_workspace` below. Every
+property still has a "primary" workspace (the one that created it),
+but authorisation is expressed against the junction, not the primary.
+
+### Employee belongs to many workspaces
+
+Employees can work across villas that live in different workspaces.
+Rather than derive workspace membership at query time, the schema
+stores it explicitly in `employee_workspace`. Membership is derived
+(an employee with at least one assigned villa in workspace W has a
+row `employee_workspace(employee_id, W)`) but the materialised row
+keeps uniqueness constraints, RLS filters (§15), and "list employees
+of this workspace" queries fast and auditable.
 
 ## Entity catalog
 
@@ -65,10 +87,13 @@ prose list below).
 
 ```mermaid
 erDiagram
-    HOUSEHOLD ||--o{ PROPERTY : owns
-    HOUSEHOLD ||--o{ MANAGER : employs
-    HOUSEHOLD ||--o{ EMPLOYEE : employs
-    HOUSEHOLD ||--o{ API_TOKEN : issues
+    WORKSPACE ||--o{ VILLA_WORKSPACE : includes
+    WORKSPACE ||--o{ EMPLOYEE_WORKSPACE : includes
+    WORKSPACE ||--o{ MANAGER : employs
+    WORKSPACE ||--o{ API_TOKEN : issues
+
+    VILLA_WORKSPACE }o--|| PROPERTY : links
+    EMPLOYEE_WORKSPACE }o--|| EMPLOYEE : links
 
     PROPERTY ||--o{ AREA : has
     PROPERTY ||--o{ STAY : hosts
@@ -112,7 +137,7 @@ erDiagram
 
     WEBHOOK_SUBSCRIPTION ||--o{ WEBHOOK_DELIVERY : records
 
-    AUDIT_LOG }o--|| HOUSEHOLD : within
+    AUDIT_LOG }o--|| WORKSPACE : within
 ```
 
 Entities in the diagram but not detailed inline here have their
@@ -160,14 +185,52 @@ state machines in detail. This file holds only the shared rules.
 
 ## Shared tables
 
-### `households`
+### `workspaces`
+
+(v0 name: `households`. The rename happens in the same migration that
+introduces `workspace_id` on every user-editable table.)
 
 | column        | type        | notes                              |
 |---------------|-------------|------------------------------------|
 | id            | ULID PK     | seeded at first boot               |
 | name          | text        | displayed in UI                    |
+| default_language | text     | BCP-47; used by §10 auto-translation and digest prose |
 | created_at    | tstz        |                                    |
 | settings_json | jsonb/text  | global instruction bank anchor, etc|
+
+### `villa_workspace`
+
+Junction table. A villa (`property`) can belong to more than one
+workspace. One row per `(villa_id, workspace_id)` pair.
+
+| column        | type    | notes                              |
+|---------------|---------|------------------------------------|
+| villa_id      | ULID FK | references `property.id`           |
+| workspace_id  | ULID FK | references `workspace.id`          |
+| added_at      | tstz    |                                    |
+| added_by_kind | text    | `manager | agent | system`         |
+| added_by_id   | ULID?   | nullable for system seeds          |
+
+Primary key `(villa_id, workspace_id)`. On soft-delete of a villa
+the junction rows remain (history is preserved); on workspace delete
+the rows are hard-dropped.
+
+### `employee_workspace`
+
+Junction table. An employee is materialised in every workspace they
+belong to; membership is derived from their assigned villas via
+`employee_villa` (§05) plus any direct membership a manager adds.
+
+| column        | type    | notes                              |
+|---------------|---------|------------------------------------|
+| employee_id   | ULID FK |                                    |
+| workspace_id  | ULID FK |                                    |
+| source        | text    | `villa` (derived) \| `direct` (manager-added) |
+| added_at      | tstz    |                                    |
+
+Primary key `(employee_id, workspace_id)`. A worker job refreshes
+`source = 'villa'` rows whenever an `employee_villa` row is
+inserted/removed, in the same transaction.
 
 ### `audit_log`
 
@@ -176,7 +239,7 @@ Append-only. Written in the same transaction as every mutation.
 | column             | type    | notes                                 |
 |--------------------|---------|---------------------------------------|
 | id                 | ULID PK |                                       |
-| household_id       | ULID FK |                                       |
+| workspace_id       | ULID FK |                                       |
 | correlation_id     | ULID    | request-level by default; groups multi-row edits |
 | occurred_at        | tstz    |                                       |
 | actor_kind         | text    | `manager`, `employee`, `agent`, `system` |
@@ -198,7 +261,7 @@ requests into one logical workflow may pass the same
 semantics. `audit_log` rows emitted by a single transaction always
 share the same `correlation_id`.
 
-Retention: default 2 years; configurable per household. Worker job
+Retention: default 2 years; configurable per workspace. Worker job
 `rotate_audit_log` moves rows older than retention into
 `audit_log_archive.jsonl.gz` under `$DATA_DIR/archive/`.
 
@@ -210,8 +273,8 @@ Shared blob reference row. The backend storage driver is pluggable
 | column           | type    | notes                                  |
 |------------------|---------|----------------------------------------|
 | id               | ULID PK |                                        |
-| household_id     | ULID FK |                                        |
-| sha256           | text    | content hash; unique per household     |
+| workspace_id     | ULID FK |                                        |
+| sha256           | text    | content hash; unique per workspace     |
 | byte_size        | int     |                                        |
 | mime_type        | text    | server-sniffed (§15)                   |
 | original_name    | text    | user-supplied; never trusted for paths |
@@ -222,13 +285,13 @@ Shared blob reference row. The backend storage driver is pluggable
 | created_at       | tstz    |                                        |
 | deleted_at       | tstz?   |                                        |
 
-Local driver writes to `$DATA_DIR/files/{household_id}/{sha256[0:2]}/
+Local driver writes to `$DATA_DIR/files/{workspace_id}/{sha256[0:2]}/
 {sha256}`. See §15 for MIME sniffing, EXIF stripping, and PDF script
 rejection.
 
 ### `secret_envelope`
 
-Per-household AES-GCM-encrypted blobs for secret values we must store
+Per-workspace AES-GCM-encrypted blobs for secret values we must store
 (OpenRouter API key, SMTP password, iCal feed URLs that carry tokens).
 See §15.
 
@@ -281,9 +344,9 @@ CI job asserts no drift in test fixtures.
 
 - All money stored as **integer cents** plus ISO-4217 `currency` (text)
   on the owning row. No floats.
-- Per-household `default_currency`. Per-property override allowed.
+- Per-workspace `default_currency`. Per-property override allowed.
 - Multi-currency payroll is out of scope; expenses may be in any
-  currency, converted to the household default at approval time using
+  currency, converted to the workspace default at approval time using
   the snapshot rate stored on the expense line.
 
 ## Enums (canonical list)
@@ -324,10 +387,34 @@ SQLite uses FTS5 `bm25()` with the same weight vector; Postgres uses
 |--------------------|-------------------|-----------------------------------|
 | `audit_log`        | 2 years           | see above; archived to JSONL.gz   |
 | `session`          | 90 days after revocation | §03                        |
-| `llm_call`         | 90 days           | configurable per household (§11)  |
-| `email_delivery`   | 90 days           | configurable per household (§10)  |
-| `webhook_delivery` | 90 days           | configurable per household (§10)  |
+| `llm_call`         | 90 days           | configurable per workspace (§11)  |
+| `email_delivery`   | 90 days           | configurable per workspace (§10)  |
+| `webhook_delivery` | 90 days           | configurable per workspace (§10)  |
 
 Retention is enforced by worker job `rotate_operational_logs` (daily).
-All durations are household-level settings; raising a duration takes
+All durations are workspace-level settings; raising a duration takes
 effect immediately, lowering it purges on next rotation.
+
+## Migration (v0 household → v1 workspace)
+
+v1 renames the tenancy boundary from `household` to `workspace`
+across the entire schema, API, and UI. Concretely:
+
+- The `households` table becomes `workspaces`.
+- Every `household_id` column becomes `workspace_id`.
+- The two new junction tables `villa_workspace` and
+  `employee_workspace` are introduced; the seeded v1 deployment
+  back-fills one row per existing `(property, workspace)` and one row
+  per `(employee, workspace)` with `source = 'villa'` where
+  applicable, plus `'direct'` for any employee with no villa
+  assignment.
+- v1 still ships **single-workspace**: a fresh install seeds exactly
+  one `workspaces` row at first boot and all tooling assumes that
+  row for defaults. The schema names are already plural-safe, so
+  flipping on true multitenancy later is purely an auth change
+  (§15) plus row-inserts — no table rename, no column rename, no
+  data migration.
+- Historical references in this repository (roadmap entries, v0
+  migration notes, §20 glossary) still say "household" when they are
+  explicitly describing v0 behaviour. New code and new docs must use
+  "workspace".

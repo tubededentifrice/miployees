@@ -77,13 +77,16 @@
   {% endif %}
 
   <section class="comments">
-    <h3 class="section-title section-title--sm">Comments</h3>
-    <article class="comment">
-      <div class="comment__head"><span class="avatar avatar--sm">EB</span><strong>Élodie</strong><span class="comment__time">08:32</span></div>
-      <p>Fresh sheets are on shelf 2 of cupboard A — the lavender-scented ones.</p>
-    </article>
+    <h3 class="section-title section-title--sm">Notes (chat)</h3>
+    <p class="muted">Messages to and from your workspace assistant — scoped to this task.</p>
+    <div class="chat-log chat-log--inline">
+      <div class="chat-msg chat-msg--agent">
+        <span>Fresh sheets are on shelf 2 of cupboard A — the lavender-scented ones. Want me to log the finish photo as evidence when you're done?</span>
+        <span class="chat-msg__time">08:32</span>
+      </div>
+    </div>
     <form class="comment__compose">
-      <textarea placeholder="Add a comment…" rows="2"></textarea>
+      <textarea placeholder="Ask about this task…" rows="2"></textarea>
       <button class="btn btn--moss" type="button">Send</button>
     </form>
   </section>

@@ -31,7 +31,7 @@ template; one-off cleanings often do not.
 | field                          | type      | notes                                 |
 |--------------------------------|-----------|---------------------------------------|
 | id                             | ULID PK   |                                       |
-| household_id                   | ULID FK   |                                       |
+| workspace_id                   | ULID FK   |                                       |
 | name                           | text      | "Weekly kitchen deep clean"           |
 | description_md                 | text      |                                       |
 | role_id                        | ULID FK?  | default role expected to do it        |
@@ -56,7 +56,7 @@ these times". Stored as RFC 5545 RRULE plus a property-local timezone.
 | field              | type    | notes                                       |
 |--------------------|---------|---------------------------------------------|
 | id                 | ULID PK |                                             |
-| household_id       | ULID FK |                                             |
+| workspace_id       | ULID FK |                                             |
 | name               | text    | "Villa Sud pool — Saturdays 09:00"          |
 | template_id        | ULID FK |                                             |
 | property_id        | ULID FK |                                             |
@@ -99,7 +99,7 @@ A worker job `generate_task_occurrences` runs every hour:
 5. Apply blackout dates (employee leave, property closures) → may
    leave tasks **unassigned**.
 
-The horizon is configurable per household. Shrinking it doesn't
+The horizon is configurable per workspace. Shrinking it doesn't
 un-create already-created tasks; growing it does a backfill.
 
 ### Pause / resume
@@ -129,7 +129,7 @@ range is evaluated only when `paused_at` is null.
 | field                        | type      | notes                                         |
 |------------------------------|-----------|-----------------------------------------------|
 | id                           | ULID PK   |                                               |
-| household_id                 | ULID FK   |                                               |
+| workspace_id                 | ULID FK   |                                               |
 | template_id                  | ULID FK?  |                                               |
 | schedule_id                  | ULID FK?  |                                               |
 | turnover_bundle_id           | ULID FK?  |                                               |
@@ -235,7 +235,7 @@ Both are first-class v1 entities; CRUD via §12.
 | field         | type      | notes                                 |
 |---------------|-----------|---------------------------------------|
 | id            | ULID PK   |                                       |
-| household_id  | ULID FK   |                                       |
+| workspace_id  | ULID FK   |                                       |
 | employee_id   | ULID FK   |                                       |
 | starts_on     | date      | inclusive                             |
 | ends_on       | date      | inclusive                             |
@@ -250,12 +250,43 @@ An employee may self-submit a leave request (`approved_at = null`);
 a manager approves. Pending leaves do **not** affect assignment —
 only approved ones do.
 
+### Weekly availability
+
+Alongside one-off `employee_leave` rows, every employee has a
+recurring weekly pattern that describes their default availability
+window per weekday. The pattern is authoritative for the assignment
+algorithm: an employee is considered a candidate for a task only if
+the occurrence's local start time falls inside their available
+window for that weekday.
+
+`employee_weekly_availability` (one row per employee per weekday):
+
+| field          | type    | notes                                   |
+|----------------|---------|-----------------------------------------|
+| id             | ULID PK |                                         |
+| workspace_id   | ULID FK |                                         |
+| employee_id    | ULID FK |                                         |
+| weekday        | int     | `0..6` (Mon..Sun, ISO)                  |
+| starts_local   | time?   | nullable; null means "off that day"     |
+| ends_local     | time?   | nullable; null means "off that day"     |
+| updated_at     | tstz    |                                         |
+
+Invariant: `starts_local` and `ends_local` are either both set or
+both null. A null pair (`off`) means the employee is unavailable for
+that weekday by default; the assignment algorithm treats it like a
+standing approved leave for that weekday.
+
+One-off `employee_leave` rows still win over the weekly pattern on
+dates they cover. Conversely, the weekly pattern does **not**
+automatically generate `employee_leave` rows — it is evaluated live
+at assignment time and at display time on the employee "Week" view.
+
 ### `property_closure`
 
 | field         | type      | notes                                 |
 |---------------|-----------|---------------------------------------|
 | id            | ULID PK   |                                       |
-| household_id  | ULID FK   |                                       |
+| workspace_id  | ULID FK   |                                       |
 | property_id   | ULID FK   |                                       |
 | starts_on     | date      | inclusive                             |
 | ends_on       | date      | inclusive                             |
@@ -307,7 +338,7 @@ own timestamp and actor.
 | field           | type     | notes                                   |
 |-----------------|----------|-----------------------------------------|
 | id              | ULID PK  |                                         |
-| household_id    | ULID FK  |                                         |
+| workspace_id    | ULID FK  |                                         |
 | task_id         | ULID FK  |                                         |
 | ordinal         | int      | display order                           |
 | text            | text     | the line as it appears to the employee  |
@@ -333,12 +364,73 @@ so reports can reconstruct exactly what was ticked even if items are
 later edited. Files go through the `file` entity (§02) backed by the
 `storage` abstraction (local disk by default, §15).
 
+## Task notes are the agent inbox
+
+The previous v0 concept of free-form per-task "comments" is replaced
+by a **workspace-agent-mediated conversation** scoped to each task.
+Every note or comment is a message in a thread where the workspace
+agent (§11) is a full participant: it reads every message, can
+summarise, answer questions grounded in the task's instructions
+(§07) and history, and reply on behalf of the employee or the
+manager when delegated.
+
+Data-model shape (persisted to `task_comment`):
+
+- Rows are ordered messages of kind
+  `employee | manager | agent | system`.
+- The `agent` kind is the embedded workspace agent speaking in the
+  thread — it is *not* a human manager acting through a token. Agent
+  messages carry the `llm_call.id` that produced them.
+- The `system` kind is for state-change markers (assignment,
+  completion, skip) rendered inline for readability.
+- Markdown body; `@mentions` resolve to workspace members. The
+  manager may address the agent directly with
+  `@agent <instruction>`; the agent replies in the same thread.
+- Email fallback per §10 is preserved: mentioned humans get an email
+  if they are offline, but the canonical surface is the chat page
+  (§14) inside the manager or employee UI, where the thread is a
+  native conversation with the embedded agent.
+
+The agent enforces only the rules it is told to enforce (task-local
+instructions, workspace defaults); it does not silently moderate.
+
+## Evidence policy inheritance
+
+The effective photo-evidence policy for a given task is computed by
+walking the evidence-policy stack defined in §05 from the workspace
+root outward, with each layer set to one of
+`inherit | require | optional | forbid`:
+
+1. **Workspace default** (always concrete).
+2. **Villa (property) override.**
+3. **Employee override.**
+4. **Task override.**
+
+The first concrete (non-`inherit`) value encountered, walking root
+first and outward, is the effective policy. In practice:
+
+- A workspace that sets `require` at the root and leaves everything
+  else as `inherit` gets photo evidence on every task.
+- A villa whose owner disables photos for privacy sets
+  `property.evidence_policy = forbid`; tasks at that villa cannot
+  attach photos even if the task template requires them.
+- An employee working under `time.manager_edit_only` might carry
+  `require` regardless of workspace — the employee layer overrides
+  the root.
+- A task may tighten (`inherit → require`) or loosen
+  (`inherit → optional`) the inherited value.
+
+`forbid` is the strongest value: if any layer on the walk sets
+`forbid`, the task cannot accept a photo and the UI hides the
+camera picker. Evidence policy is surfaced on the task detail screen
+as "Photo: required / optional / forbidden (from <layer>)".
+
 ## Comments
 
-Threaded. Manager and assigned employee (and any other employee on the
-same task's property with messaging.comments) can post. Comments are
-Markdown; `@mentions` resolve to household members. Notifications are
-via email (§10).
+Retained for backwards compatibility in the data model, but the
+user-facing surface is now the task-scoped chat described in
+"Task notes are the agent inbox" above. Threaded, markdown,
+`@mentions` resolve to workspace members, email fallback via §10.
 
 ## Skipping and cancellation
 

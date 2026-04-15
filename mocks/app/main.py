@@ -27,6 +27,7 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 
 ROLE_COOKIE = "miployees_role"
 THEME_COOKIE = "miployees_theme"
+AGENT_COLLAPSED_COOKIE = "miployees_agent_collapsed"
 VALID_ROLES = {"employee", "manager"}
 VALID_THEMES = {"light", "dark"}
 
@@ -52,6 +53,12 @@ def render(request: Request, name: str, **ctx) -> HTMLResponse:
     ctx.setdefault("now", md.NOW)
     ctx.setdefault("property_by_id", md.property_by_id)
     ctx.setdefault("employee_by_id", md.employee_by_id)
+    ctx.setdefault("manager_agent_log", md.MANAGER_AGENT_LOG)
+    ctx.setdefault("manager_agent_actions", md.MANAGER_AGENT_ACTIONS)
+    ctx.setdefault(
+        "agent_sidebar_collapsed",
+        request.cookies.get(AGENT_COLLAPSED_COOKIE) == "1",
+    )
     return templates.TemplateResponse(request, name, ctx)
 
 
@@ -103,6 +110,23 @@ def theme_toggle(request: Request):
     new_theme = "dark" if current_theme(request) == "light" else "light"
     resp = RedirectResponse(request.headers.get("referer") or "/", status_code=303)
     resp.set_cookie(THEME_COOKIE, new_theme, max_age=60 * 60 * 24 * 365, samesite="lax")
+    return resp
+
+
+# Per-user agent sidebar collapse preference (§14). Fire-and-forget
+# from the client — the page has already flipped its own CSS class,
+# this just records the preference for the next request.
+@app.post("/agent/sidebar/{state}")
+def agent_sidebar_set(state: str):
+    if state not in {"open", "collapsed"}:
+        return JSONResponse({"ok": False}, status_code=400)
+    resp = JSONResponse({"ok": True, "state": state})
+    resp.set_cookie(
+        AGENT_COLLAPSED_COOKIE,
+        "1" if state == "collapsed" else "0",
+        max_age=60 * 60 * 24 * 365,
+        samesite="lax",
+    )
     return resp
 
 
@@ -185,10 +209,15 @@ def shifts_toggle():
 
 @app.get("/expenses", response_class=HTMLResponse)
 def expenses(request: Request):
-    # §14: same URL, audience-dependent view. Employees see their own
-    # submission form + list; managers see the approvals queue.
-    if current_role(request) == "manager":
-        return render(request, "manager/expenses.html", all_expenses=md.EXPENSES)
+    # Manager view: approvals queue. Employees see their own page at
+    # /my/expenses, so redirect them there.
+    if current_role(request) != "manager":
+        return RedirectResponse("/my/expenses", status_code=303)
+    return render(request, "manager/expenses.html", all_expenses=md.EXPENSES)
+
+
+@app.get("/my/expenses", response_class=HTMLResponse)
+def my_expenses(request: Request):
     employee = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
     return render(request, "employee/expenses.html",
                   expenses=md.expenses_for_employee(employee.id))
@@ -207,7 +236,8 @@ def expenses_create(request: Request,
         merchant=merchant or "Unknown", submitted_at=datetime.now(),
         status="pending", note=note, ocr_confidence=None,
     ))
-    return RedirectResponse("/expenses", status_code=303)
+    target = "/expenses" if current_role(request) == "manager" else "/my/expenses"
+    return RedirectResponse(target, status_code=303)
 
 
 @app.get("/issues/new", response_class=HTMLResponse)
@@ -232,22 +262,49 @@ def issue_new_post(request: Request,
 @app.get("/me", response_class=HTMLResponse)
 def me(request: Request):
     employee = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
-    my_issues = [i for i in md.ISSUES if i.reported_by == employee.id]
     return render(request, "employee/me.html",
-                  my_issues=my_issues,
                   my_leaves=md.leaves_for_employee(employee.id))
 
 
-# Messaging per §14: employee side is task comments, not a standalone
-# inbox. Kept as a convenience page linking back to those threads.
-@app.get("/messages", response_class=HTMLResponse)
-def messages(request: Request):
-    threads = [
-        {"kind": "manager", "with": "Élodie Bernard",             "last": "Can you take the 14:00 airport run?",    "unread": True,  "time": "09:42", "link": "/task/t-4"},
-        {"kind": "task",    "with": "Kitchen deep clean",          "last": "Noted — will start after linen change.", "unread": False, "time": "Yesterday", "link": "/task/t-3"},
-        {"kind": "assistant","with": "miployees assistant",         "last": "Fresh sheets are on shelf 2 of cupboard A — the lavender-scented ones.", "unread": False, "time": "08:32", "link": "/task/t-2"},
+# Agent chat replaces the legacy thread list. Same template filename to
+# minimise diff; context-shape is the AgentMessage log.
+@app.get("/chat", response_class=HTMLResponse)
+def chat(request: Request):
+    return render(request, "employee/messages.html", chat_log=md.EMPLOYEE_CHAT_LOG)
+
+
+@app.post("/chat")
+def chat_post(request: Request, body: str = Form("")):
+    if body.strip():
+        md.EMPLOYEE_CHAT_LOG.append(md.AgentMessage(
+            at=datetime.now(), kind="user", body=body.strip()[:500],
+        ))
+    return RedirectResponse("/chat", status_code=303)
+
+
+@app.get("/history", response_class=HTMLResponse)
+def history(request: Request, tab: str = "tasks"):
+    employee = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
+    if tab not in {"tasks", "chats", "expenses", "leaves"}:
+        tab = "tasks"
+    past_tasks = [
+        t for t in md.tasks_for_employee(employee.id)
+        if t.status in {"completed", "skipped"}
     ]
-    return render(request, "employee/messages.html", threads=threads)
+    past_expenses = [
+        x for x in md.expenses_for_employee(employee.id)
+        if x.status in {"approved", "reimbursed", "rejected"}
+    ]
+    past_leaves = [
+        lv for lv in md.leaves_for_employee(employee.id)
+        if lv.approved_at is not None and lv.ends_on < md.TODAY
+    ]
+    return render(request, "employee/history.html",
+                  tab=tab,
+                  tasks=past_tasks,
+                  expenses=past_expenses,
+                  leaves=past_leaves,
+                  chats=md.HISTORY.get("chats", []))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -434,6 +491,49 @@ def settings(request: Request):
 @app.get("/styleguide", response_class=HTMLResponse)
 def styleguide(request: Request):
     return render(request, "styleguide.html")
+
+
+@app.post("/agent/manager/message")
+def agent_manager_message(request: Request, body: str = Form("")):
+    if body.strip():
+        md.MANAGER_AGENT_LOG.append(md.AgentMessage(
+            at=datetime.now(), kind="user", body=body.strip()[:500],
+        ))
+    return RedirectResponse(request.headers.get("referer") or "/dashboard", status_code=303)
+
+
+@app.post("/agent/manager/action/{aid}/{decision}")
+def agent_manager_action(aid: str, decision: str, request: Request):
+    action = next((a for a in md.MANAGER_AGENT_ACTIONS if a.id == aid), None)
+    if action is not None and decision in {"approve", "deny"}:
+        md.MANAGER_AGENT_ACTIONS[:] = [a for a in md.MANAGER_AGENT_ACTIONS if a.id != aid]
+        verb = "Approved" if decision == "approve" else "Denied"
+        md.MANAGER_AGENT_LOG.append(md.AgentMessage(
+            at=datetime.now(), kind="user", body=f"{verb}: {action.title}",
+        ))
+        if decision == "approve":
+            md.MANAGER_AGENT_LOG.append(md.AgentMessage(
+                at=datetime.now(), kind="agent",
+                body=f"Done — {action.title.lower()} is in the audit log.",
+            ))
+    return RedirectResponse(request.headers.get("referer") or "/dashboard", status_code=303)
+
+
+@app.post("/chat/action/{idx}/{decision}")
+def chat_action_decide(idx: int, decision: str, request: Request):
+    if 0 <= idx < len(md.EMPLOYEE_CHAT_LOG) and decision in {"approve", "details"}:
+        msg = md.EMPLOYEE_CHAT_LOG[idx]
+        if msg.kind == "action":
+            if decision == "approve":
+                md.EMPLOYEE_CHAT_LOG[idx] = md.AgentMessage(
+                    at=msg.at, kind="agent", body=f"{msg.body} — approved."
+                )
+            else:
+                md.EMPLOYEE_CHAT_LOG.append(md.AgentMessage(
+                    at=datetime.now(), kind="agent",
+                    body="Here are the details — receipt attached, merchant Carrefour, €12.40.",
+                ))
+    return RedirectResponse("/chat", status_code=303)
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -1,20 +1,80 @@
 {% extends "employee_base.html" %}
-{% block title %}Messages · miployees{% endblock %}
+{% block title %}Chat · miployees{% endblock %}
 
+{% block phone_class %}phone--chat{% endblock %}
 {% block phone_body %}
-<section class="phone__section">
-  <h2 class="section-title">Messages</h2>
-  <ul class="thread-list">
-    {% for t in threads %}
-      <li class="thread {% if t.unread %}thread--unread{% endif %}">
-        <div class="thread__avatar avatar avatar--md">{{ t.with[:2] | upper }}</div>
-        <div class="thread__main">
-          <div class="thread__head"><strong>{{ t.with }}</strong><span class="thread__time">{{ t.time }}</span></div>
-          <div class="thread__last">{{ t.last }}</div>
+<section class="chat-screen">
+  <div class="chat-screen__header">
+    <div>
+      <h2 class="chat-screen__title">Assistant</h2>
+      <span class="chat-screen__status"><span class="chat-screen__dot" aria-hidden="true"></span>online</span>
+    </div>
+  </div>
+
+  <div class="chat-log" role="log" aria-live="polite"
+       data-lazy-chat="employee"
+       data-chat-page-size="20">
+    {% for m in chat_log %}
+      {% if m.kind == 'action' %}
+        <div class="chat-msg chat-msg--action">
+          <span class="chat-msg__body">{{ m.body }}</span>
+          <div class="chat-msg__ctas">
+            <form method="post" action="/chat/action/{{ loop.index0 }}/approve">
+              <button type="submit" class="btn btn--moss btn--sm">Approve</button>
+            </form>
+            <form method="post" action="/chat/action/{{ loop.index0 }}/details">
+              <button type="submit" class="btn btn--ghost btn--sm">Details</button>
+            </form>
+          </div>
+          <span class="chat-msg__time">{{ m.at.strftime('%H:%M') }}</span>
         </div>
-        {% if t.unread %}<span class="dot dot--moss" aria-label="Unread"></span>{% endif %}
-      </li>
+      {% elif m.kind == 'agent' %}
+        <div class="chat-msg chat-msg--agent">
+          <span class="chat-msg__body">{{ m.body }}</span>
+          <span class="chat-msg__time">{{ m.at.strftime('%H:%M') }}</span>
+        </div>
+      {% else %}
+        <div class="chat-msg chat-msg--user">
+          <span class="chat-msg__body">{{ m.body }}</span>
+          <span class="chat-msg__time">{{ m.at.strftime('%H:%M') }}</span>
+        </div>
+      {% endif %}
     {% endfor %}
-  </ul>
+  </div>
 </section>
+
+<form class="chat-composer" method="post" action="/chat" data-chat-composer>
+  <button type="button" class="chat-composer__icon" aria-label="Attach file">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.66 5.65l-9.2 9.19a2 2 0 0 1-2.83-2.82l8.49-8.49"/>
+    </svg>
+  </button>
+  <div class="chat-composer__field">
+    <textarea name="body" rows="1" placeholder="Message" data-chat-textarea aria-label="Message"></textarea>
+    <button type="button" class="chat-composer__icon chat-composer__icon--inline" aria-label="Emoji">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"/>
+        <path d="M8.5 14s1.5 2 3.5 2 3.5-2 3.5-2"/>
+        <line x1="9" y1="9.5" x2="9" y2="9.5"/>
+        <line x1="15" y1="9.5" x2="15" y2="9.5"/>
+      </svg>
+    </button>
+  </div>
+  <button type="submit" class="chat-composer__send" aria-label="Send" data-chat-send>
+    <span class="chat-composer__send-icon chat-composer__send-icon--mic" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="3" width="6" height="12" rx="3"/>
+        <path d="M5 11a7 7 0 0 0 14 0"/>
+        <line x1="12" y1="18" x2="12" y2="22"/>
+      </svg>
+    </span>
+    <span class="chat-composer__send-icon chat-composer__send-icon--send" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m4 12 16-8-6 18-3-8-7-2Z"/>
+      </svg>
+    </span>
+  </button>
+</form>
+
+<script src="/static/chat.js" defer></script>
 {% endblock %}

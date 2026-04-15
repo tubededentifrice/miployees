@@ -1,0 +1,84 @@
+{% extends "employee_base.html" %}
+{% block title %}History · miployees{% endblock %}
+
+{% block phone_body %}
+<section class="phone__section">
+  <a href="/me" class="back-link">← Back to Me</a>
+  <h2 class="section-title">History</h2>
+  <p class="muted">Everything already wrapped up — tasks, chats, expenses and leaves.</p>
+
+  <nav class="tabs" aria-label="History tabs">
+    {% for key, label in [('tasks', 'Tasks'), ('chats', 'Chats'), ('expenses', 'Expenses'), ('leaves', 'Leaves')] %}
+      <a href="/history?tab={{ key }}"
+         class="tab-link {% if tab == key %}tab-link--active{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+
+  {% if tab == 'tasks' %}
+    <ul class="task-list">
+      {% for t in tasks %}
+        <li class="stack-row">
+          <div>
+            <strong>{{ t.title }}</strong>
+            <div class="stack-row__sub">
+              {{ property_by_id(t.property_id).name }} · {{ t.scheduled_start.strftime('%d %b · %H:%M') }}
+            </div>
+          </div>
+          <span class="chip chip--sm chip--{{ 'moss' if t.status == 'completed' else 'rust' }}">
+            {{ t.status|capitalize }}
+          </span>
+        </li>
+      {% else %}
+        <li class="empty-state empty-state--quiet">No past tasks.</li>
+      {% endfor %}
+    </ul>
+
+  {% elif tab == 'chats' %}
+    <ul class="task-list">
+      {% for c in chats %}
+        <li class="stack-row">
+          <div>
+            <strong>{{ c.title }}</strong>
+            <div class="stack-row__sub">{{ c.summary }}</div>
+          </div>
+          <span class="chip chip--sm chip--ghost">{{ c.last_at }}</span>
+        </li>
+      {% else %}
+        <li class="empty-state empty-state--quiet">No archived chats.</li>
+      {% endfor %}
+    </ul>
+
+  {% elif tab == 'expenses' %}
+    <ul class="task-list">
+      {% for x in expenses %}
+        <li class="stack-row">
+          <div>
+            <strong>{{ x.merchant }} · €{{ '%.2f' % (x.amount_cents / 100) }}</strong>
+            <div class="stack-row__sub">{{ x.submitted_at.strftime('%d %b') }} · {{ x.note }}</div>
+          </div>
+          <span class="chip chip--sm chip--{{ 'moss' if x.status == 'reimbursed' else 'sky' }}">
+            {{ x.status|capitalize }}
+          </span>
+        </li>
+      {% else %}
+        <li class="empty-state empty-state--quiet">No past expenses.</li>
+      {% endfor %}
+    </ul>
+
+  {% elif tab == 'leaves' %}
+    <ul class="task-list">
+      {% for lv in leaves %}
+        <li class="stack-row">
+          <div>
+            <strong>{{ lv.starts_on.strftime('%d %b') }} → {{ lv.ends_on.strftime('%d %b') }}</strong>
+            <div class="stack-row__sub">{{ lv.category|capitalize }} · {{ lv.note }}</div>
+          </div>
+          <span class="chip chip--sm chip--moss">Approved</span>
+        </li>
+      {% else %}
+        <li class="empty-state empty-state--quiet">No past leaves.</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endblock %}
