@@ -6,13 +6,14 @@ fix the offender.
 - **Actor.** The kind of principal responsible for an action, recorded
   on `audit_log` and shift/claim rows: `manager | employee | agent |
   system`.
-- **Agent.** A non-human actor authenticated by an API token.
+- **Agent.** A non-human actor. Standalone agents are authenticated
+  by scoped API tokens (`actor_kind = 'agent'`). Embedded agents use
+  **delegated tokens** that act with the full authority of their
+  delegating user (`actor_kind` = the user's kind). See §03, §11.
 - **Agent (embedded).** The manager-side or employee-side chat
   agent described in §11. Default model `google/gemma-4-31b-it`;
-  tool surface defined per side (manager = full CLI + REST,
-  employee = narrow: issue-report, expense-upload, clock-in /
-  clock-out, task-complete, instruction-lookup, leave-request,
-  message-manager). Voice input is capability-gated.
+  tool surface is the full CLI + REST surface of the delegating user
+  (no filtered catalog). Voice input is capability-gated.
 - **Auto-clock.** The `auto` value of `time.clock_mode` (§05, §09).
   First checklist tick or task action of the day opens a shift;
   `time.auto_clock_idle_minutes` of inactivity closes it. Per-villa
@@ -86,7 +87,8 @@ fix the offender.
   account numbers live in `secret_envelope`; only a `display_stub`
   (IBAN last-4 + country, card last-4, wallet handle) is returned
   over the API. Creating, editing, or changing a default is always
-  approval-gated for agent tokens — miployees does not execute
+  approval-gated for bearer tokens (scoped and delegated) —
+  miployees does not execute
   payments, but routing decisions are security-critical and treated
   accordingly.
 - **Payout snapshot.** The immutable `payout_snapshot_json` captured
@@ -98,17 +100,24 @@ fix the offender.
 - **Payout manifest.** A streaming, not-stored JSON artifact from
   `POST /payslips/{id}/payout_manifest` that decrypts full account
   numbers at the moment the operator pushes funds. **Manager-
-  session only** (never an agent token, even via approval — see
-  "Never-agent endpoint" below). Every fetch is audit-logged; no
+  session only** (no bearer tokens, even via approval — see
+  "Interactive-session-only endpoint" below). Every fetch is audit-logged; no
   blob is persisted; the idempotency cache does not retain the
   response; a second fetch within 5 minutes raises a digest alert.
   Once the payout secrets are GDPR-erased, the endpoint returns 410
   Gone (§09, §15).
-- **Never-agent endpoint.** An HTTP endpoint that refuses agent
-  tokens unconditionally and is not reachable through the approval
-  flow, because approving would persist decrypted secret material
-  in `agent_action.result_json`. v1 list (§11): the payout
+- **Interactive-session-only endpoint.** An HTTP endpoint that
+  refuses all bearer tokens (scoped and delegated) and requires a
+  live passkey session, because the response contains decrypted
+  secret material that must not land in any persisted store
+  (including `agent_action.result_json`). v1 list (§11): the payout
   manifest. Manager passkey session only.
+- **Delegated token.** A bearer token created by a logged-in user
+  (manager or employee) that inherits their full permissions. Audit
+  records use the delegating user's identity (`actor_kind`,
+  `actor_id`), with `agent_label` and `agent_conversation_ref`
+  fields flagging the action as agent-executed and linking back to
+  the triggering conversation. See §03.
 - **Host-CLI-only administrative command.** A `miployees admin`
   verb with no HTTP surface at all, agent or human: envelope-key
   rotation, offline lockout recovery, hard-delete purge (§11). Run

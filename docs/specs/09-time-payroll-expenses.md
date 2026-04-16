@@ -495,12 +495,12 @@ one-off read, not a stored artifact. miployees exposes it as:
 POST /payslips/{id}/payout_manifest
 ```
 
-- **Manager-session only** (passkey-authenticated human). Agent
-  tokens are refused unconditionally — this endpoint is on the
-  "never-agent" list in §11. Approval-gating would itself leak,
-  because the approval pipeline persists `agent_action.result_json`;
-  so agents cannot reach this endpoint even with a manager's
-  approval.
+- **Manager-session only** (passkey-authenticated human). All bearer
+  tokens (scoped and delegated) are refused unconditionally — this
+  endpoint is on the "interactive-session-only" list in §11.
+  Approval-gating would itself leak, because the approval pipeline
+  persists `agent_action.result_json`; so agents cannot reach this
+  endpoint even with a manager's approval.
 - Response streams a short-TTL artifact (`application/json`) with
   the decrypted account numbers for each destination referenced in
   `payout_snapshot_json`, the corresponding amounts, currency, and

@@ -98,14 +98,28 @@ Canonical error `type` URIs:
   for 24h. Replays return the stored response.
 - Different body hash with the same key → 409
   `idempotency_conflict`.
-- **Exempt endpoints** (never-agent, §11): `POST /payslips/{id}/
-  payout_manifest`. Its response is not stored in the idempotency
+- **Exempt endpoints** (interactive-session-only, §11):
+  `POST /payslips/{id}/payout_manifest`. Its response is not stored in the idempotency
   cache; the header is accepted but ignored. A replay re-executes,
   re-audits, and re-decrypts from the current secret store. (Other
   sensitive admin operations — envelope-key rotation, offline
   recovery, hard purge — have no HTTP surface; they run via
   `miployees admin <verb>` on the host and are covered under §11
   "Host-CLI-only administrative commands".)
+
+### Agent audit headers
+
+Optional headers that agents (or any bearer-token caller) may set on
+mutating requests to enrich the audit trail (§02, §11):
+
+- `X-Agent-Reason` — free text, up to 500 chars. Stored in
+  `audit_log.reason`. Agents should set it on every mutating call.
+- `X-Agent-Conversation-Ref` — opaque string, up to 500 chars.
+  Stored in `audit_log.agent_conversation_ref`. Links the audit
+  entry back to the conversation or prompt that triggered the action.
+- `X-Correlation-Id` — ULID or opaque string. Groups multiple
+  requests into a logical workflow. If absent, generated server-side
+  and echoed via `X-Correlation-Id-Echo`.
 
 ### Rate limiting
 
@@ -338,7 +352,7 @@ GET    /payslips/{id}.pdf                 # rendered from payout_snapshot_json; 
 POST   /payslips/{id}/issue
 POST   /payslips/{id}/mark_paid
 POST   /payslips/{id}/void
-POST   /payslips/{id}/payout_manifest     # MANAGER-SESSION ONLY (never-agent, §11). Streams decrypted account numbers JIT; not cached in the idempotency store; returns 410 once secrets are purged.
+POST   /payslips/{id}/payout_manifest     # MANAGER-SESSION ONLY (interactive-session-only, §11). Streams decrypted account numbers JIT; not cached in the idempotency store; returns 410 once secrets are purged.
 
 GET    /expenses
 POST   /expenses                   # multipart for receipts

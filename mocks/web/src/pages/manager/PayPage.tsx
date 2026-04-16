@@ -140,7 +140,7 @@ export default function PayPage() {
           <li><code className="inline-code">employee.set_default_pay_destination</code></li>
           <li>
             <code className="inline-code">POST /payslips/:id/payout_manifest</code>{" "}
-            <Chip tone="rust" size="sm">never-agent</Chip>
+            <Chip tone="rust" size="sm">session-only</Chip>
           </li>
         </ul>
       </div>

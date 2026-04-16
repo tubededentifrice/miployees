@@ -75,6 +75,7 @@ token = "env:MIPLOYEES_TOKEN_DEV"
 | `--idempotency-key` | override server-chosen idempotency key             |
 | `--correlation-id`  | propagate an agent's correlation id                |
 | `--agent-reason`    | sets `X-Agent-Reason` for audit log                |
+| `--conversation-ref`| sets `X-Agent-Conversation-Ref` for audit tracing  |
 | `--verbose`         | debug log to stderr                                |
 | `--no-color`        | for pipes                                          |
 
@@ -256,7 +257,7 @@ miployees admin
   version
 ```
 
-### Host-CLI-only admin commands vs never-agent endpoints
+### Host-CLI-only admin commands vs interactive-session-only endpoints
 
 Two distinct security classes coexist in this CLI — easy to confuse,
 important to keep separate:
@@ -275,24 +276,25 @@ important to keep separate:
    - `miployees admin purge` — hard-delete per-person payload
      (§02, §15).
 
-2. **Never-agent endpoints.** These **do** have an HTTP surface,
-   but they refuse agent tokens unconditionally and are **not
-   offered to either embedded agent as a tool** — the tool
-   descriptor is filtered out at session start. Approval does not
-   help, because the approval pipeline would persist the decrypted
-   response in `agent_action.result_json`. v1 member:
+2. **Interactive-session-only endpoints.** These **do** have an HTTP
+   surface, but they refuse all bearer tokens (scoped and delegated)
+   unconditionally. Approval does not help, because the approval
+   pipeline would persist the decrypted response in
+   `agent_action.result_json`. v1 member:
 
    - `POST /payslips/{id}/payout_manifest` — full decrypted
      account numbers for treasury use (§09).
 
    The CLI exposes the endpoint (a manager can still curl/CLI it
-   from their workstation with a passkey session), but the manager-
-   side agent's tool surface omits it. See §11 "Never-agent
-   endpoints" for the canonical list and rationale.
+   from their workstation with a passkey session), but bearer tokens
+   — including delegated agent tokens — are refused. See §11
+   "Interactive-session-only endpoints" for the canonical list and
+   rationale.
 
-These two classes together form the **short-list of verbs the
-agent cannot reach** — everything else is agent-reachable, subject
-to the approval gates in §11.
+These two classes together form the **short-list of verbs that
+require direct human presence** — everything else is reachable
+by agents via delegated tokens, subject to the approval gates in
+§11.
 
 ## Streaming and piping
 
@@ -328,6 +330,9 @@ autocomplete) use a local short-TTL cache to avoid slow tabs.
   and for teaching an agent the mapping to REST.
 - **`--agent-reason`** is surfaced in the audit log. Agents should
   set it on every mutating command.
+- **`--conversation-ref`** sets `X-Agent-Conversation-Ref`, linking the
+  audit entry back to the conversation or prompt that triggered the
+  action (opaque, up to 500 chars).
 
 ## Error UX
 

@@ -34,10 +34,13 @@ the driver sees tomorrow's airport run; the head of house sees everything.
 - **Agent-first guarantee.** Every user-facing action in miployees is
   also exposed as a **CLI command** (host CLI or the embedded REST
   tool surface) — there is no human-only verb. An LLM agent driving
-  the manager-side or employee-side chat can do anything a human can
-  do in the same UI, subject to the approval gates in §11. The UI is a
-  shell around those commands, not a separate capability. See §11 for
-  the invariant, §13 for the CLI catalog.
+  the manager-side or employee-side chat acts with the **full authority
+  of its delegating user** — same permissions, same audit identity —
+  via a delegated token (§03). Every action is attributed to the user
+  in the audit log while being clearly flagged as agent-executed.
+  High-impact actions still require explicit human approval (§11). The
+  UI is a shell around those commands, not a separate capability. See
+  §11 for the invariant, §13 for the CLI catalog.
 
 ## Personas
 
@@ -51,8 +54,10 @@ the driver sees tomorrow's airport run; the head of house sees everything.
   done, optionally attaches a photo, logs hours, reports an issue,
   submits an expense receipt, reads comments from the manager.
 - **Agent (LLM operator).** Runs on a schedule or in response to events.
-  Reads state via REST, writes via REST (with approval gating on
-  high-impact actions). The CLI is its ergonomic entry point.
+  Acts with the full authority of its delegating user — same
+  permissions, same audit identity (with agent-execution flag). High-
+  impact actions still require explicit human approval. The CLI is its
+  ergonomic entry point.
 
 ### Secondary
 

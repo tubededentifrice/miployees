@@ -236,7 +236,8 @@ FastAPI container.
    `clock.now()` through the `Clock` port. Determinism matters for
    scheduling.
 3. **Every mutation originates from a `RequestContext`** carrying
-   `actor_id`, `actor_kind` (human/agent/system), and an
+   `actor_id`, `actor_kind` (human/agent/system; delegated agents
+   use the human's kind), and an
    `audit_correlation_id`. Persisted into `audit_log` in the same
    transaction as the mutation.
 4. **Bind guard on public interfaces.** Default bind is

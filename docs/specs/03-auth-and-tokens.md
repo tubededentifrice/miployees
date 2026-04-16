@@ -6,7 +6,9 @@
 - **Passkeys (WebAuthn)** are the only human credential.
 - **Magic links** are only an enrollment mechanism — they register a
   passkey; they do not authenticate a session on their own.
-- **Agents** use long-lived, revocable, scope-limited API tokens.
+- **Standalone agents** use long-lived, revocable, scope-limited API
+  tokens. **Embedded agents** (§11) use delegated tokens that inherit
+  the calling user's full permissions (see "Delegated tokens" below).
 - The server never stores anything that can be replayed if the DB
   leaks: credentials are public keys, tokens are stored as argon2id
   hashes.
@@ -19,7 +21,10 @@
   hierarchy in v1, but the model allows it (§05).
 - **Employee.** Human with scope limited to their own data plus the
   tasks and properties they are assigned to.
-- **Agent.** Non-human. Identified by an API token; never by a session.
+- **Agent.** Non-human. Standalone agents are identified by a scoped
+  API token; never by a session. Embedded agents (§11) use **delegated
+  tokens** that act as the creating user — their `actor_kind` in audit
+  is the delegating user's kind (`manager` or `employee`), not `agent`.
 - **System.** The worker process itself, when generating scheduled
   tasks, sending digests, polling iCal. No token — identified by a
   reserved `actor_id = "00000000000000000000000000"` in the audit log.
@@ -126,10 +131,58 @@ All three events land in the audit log under `auth.reenroll`.
   the secret is stored; the key_id is stored in the clear so that
   every request can be O(1) located.
 
+### Delegated tokens
+
+A **delegated token** is created by a logged-in user (manager or
+employee) and inherits **all permissions** of that user for as long
+as the user's account is active and unarchived. This is the mechanism
+the embedded chat agents (§11) use to act on behalf of their user.
+
+```json
+POST /api/v1/auth/tokens
+{
+  "name": "manager-chat-agent",
+  "delegate": true,
+  "expires_at": "2026-05-16T00:00:00Z",
+  "note": "Embedded agent for manager desktop sidebar"
+}
+```
+
+Key properties:
+
+- `delegate_for_kind`: `manager` or `employee` — set from the session
+  creating the token; not caller-supplied.
+- `delegate_for_id`: ULID of the creating user — set from the session.
+- `scopes`: **empty**. Permission checks resolve against the
+  delegating user's access, not against explicit token scopes. If the
+  user's permissions change (role edits, property reassignment), the
+  delegated token's effective permissions change immediately.
+- If the delegating user is archived or deactivated, requests with
+  the token return `401` with a clear message.
+- A delegated token can only be created by a **passkey session** — it
+  cannot be created by another token (no transitive delegation).
+- Default TTL: **30 days** (shorter than the 90-day default for scoped
+  tokens). A workspace-level setting can raise it, with the same
+  noisy warning as for scoped tokens.
+- Revocation: the delegating user can revoke their own delegated
+  tokens; any manager can revoke any delegated token.
+
+**`api_token` columns for delegation:**
+
+| column             | type   | notes                                    |
+|--------------------|--------|------------------------------------------|
+| `delegate_for_kind` | text? | nullable; `manager` or `employee`        |
+| `delegate_for_id`  | ULID?  | nullable; references the delegating user |
+
+When both are null, the token is a classic scoped token (backward
+compatible). When both are set, it is a delegated token.
+
 ### Scopes
 
-Fine-grained, resource-scoped verbs. An agent should be issued the
-narrowest set possible.
+Fine-grained, resource-scoped verbs. A standalone agent should be
+issued the narrowest set possible. **Delegated tokens ignore scopes
+entirely** — permissions are resolved from the delegating user's
+access.
 
 - `tasks:{read,write,complete}`
 - `employees:{read,write}`
@@ -171,9 +224,13 @@ narrow escape hatch.
 
 - Tokens cannot create tokens unless scope `admin:rotate` is granted.
 - Tokens cannot accept their own `admin:*` approval (§11).
-- Tokens default to 90 days TTL if `expires_at` is omitted. A
-  household-level setting can raise the default to "never" but emits a
-  noisy warning in the UI.
+- Scoped tokens default to 90 days TTL if `expires_at` is omitted;
+  delegated tokens default to 30 days. A workspace-level setting can
+  raise either default to "never" but emits a noisy warning in the UI.
+- Delegated tokens cannot create other delegated tokens (no transitive
+  delegation). A delegated token cannot outlive its delegating user's
+  account — archiving the user effectively revokes all their delegated
+  tokens.
 - IP allow-lists optional per token (CIDR, comma-separated). Violations
   log and 403.
 

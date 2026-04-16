@@ -29,8 +29,12 @@
   passkey requires user verification (biometric).
 - **Ex-employee.** Mitigated by: off-boarding revokes credentials and
   sessions.
-- **Leaked agent token.** Mitigated by: token scopes, per-token audit,
-  easy revocation, optional IP allow-lists.
+- **Leaked agent token.** Mitigated by: delegated tokens inherit user
+  permissions but are separately revocable, per-token audit with full
+  conversation tracing (`agent_conversation_ref`), optional IP
+  allow-lists, shorter default TTL (30 days), automatic deactivation
+  when the delegating user is archived. Scoped tokens additionally
+  limited by explicit scopes.
 - **Hostile LLM prompt injection** (a task note or receipt contents
   trying to hijack the assistant). Mitigated by: structured-output
   schemas, tool-call whitelists, never executing untrusted content as
@@ -168,17 +172,18 @@ containing tokens, property wifi password, property access codes,
 deliberately narrow:
 
 1. **Payout manifest** (HTTP, §09) — manager passkey session only;
-   on §11's never-agent list; not stored; not cached by the
-   idempotency layer.
+   on §11's interactive-session-only list; not stored; not cached by
+   the idempotency layer.
 2. **Envelope-key rotation** (host CLI, §15 below) — no HTTP
    surface; authorised by host shell access; plaintext never leaves
    the server process.
 
-Agent tokens cannot reach either path. For (1), the approval
-pipeline would persist the decrypted response in
+Bearer tokens (scoped or delegated) cannot reach either path. For
+(1), the approval pipeline would persist the decrypted response in
 `agent_action.result_json` — so the endpoint is refused outright
-(see §11 "Never-agent endpoints"). For (2), there is no endpoint
-at all (see §11 "Host-CLI-only administrative commands").
+(see §11 "Interactive-session-only endpoints"). For (2), there is
+no endpoint at all (see §11 "Host-CLI-only administrative
+commands").
 
 The stored payslip PDF and all API responses use only `display_stub`.
 

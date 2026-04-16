@@ -242,7 +242,7 @@ Append-only. Written in the same transaction as every mutation.
 | workspace_id       | ULID FK |                                       |
 | correlation_id     | ULID    | request-level by default; groups multi-row edits |
 | occurred_at        | tstz    |                                       |
-| actor_kind         | text    | `manager`, `employee`, `agent`, `system` |
+| actor_kind         | text    | `manager`, `employee`, `agent`, `system`. For delegated-token requests (§03), this is the delegating human's kind; `agent` is used only for standalone scoped-token callers. |
 | actor_id           | ULID    | nullable only for `system`            |
 | via                | text    | `web`, `api`, `cli`, `worker`         |
 | token_id           | ULID    | nullable; populated for `api`/`cli`   |
@@ -252,6 +252,8 @@ Append-only. Written in the same transaction as every mutation.
 | before_json        | jsonb   | nullable (create)                     |
 | after_json         | jsonb   | nullable (delete)                     |
 | reason             | text    | optional, agent-supplied              |
+| agent_label        | text?   | token `name`; set when action performed via a delegated token (§03) |
+| agent_conversation_ref | text? | opaque prompt/conversation ref from `X-Agent-Conversation-Ref`, up to 500 chars |
 
 **Correlation scope.** `correlation_id` defaults to the HTTP request
 ID (generated server-side if the caller did not pass
@@ -353,7 +355,7 @@ CI job asserts no drift in test fixtures.
 
 Defined once per document where the enum lives; summarized here.
 
-- `actor_kind`: `manager | employee | agent | system`
+- `actor_kind`: `manager | employee | agent | system` (`agent` for standalone scoped-token callers only; delegated tokens use the human's kind — see §03)
 - `task_state`: `scheduled | pending | in_progress | completed | skipped | cancelled | overdue`
 - `stay_source`: `manual | airbnb | vrbo | booking | google_calendar | ical`
 - `pay_rule_kind`: `hourly | monthly_salary | per_task | piecework`

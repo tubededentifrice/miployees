@@ -14,26 +14,28 @@ miployees is built around a hard rule: **every human UI verb exists
 as a CLI or REST command first, and the UI is a shell around those
 commands.** There is no manager-only button, no employee-only
 button, that cannot also be driven by the CLI (§13) or by an agent
-holding the appropriate token (subject to the approval gates below).
-Concretely:
+holding a delegated token from the calling user. Concretely:
 
 - Every form in §14 posts to an endpoint documented in §12.
 - Every endpoint in §12 has a matching CLI command in §13.
 - Every action in §13 is reachable as a tool call from one of the
-  two embedded chat agents described below.
+  two embedded chat agents described below, using a delegated token
+  that inherits the calling user's full permissions (§03).
 - Dangerous actions are not hidden from agents; they are **gated**
-  by §11's approval pipeline, by the "never-agent endpoints" list,
-  or by the "host-CLI-only" fence — categories that exist precisely
-  because agents can, in principle, reach everything else.
+  by §11's approval pipeline, by the "interactive-session-only
+  endpoints" list, or by the "host-CLI-only" fence — categories
+  that exist precisely because agents can, in principle, reach
+  everything else.
 
 This inversion — CLI and REST first, UI last — is why the two
 embedded agents below can drive the product end-to-end.
 
 ## Embedded agents
 
-Two chat agents are embedded in the product. Each is scoped to a
-persona and a tool surface; they share plumbing (client, redaction,
-audit, approval) but differ in what they are allowed to do.
+Two chat agents are embedded in the product. Each operates with a
+**delegated token** (§03) created from the calling user's session,
+inheriting that user's full permissions. They share plumbing (client,
+redaction, audit, approval) but differ in whose authority they carry.
 
 ### Manager-side agent
 
@@ -44,31 +46,18 @@ changes — the chat log scroll position, the composer draft, and the
 `EventSource` subscription all persist across navigation. New agent
 messages are delivered via the SSE event `agent.message.appended`,
 so every connected manager tab sees them without polling. Its tool
-surface is **the full CLI + REST surface**, including but not limited
-to:
-
-- **Review / plan / gap-find** — thread-local introspection tools
-  that summarise the current manager view, list upcoming work,
-  and surface spec-to-code gaps.
-- **Scheduling and reassignments** — `tasks.create`,
-  `tasks.assign`, `tasks.skip`, `schedules.add`, `schedules.pause`,
-  `schedules.apply-edits`.
-- **Instructions drafting** — `instructions.add`,
-  `instructions.publish`, `instructions.link`, with a built-in
-  "draft from this conversation" helper.
-- **Payroll issuance** — `payslips.issue`, `payslips.mark-paid`,
-  `pay.periods.lock`, **all gated** by the always-approved money-
-  routing actions below.
-- **Employee lifecycle** — `employees.archive`, `.reinstate`,
-  `.magic-link`, capability flips (gated for mass changes).
-- **LLM admin** — `llm.assignments.set`, `llm.calls.list`.
+surface is **the full CLI + REST surface available to the delegating
+manager** — every command the manager can execute in the UI or CLI
+is available to the agent. There is no filtered capability catalog;
+tool descriptors are resolved dynamically from the manager's current
+permissions.
 
 High-impact tools are routed through the approval pipeline (§ "Agent
 action approval" below). The manager-side agent does **not** bypass
 its own approval: when it proposes a payroll issuance it still goes
 to the `/approvals` queue, where the same manager clicks "Approve"
 before execution. This costs one extra tap and buys a canonical
-audit trail identical to an external agent's.
+audit trail.
 
 Default model: `google/gemma-4-31b-it`. Overridable via
 `llm.assignments.set` under capability `chat.manager`.
@@ -79,29 +68,18 @@ the agent.
 
 ### Employee-side agent
 
-Lives as the `Chat` tab in the employee PWA footer (§14). A narrow
-tool surface designed for on-the-job questions and simple writes:
+Lives as the `Chat` tab in the employee PWA footer (§14). Its tool
+surface is **the full CLI + REST surface available to the delegating
+employee** — every command the employee can execute is available to
+the agent. Tool descriptors are resolved dynamically from the
+employee's current capabilities (§05) and property assignments; the
+model sees only tools the employee is authorized to use.
 
-- `issue-report` — file an `issue_report` scoped to the employee's
-  properties.
-- `expense-upload` — upload a receipt photo and kick off
-  `expenses.autofill` (§09).
-- `clock-in` / `clock-out` — only when `time.clock_mode = manual`;
-  in `auto` mode, the agent explains that the shift has already
-  been opened/closed.
-- `task-complete` — mark a task done with an optional photo and
-  note; respects the resolved evidence policy (§06).
-- `instruction-lookup` — resolve applicable instructions by scope
-  (§07) and surface them inline.
-- `leave-request` — create a pending `employee_leave` row.
-- `message-manager` — post into the workspace agent thread
-  (routes via the workspace agent so the manager sees it in their
-  chat thread, not as a bare notification).
-
-The employee agent cannot read other employees' data, cannot
-mutate other employees' rows, and cannot reach payroll or audit
-endpoints. Its tool descriptors are filtered at session start so
-the model never sees a forbidden tool.
+Because the delegated token inherits the employee's permissions, the
+agent cannot read other employees' data, cannot mutate other
+employees' rows, and cannot reach payroll or audit endpoints — those
+restrictions come from the employee's own access level, not from a
+filtered tool catalog.
 
 Default model: `google/gemma-4-31b-it`. Capability keys
 `chat.employee` (default on for the employee) and `voice.employee`
@@ -253,25 +231,38 @@ Retention: 90 days by default, configurable per workspace (§02).
 
 ## Agent audit trail
 
-Every write performed by an agent is already captured in `audit_log`
-(§02). Additionally, for agents specifically:
+Every write performed via a delegated token is captured in `audit_log`
+(§02) and attributed to the **delegating user**, not to a separate
+"agent" actor:
 
-- `audit_log.via = 'api' or 'cli'`, `actor_kind = 'agent'`, `token_id`
-  set.
-- `audit_log.reason` carries an agent-supplied `X-Agent-Reason` header
-  (free text, up to 500 chars).
-- `audit_log.correlation_id` propagated from `X-Correlation-Id` if
-  present, else generated server-side and returned via
-  `X-Correlation-Id-Echo`.
+- `actor_kind` = the delegating user's kind (`manager` or `employee`).
+- `actor_id` = the delegating user's ULID.
+- `via` = `api` or `cli`.
+- `token_id` = the delegated token's id (join to `api_token` for
+  delegation metadata).
+- `agent_label` = the token's `name` field, denormalized for display
+  (e.g. "manager-chat-agent"). Set only for delegated tokens.
+- `agent_conversation_ref` = from the `X-Agent-Conversation-Ref`
+  header — an opaque reference (up to 500 chars) linking the audit
+  entry back to the conversation or prompt that triggered the action.
+- `reason` = from `X-Agent-Reason` header (free text, up to 500 chars,
+  as before).
+- `correlation_id` propagated from `X-Correlation-Id` if present, else
+  generated server-side and returned via `X-Correlation-Id-Echo`.
 
 The manager's **Agent Activity** view filters `audit_log` by
-`actor_kind = 'agent'` with facets on token, action, and time range,
-and a line chart of call volume per token.
+`actor_kind = 'agent' OR agent_label IS NOT NULL` — capturing both
+standalone scoped-token agents and delegated-token agents — with
+facets on token, action, and time range, and a line chart of call
+volume per token. Because `actor_id`
+points to the human, every agent action is also visible in the user's
+own audit trail.
 
 ## Agent action approval
 
 High-impact actions require a manager to click "Approve" before they
-commit, regardless of token scope.
+commit, regardless of whether the request comes from a direct session
+or a delegated token.
 
 ### Which actions
 
@@ -298,16 +289,17 @@ routing; the approval requirement cannot be disabled in
 - `expense_claim.set_destination_override` (agent path; the manager
   selecting a destination in the approval UI is itself the approval)
 
-### Never-agent endpoints
+### Interactive-session-only endpoints
 
-A separate, stricter class of HTTP endpoints is **not approvable** —
-they are refused for agent tokens unconditionally and return
-`403 forbidden` with `WWW-Authenticate: error="agent_not_permitted"`.
-The approval middleware does **not** write an `agent_action` row
-for these, because doing so would itself be the leak: the
-middleware persists `resolved_payload_json` and (on execution)
-`result_json`, and for these endpoints the response contains
-decrypted secret material that must never land in a persisted row.
+A separate, stricter class of HTTP endpoints requires a **live
+passkey session** — they refuse all bearer tokens (whether scoped or
+delegated) and return `403 forbidden` with
+`WWW-Authenticate: error="session_only_endpoint"`. The approval
+middleware does **not** write an `agent_action` row for these,
+because doing so would itself be the leak: the middleware persists
+`resolved_payload_json` and (on execution) `result_json`, and for
+these endpoints the response contains decrypted secret material that
+must never land in a persisted row.
 
 v1 members of the list:
 
@@ -326,7 +318,7 @@ A related but distinct class: administrative commands that have
 **no HTTP surface at all**, agent or human. They are invoked only
 via `miployees admin <verb>` on the deployment host, with shell
 access to the running service's environment. This is a stronger
-boundary than never-agent — there is literally no network path to
+boundary than interactive-session-only — there is literally no network path to
 them, so the approval system does not apply and the idempotency
 cache does not exist for them.
 
@@ -381,10 +373,10 @@ agent_action
 
 ### Bypass
 
-A token carrying `admin:*` scope can **not** bypass approval on
-default-approvable actions. The only way to disable approval on an
-action is for a manager to flip the workspace-level setting in
-`/settings/approvals`.
+Neither a scoped token carrying `admin:*` scope nor a delegated token
+can bypass approval on default-approvable actions. The only way to
+disable approval on an action is for a manager to flip the workspace-
+level setting in `/settings/approvals`.
 
 ### TTL
 
