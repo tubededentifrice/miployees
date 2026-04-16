@@ -57,6 +57,13 @@ observations.
 Call `EnterPlanMode` to switch to read-only analysis. All investigation
 happens here before proposing any change.
 
+**Do NOT repeat the original implementation plan in your new plan.** The
+selfreview plan is a review checklist and findings report — not a copy of
+what was just built. You may reference the original plan inline
+(e.g. "the migration added in step 3 of the original plan is missing a
+downgrade") when it helps the next implementer understand *what* you're
+referring to, but never reproduce it wholesale.
+
 ## Phase 3: Deep review
 
 Be **adversarial**. Assume the code has bugs. Try to break it.
