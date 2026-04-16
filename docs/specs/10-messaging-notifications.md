@@ -39,6 +39,13 @@ Jinja2 templates under `app/templates/email/`. MJML compiled at build
 time into plain HTML. Every email is **both** HTML and plaintext. No
 external CSS. Preheader text as a hidden first div.
 
+**Locale-aware template resolution.** The system resolves templates
+with locale fallback: it looks for `{key}_{locale}.html`, then
+`{key}_{language}.html`, then `{key}.html`. v1 ships only English
+defaults; the resolution logic is in place from day one. All templates
+receive `locale` in their Jinja context. Formatting helpers
+(`fmt_date`, `fmt_money`, `fmt_number`) respect this parameter.
+
 ### Emails the system sends
 
 | event                          | to                      | required?     |

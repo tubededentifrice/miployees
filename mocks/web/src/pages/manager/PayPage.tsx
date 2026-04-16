@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { formatMoney } from "@/lib/money";
 import DeskPage from "@/components/DeskPage";
 import { Avatar, Chip, Loading, StatCard } from "@/components/common";
 import type { Employee, PaySlip } from "@/types/api";
@@ -16,10 +17,6 @@ const STATUS_TONE: Record<PaySlip["status"], "sand" | "sky" | "moss" | "rust"> =
   paid: "moss",
   voided: "rust",
 };
-
-function money(cents: number, currency: string): string {
-  return currency + (cents / 100).toFixed(2);
-}
 
 function sumGross(xs: PaySlip[]): number {
   return xs.reduce((acc, p) => acc + p.gross_cents, 0);
@@ -55,9 +52,7 @@ export default function PayPage() {
 
   const empById = new Map(employeesQ.data.map((e) => [e.id, e]));
   const { current, previous } = payQ.data;
-  // Payslips don't carry a currency field today (gross is in cents only);
-  // mirror the legacy template which renders euros across the board.
-  const currency = "€";
+  const defaultCurrency = current[0]?.currency ?? "EUR";
 
   return (
     <DeskPage title="Pay" sub={sub} actions={actions}>
@@ -66,12 +61,12 @@ export default function PayPage() {
         <StatCard label="Drafts" value={current.length} sub="payslips pending issue" />
         <StatCard
           label="April gross (est.)"
-          value={currency + (sumGross(current) / 100).toFixed(0)}
+          value={formatMoney(sumGross(current), defaultCurrency)}
           sub="before reimbursements"
         />
         <StatCard
           label="Last period"
-          value={currency + (sumNet(previous) / 100).toFixed(0)}
+          value={formatMoney(sumNet(previous), previous[0]?.currency ?? defaultCurrency)}
           sub="March · all paid"
         />
       </section>
@@ -95,9 +90,9 @@ export default function PayPage() {
                   </td>
                   <td className="mono">{p.hours} h</td>
                   <td className="mono">{p.overtime} h</td>
-                  <td className="mono">{money(p.gross_cents, currency)}</td>
-                  <td className="mono">{money(p.reimbursements_cents, currency)}</td>
-                  <td className="mono"><strong>{money(p.net_cents, currency)}</strong></td>
+                  <td className="mono">{formatMoney(p.gross_cents, p.currency)}</td>
+                  <td className="mono">{formatMoney(p.reimbursements_cents, p.currency)}</td>
+                  <td className="mono"><strong>{formatMoney(p.net_cents, p.currency)}</strong></td>
                   <td><Chip tone={STATUS_TONE[p.status]} size="sm">{p.status}</Chip></td>
                   <td><button className="btn btn--sm btn--ghost">Preview PDF</button></td>
                 </tr>
@@ -121,9 +116,9 @@ export default function PayPage() {
               return (
                 <tr key={p.id}>
                   <td>{emp?.name}</td>
-                  <td className="mono">{money(p.gross_cents, currency)}</td>
-                  <td className="mono">{money(p.reimbursements_cents, currency)}</td>
-                  <td className="mono"><strong>{money(p.net_cents, currency)}</strong></td>
+                  <td className="mono">{formatMoney(p.gross_cents, p.currency)}</td>
+                  <td className="mono">{formatMoney(p.reimbursements_cents, p.currency)}</td>
+                  <td className="mono"><strong>{formatMoney(p.net_cents, p.currency)}</strong></td>
                   <td><Chip tone="moss" size="sm">paid</Chip></td>
                 </tr>
               );

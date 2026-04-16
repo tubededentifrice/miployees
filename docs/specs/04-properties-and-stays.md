@@ -15,7 +15,9 @@ residence, a vacation home, an STR unit, or a yacht all count.
 | kind                  | enum        | `residence | vacation | str | mixed` (behavior below) |
 | address_json          | jsonb/text  | structured address             |
 | timezone              | text        | IANA (`Europe/Paris`)          |
-| default_currency      | text        | ISO 4217, inherits household   |
+| default_currency      | text        | ISO 4217, inherits workspace   |
+| country               | text        | ISO-3166-1 alpha-2. Required. Authoritative source: `address_json.country` when present; otherwise inherits workspace `default_country`. Drives holiday suggestions, payslip jurisdiction, locale derivation. |
+| locale                | text?       | BCP-47. Nullable; when null, derived from workspace language + property country. |
 | property_notes_md     | text        | internal, staff-visible        |
 | welcome_defaults_json | jsonb       | wifi, doors, rules, contacts   |
 | created_at/updated_at | tstz        |                                |
@@ -23,6 +25,23 @@ residence, a vacation home, an STR unit, or a yacht all count.
 
 A property has many **areas** and many **stays**. It may have one or
 more **iCal feeds** (multiple platforms for the same unit).
+
+### `address_json` canonical shape
+
+```json
+{
+  "line1": "12 Chemin des Oliviers",
+  "line2": null,
+  "city": "Antibes",
+  "state_province": "Alpes-Maritimes",
+  "postal_code": "06600",
+  "country": "FR"
+}
+```
+
+**Write rule:** on write, if `address_json.country` is provided the
+server copies it to `property.country`; if only `property.country` is
+set, `address_json.country` is back-filled.
 
 ### `kind` semantics
 

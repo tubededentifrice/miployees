@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { formatMoney } from "@/lib/money";
+import { fmtDate, fmtDateTime } from "@/lib/dates";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading } from "@/components/common";
 import type {
@@ -36,21 +38,6 @@ const EXPENSE_TONE: Record<ExpenseStatus, "sand" | "moss" | "rust" | "sky"> = {
   rejected: "rust",
   reimbursed: "sky",
 };
-
-function fmtDayMonTime(iso: string): string {
-  const d = new Date(iso);
-  const date = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return date + " · " + time;
-}
-
-function fmtDayMon(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
-
-function euros(cents: number): string {
-  return "€" + (cents / 100).toFixed(2);
-}
 
 export default function EmployeeDetailPage() {
   const { eid = "" } = useParams<{ eid: string }>();
@@ -103,7 +90,7 @@ export default function EmployeeDetailPage() {
               return (
                 <li key={t.id} className="task-row">
                   <span className="task-row__time table__mono">
-                    {fmtDayMonTime(t.scheduled_start)}
+                    {fmtDateTime(t.scheduled_start)}
                   </span>
                   <span className="task-row__title">
                     <strong>{t.title}</strong>
@@ -125,10 +112,10 @@ export default function EmployeeDetailPage() {
                 <div className="expense-row__main">
                   <strong>{x.merchant}</strong>
                   <span className="expense-row__note">{x.note}</span>
-                  <span className="expense-row__time">{fmtDayMon(x.submitted_at)}</span>
+                  <span className="expense-row__time">{fmtDate(x.submitted_at)}</span>
                 </div>
                 <div className="expense-row__side">
-                  <span className="expense-row__amount">{euros(x.amount_cents)}</span>
+                  <span className="expense-row__amount">{formatMoney(x.amount_cents, x.currency)}</span>
                   <Chip tone={EXPENSE_TONE[x.status]} size="sm">{x.status}</Chip>
                 </div>
               </li>

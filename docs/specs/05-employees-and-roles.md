@@ -25,6 +25,7 @@ junction tables.
 | avatar_file_id     | ULID FK?  | file in `storage`                |
 | timezone           | text      | defaults to default property's tz |
 | languages          | text[]    | BCP-47 tags; informational in v1 |
+| preferred_locale   | text?     | BCP-47. When set, overrides locale resolution for employee-facing documents (payslip PDFs, email digests). When null, falls back to `languages[0]` region-tagged with primary property country, then workspace `default_locale`, then `en-US`. |
 | started_on         | date      | employment start                 |
 | archived_on        | date?     | set when archived (off-boarded); cleared on reinstate |
 | notes_md           | text      | manager-visible                  |
@@ -32,6 +33,10 @@ junction tables.
 | pay_destination_id | ULID FK?  | default payout for payslips (§09). Must reference a non-archived `payout_destination` whose `employee_id = employee.id`; enforced via trigger/constraint. |
 | reimbursement_destination_id | ULID FK? | default for expense reimbursements; null → falls back to pay_destination_id. Same FK guard as above. |
 | deleted_at         | tstz?     |                                  |
+
+`languages` (spoken) and `preferred_locale` (formatting) are distinct.
+An employee may speak Portuguese but need payslips formatted per French
+locale because they work in France.
 
 An employee without any role is invalid; creation requires at least
 one `employee_role`.

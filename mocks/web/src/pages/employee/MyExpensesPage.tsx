@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { formatMoney } from "@/lib/money";
+import { fmtDate } from "@/lib/dates";
 import { Loading } from "@/components/common";
 import type { Expense, ExpenseStatus } from "@/types/api";
 
@@ -11,14 +13,6 @@ const STATUS_TONE: Record<ExpenseStatus, "moss" | "rust" | "sand" | "sky"> = {
   rejected: "rust",
   reimbursed: "sky",
 };
-
-function dmon(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
-
-function money(cents: number): string {
-  return (cents / 100).toFixed(2);
-}
 
 export default function MyExpensesPage() {
   const qc = useQueryClient();
@@ -64,7 +58,7 @@ export default function MyExpensesPage() {
             />
           </label>
           <label className="field field--inline">
-            <span>Amount (€)</span>
+            <span>Amount</span>
             <input
               name="amount"
               type="number"
@@ -105,10 +99,10 @@ export default function MyExpensesPage() {
                 <div className="expense-row__main">
                   <strong>{x.merchant}</strong>
                   <span className="expense-row__note">{x.note}</span>
-                  <span className="expense-row__time">{dmon(x.submitted_at)}</span>
+                  <span className="expense-row__time">{fmtDate(x.submitted_at)}</span>
                 </div>
                 <div className="expense-row__side">
-                  <span className="expense-row__amount">€{money(x.amount_cents)}</span>
+                  <span className="expense-row__amount">{formatMoney(x.amount_cents, x.currency)}</span>
                   <span className={"chip chip--sm chip--" + STATUS_TONE[x.status]}>{x.status}</span>
                 </div>
               </li>

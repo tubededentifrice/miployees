@@ -18,6 +18,8 @@ export interface Property {
   kind: PropertyKind;
   areas: string[];
   evidence_policy: "inherit" | "require" | "optional" | "forbid";
+  country: string;
+  locale: string;
 }
 
 export interface Employee {
@@ -38,6 +40,7 @@ export interface Employee {
   language: string;
   weekly_availability: Record<string, [string, string] | null>;
   evidence_policy: "inherit" | "require" | "optional" | "forbid";
+  preferred_locale: string | null;
 }
 
 export type TaskStatus = "pending" | "in_progress" | "completed" | "skipped";
@@ -195,6 +198,9 @@ export interface PaySlip {
   status: "draft" | "issued" | "paid" | "voided";
   hours: number;
   overtime: number;
+  currency: string;
+  locale: string;
+  jurisdiction: string;
 }
 
 export interface ModelAssignment {
@@ -262,6 +268,8 @@ export interface HouseholdSettings {
   retention_days: Record<string, number>;
   approvals: { always_gated: string[]; configurable: string[] };
   danger_zone: string[];
+  country: string;
+  default_locale: string;
 }
 
 export interface Me {

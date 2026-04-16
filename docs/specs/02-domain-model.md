@@ -195,6 +195,9 @@ introduces `workspace_id` on every user-editable table.)
 | id            | ULID PK     | seeded at first boot               |
 | name          | text        | displayed in UI                    |
 | default_language | text     | BCP-47; used by §10 auto-translation and digest prose |
+| default_currency | text    | ISO-4217. Referenced by Money section below; per-property override in §04. |
+| default_country | text     | ISO-3166-1 alpha-2. Workspace-level fallback for properties. |
+| default_locale | text?     | BCP-47 locale tag (e.g. `fr-FR`). Nullable; when null, derived from `default_language` + `default_country`. Drives number/date/currency formatting on workspace-scoped documents. |
 | created_at    | tstz        |                                    |
 | settings_json | jsonb/text  | global instruction bank anchor, etc|
 
@@ -346,10 +349,27 @@ CI job asserts no drift in test fixtures.
 
 - All money stored as **integer cents** plus ISO-4217 `currency` (text)
   on the owning row. No floats.
-- Per-workspace `default_currency`. Per-property override allowed.
-- Multi-currency payroll is out of scope; expenses may be in any
-  currency, converted to the workspace default at approval time using
-  the snapshot rate stored on the expense line.
+- `default_currency` is a column on `workspaces` (see table above).
+  Per-property override via `property.default_currency` (§04).
+- **Currency minor units** are looked up from a static ISO-4217 table
+  (JPY=0, BHD=3, EUR=2). All `*_cents` columns store the currency's
+  minor unit. Formatting uses the minor-unit count, never hardcoded
+  `/ 100`.
+- v1 enforces that all pay rules for a single employee within one pay
+  period share one currency.
+- Lifting the single-currency-per-period constraint later requires only
+  conversion logic at period-close time -- the per-entity `currency`
+  columns are already in place.
+- Expenses may be in any currency, converted to the workspace default at
+  approval time using the snapshot rate stored on the expense line.
+
+### Country and locale
+
+**Country and locale follow the same inheritance pattern as timezone:**
+workspace default -> property override -> (for locale) employee override.
+Absent means "inherit"; present means "use this value, stop inheritance."
+
+Resolution chains for locale are documented in §18.
 
 ## Enums (canonical list)
 

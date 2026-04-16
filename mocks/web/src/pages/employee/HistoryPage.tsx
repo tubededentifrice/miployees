@@ -2,6 +2,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { formatMoney } from "@/lib/money";
+import { fmtDate, fmtDateTime } from "@/lib/dates";
 import { Loading } from "@/components/common";
 import type { HistoryPayload, Property } from "@/types/api";
 
@@ -18,25 +20,8 @@ function isTab(v: string): v is Tab {
   return v === "tasks" || v === "chats" || v === "expenses" || v === "leaves";
 }
 
-function dmon(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
-
-function dmonhm(iso: string): string {
-  const d = new Date(iso);
-  return (
-    d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) +
-    " · " +
-    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-  );
-}
-
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function money(cents: number): string {
-  return (cents / 100).toFixed(2);
 }
 
 export default function HistoryPage() {
@@ -92,7 +77,7 @@ export default function HistoryPage() {
                   <div>
                     <strong>{t.title}</strong>
                     <div className="stack-row__sub">
-                      {prop ? prop.name : t.property_id} · {dmonhm(t.scheduled_start)}
+                      {prop ? prop.name : t.property_id} · {fmtDateTime(t.scheduled_start)}
                     </div>
                   </div>
                   <span
@@ -133,10 +118,10 @@ export default function HistoryPage() {
               <li key={x.id} className="stack-row">
                 <div>
                   <strong>
-                    {x.merchant} · €{money(x.amount_cents)}
+                    {x.merchant} · {formatMoney(x.amount_cents, x.currency)}
                   </strong>
                   <div className="stack-row__sub">
-                    {dmon(x.submitted_at)} · {x.note}
+                    {fmtDate(x.submitted_at)} · {x.note}
                   </div>
                 </div>
                 <span
@@ -160,7 +145,7 @@ export default function HistoryPage() {
               <li key={lv.id} className="stack-row">
                 <div>
                   <strong>
-                    {dmon(lv.starts_on)} → {dmon(lv.ends_on)}
+                    {fmtDate(lv.starts_on)} → {fmtDate(lv.ends_on)}
                   </strong>
                   <div className="stack-row__sub">
                     {cap(lv.category)} · {lv.note}

@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { formatMoney } from "@/lib/money";
+import { fmtDateTime } from "@/lib/dates";
 import DeskPage from "@/components/DeskPage";
 import { Avatar, Chip, Loading, StatCard } from "@/components/common";
 import type { Employee, Expense, ExpenseStatus } from "@/types/api";
@@ -21,16 +23,6 @@ const CATEGORY_BY_ID: Record<string, string> = {
   "x-5": "maintenance",
 };
 
-function money(cents: number, currency: string): string {
-  return currency + " " + (cents / 100).toFixed(2);
-}
-
-function fmt(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
-    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-  });
-}
-
 function sumCents(xs: Expense[]): number {
   return xs.reduce((acc, x) => acc + x.amount_cents, 0);
 }
@@ -38,7 +30,7 @@ function sumCents(xs: Expense[]): number {
 function totalLabel(xs: Expense[]): string {
   if (xs.length === 0) return "0.00 total";
   const cur = xs[0]?.currency ?? "EUR";
-  return money(sumCents(xs), cur) + " total";
+  return formatMoney(sumCents(xs), cur) + " total";
 }
 
 export default function ExpensesApprovalsPage() {
@@ -144,12 +136,12 @@ export default function ExpensesApprovalsPage() {
                   ) : (
                     <Chip tone="ghost" size="sm">manual entry</Chip>
                   )}
-                  <span className="approval__time">submitted {fmt(x.submitted_at)}</span>
+                  <span className="approval__time">submitted {fmtDateTime(x.submitted_at)}</span>
                 </div>
 
                 <div className="expense-approval__grid">
                   <div className="expense-approval__amount">
-                    <span className="expense-approval__value">{money(x.amount_cents, x.currency)}</span>
+                    <span className="expense-approval__value">{formatMoney(x.amount_cents, x.currency)}</span>
                     <span className="expense-approval__currency mono">{x.currency}</span>
                   </div>
                   <div className="expense-approval__body">
@@ -211,8 +203,8 @@ export default function ExpensesApprovalsPage() {
                     {emp && <><Avatar initials={emp.avatar_initials} size="xs" /> {emp.name}</>}
                   </td>
                   <td>{x.merchant}<div className="table__sub">{x.note}</div></td>
-                  <td className="mono">{money(x.amount_cents, x.currency)}</td>
-                  <td className="mono">{fmt(x.submitted_at)}</td>
+                  <td className="mono">{formatMoney(x.amount_cents, x.currency)}</td>
+                  <td className="mono">{fmtDateTime(x.submitted_at)}</td>
                   <td><Chip tone={STATUS_TONE[status]} size="sm">{x.status}</Chip></td>
                 </tr>
               );

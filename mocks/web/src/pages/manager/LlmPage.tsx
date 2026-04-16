@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { formatMoney } from "@/lib/money";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading, ProgressBar, StatCard } from "@/components/common";
 import type { LLMCall, ModelAssignment } from "@/types/api";
@@ -57,8 +58,8 @@ export default function LlmPage() {
       <section className="grid grid--stats">
         <StatCard
           label="24h spend"
-          value={"$" + total_spent.toFixed(2)}
-          sub={"of $" + total_budget.toFixed(2) + " budget"}
+          value={formatMoney(Math.round(total_spent * 100), "USD")}
+          sub={"of " + formatMoney(Math.round(total_budget * 100), "USD") + " budget"}
         />
         <StatCard
           label="Calls (24h)"
@@ -93,10 +94,10 @@ export default function LlmPage() {
                     <div className="table__sub">{a.provider}</div>
                   </td>
                   <td className="mono">{a.calls_24h}</td>
-                  <td className="mono">${a.daily_budget_usd.toFixed(2)}</td>
+                  <td className="mono">{formatMoney(Math.round(a.daily_budget_usd * 100), "USD")}</td>
                   <td className="mono">
                     <ProgressBar value={pct} slim />{" "}
-                    <span>${a.spent_24h_usd.toFixed(2)}</span>
+                    <span>{formatMoney(Math.round(a.spent_24h_usd * 100), "USD")}</span>
                   </td>
                   <td>
                     {a.enabled ? (
@@ -128,7 +129,7 @@ export default function LlmPage() {
                 <td><code className="inline-code">{c.capability}</code></td>
                 <td className="mono muted">{c.model_id}</td>
                 <td className="mono">{c.input_tokens} / {c.output_tokens}</td>
-                <td className="mono">${(c.cost_cents / 100).toFixed(3)}</td>
+                <td className="mono">{formatMoney(c.cost_cents, "USD")}</td>
                 <td className="mono">{c.latency_ms} ms</td>
                 <td><Chip tone={STATUS_TONE[c.status]} size="sm">{c.status}</Chip></td>
               </tr>

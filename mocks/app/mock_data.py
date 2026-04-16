@@ -27,6 +27,8 @@ class Property:
     kind: Literal["str", "vacation", "residence", "mixed"]
     areas: list[str] = field(default_factory=list)
     evidence_policy: Literal["inherit", "require", "optional", "forbid"] = "inherit"
+    country: str = "FR"
+    locale: str = "fr-FR"
 
 
 @dataclass
@@ -54,6 +56,7 @@ class Employee:
     language: str = "fr"
     weekly_availability: dict[str, tuple[str, str] | None] = field(default_factory=dict)
     evidence_policy: Literal["inherit", "require", "optional", "forbid"] = "inherit"
+    preferred_locale: str | None = None
 
 
 @dataclass
@@ -213,6 +216,9 @@ class PaySlip:
     status: Literal["draft", "issued", "paid", "voided"]
     hours: float
     overtime: float
+    currency: str = "EUR"
+    locale: str = "fr-FR"
+    jurisdiction: str = "FR"
 
 
 @dataclass
@@ -673,6 +679,8 @@ HOUSEHOLD_SETTINGS: dict[str, Any] = {
     "name": "Bernard household",
     "timezone": "Europe/Paris",
     "currency": "EUR",
+    "country": "FR",
+    "default_locale": "fr-FR",
     "week_start": "Monday",
     "pay_frequency": "monthly",
     "default_photo_evidence": "optional",

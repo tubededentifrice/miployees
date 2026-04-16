@@ -283,6 +283,8 @@ A computed pay document for one (employee, pay_period).
 | employee_id             | ULID FK |
 | pay_period_id           | ULID FK |
 | currency                | text    |
+| locale                  | text    | BCP-47. Resolved at `draft` creation, immutable. Drives PDF date/number/currency formatting. Resolution: employee.preferred_locale -> property.locale -> workspace.default_locale -> `en-US`. |
+| jurisdiction            | text    | ISO-3166-1 alpha-2. From employee's primary property `country` at draft time. Immutable. Selects which payslip template to use. |
 | gross_total_cents       | int     |
 | components_json         | jsonb   |
 | expense_reimbursements_cents | int |
@@ -293,9 +295,53 @@ A computed pay document for one (employee, pay_period).
 | email_delivery_id       | ULID FK?|
 | payout_snapshot_json    | jsonb?  | immutable snapshot of destinations used; null on `draft`, populated at `draft → issued` transition, never modified thereafter. See "Snapshot on the payslip" below. |
 
+### `components_json` schema
+
+```json
+{
+  "schema_version": 1,
+  "gross_breakdown": [
+    {"key": "base_pay",      "cents": 200000},
+    {"key": "overtime_150",  "cents": 30000},
+    {"key": "holiday_bonus", "cents": 0}
+  ],
+  "deductions": [
+    {"key": "adjustment", "cents": 0, "reason": null}
+  ],
+  "statutory": [],
+  "metadata": {
+    "hours_regular": 151.67,
+    "hours_overtime_150": 12.0,
+    "hourly_rate_cents": 1429
+  }
+}
+```
+
+Design rules:
+
+- `gross_breakdown` keys come from a catalog; **labels are resolved at
+  PDF render time** from a locale-aware catalog
+  (`payslip_components_{locale}.json`), never stored as final text.
+  This lets the same payslip re-render in any locale.
+- `statutory` is an empty array in v1. Future country modules populate
+  it with lines like
+  `{"key": "fr_urssaf_csg", "rate": 0.098, "base_cents": 248000, "cents": 24304}`.
+  The PDF template iterates whatever is present.
+- `schema_version` allows future shape migration.
+- `metadata` carries non-monetary data (hours, rates) needed for the PDF.
+
 ### PDF
 
-Rendered with WeasyPrint from a Jinja template. Line items include:
+Rendered with WeasyPrint from a Jinja template.
+
+**Locale/jurisdiction awareness.** Templates are organized as
+`payslip_base.html` (shared layout) with optional
+`payslip_{jurisdiction}.html` partials for country-specific statutory
+sections. v1 ships only the base template. All date/number/currency
+formatting in the PDF uses Babel with the payslip's `locale`, never
+hardcoded formats.
+
+Line items include:
 
 - Base pay (hours × rate or monthly salary),
 - Overtime breakdown (by threshold),
@@ -694,5 +740,10 @@ Exports: `GET /api/v1/exports/...csv` (streamed) or via CLI
 - Tax withholding, social contributions, statutory filings.
 - Tip pooling, shift differentials beyond the overtime/holiday rules.
 - Direct bank transfers or payment execution.
-- Multi-currency payroll (claims can be multi-currency; payslips are
-  per-currency, one per employee).
+- Multi-currency payroll is not implemented in v1. The seam is in
+  place: `pay_rule.currency` and `payslip.currency` carry per-entity
+  codes, `property.default_currency` allows per-property overrides,
+  and `components_json` is currency-stamped. v1 enforces that all pay
+  rules for one employee within a pay period share one currency.
+  Lifting that constraint requires conversion logic at period-close
+  time.
