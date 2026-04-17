@@ -43,6 +43,7 @@ export default function ManagerLayout() {
           <NavItem to="/expenses">Expenses</NavItem>
           <NavItem to="/pay">Pay</NavItem>
           <div className="nav-section">ADMIN</div>
+          <NavItem to="/permissions">Permissions</NavItem>
           <NavItem to="/audit">Audit log</NavItem>
           <NavItem to="/webhooks">Webhooks</NavItem>
           <NavItem to="/llm">LLM &amp; agents</NavItem>

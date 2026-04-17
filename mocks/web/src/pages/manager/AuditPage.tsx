@@ -14,10 +14,10 @@ const ACTOR_TONE: Record<AuditEntry["actor_kind"], "moss" | "sky" | "ghost"> = {
 };
 
 const GRANT_TONE: Record<NonNullable<AuditEntry["actor_grant_role"]>, "moss" | "sand" | "sky" | "ghost"> = {
-  owner: "moss",
   manager: "moss",
   worker: "sand",
   client: "sky",
+  guest: "ghost",
 };
 
 function hms(iso: string): string {
@@ -35,7 +35,7 @@ export default function AuditPage() {
     queryFn: () => fetchJson<AuditEntry[]>("/api/v1/audit"),
   });
 
-  const sub = "Append-only. Every mutation by a user (owner/manager/worker/client), an agent, or the system.";
+  const sub = "Append-only. Every mutation by a user (on the manager/worker/client surface), an agent, or the system. Actions taken by a member of the owners permission group carry a governance badge.";
   const actions = <button className="btn btn--ghost">Export JSONL</button>;
 
   if (q.isPending) return <DeskPage title="Audit log" sub={sub} actions={actions}><Loading /></DeskPage>;
@@ -46,6 +46,7 @@ export default function AuditPage() {
     entries.filter((e) => e.actor_kind === kind).length;
   const countByGrant = (role: NonNullable<AuditEntry["actor_grant_role"]>): number =>
     entries.filter((e) => e.actor_grant_role === role).length;
+  const governanceCount = entries.filter((e) => e.actor_was_owner_member).length;
 
   return (
     <DeskPage title="Audit log" sub={sub} actions={actions}>
@@ -55,10 +56,10 @@ export default function AuditPage() {
           <span className="chip chip--ghost chip--sm">User · {countBy("user")}</span>
           <span className="chip chip--ghost chip--sm">Agent · {countBy("agent")}</span>
           <span className="chip chip--ghost chip--sm">System · {countBy("system")}</span>
-          <span className="chip chip--ghost chip--sm">Owner · {countByGrant("owner")}</span>
           <span className="chip chip--ghost chip--sm">Manager · {countByGrant("manager")}</span>
           <span className="chip chip--ghost chip--sm">Worker · {countByGrant("worker")}</span>
           <span className="chip chip--ghost chip--sm">Client · {countByGrant("client")}</span>
+          <span className="chip chip--ghost chip--sm">Governance · {governanceCount}</span>
         </div>
         <table className="table">
           <thead>
@@ -78,6 +79,11 @@ export default function AuditPage() {
                   {e.actor_grant_role ? (
                     <>
                       <Chip tone={GRANT_TONE[e.actor_grant_role]} size="sm">{e.actor_grant_role}</Chip>{" "}
+                    </>
+                  ) : null}
+                  {e.actor_was_owner_member ? (
+                    <>
+                      <Chip tone="moss" size="sm">owners</Chip>{" "}
                     </>
                   ) : null}
                   {e.actor}

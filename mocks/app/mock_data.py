@@ -3,10 +3,21 @@
 Shapes and vocabulary follow the specs in docs/specs/. The point is to
 make the eventual product feel real — not to simulate it.
 
-v1 identity model (per §02, §03, §05, §22):
+v1 identity + permission model (per §02, §03, §05, §22):
 
-- One ``users`` row per human login; authority comes from ``role_grants``
-  keyed by (user, scope_kind, scope_id, grant_role).
+- One ``users`` row per human login. The **surface** a user sees
+  comes from ``role_grants`` (``grant_role ∈ {manager, worker,
+  client, guest}``). The **authority** to perform specific
+  actions comes from membership in ``permission_group`` rows
+  plus ``permission_rule`` rows keyed to an ``action_key`` from
+  the §05 action catalog. The ``owner`` grant_role and the
+  per-grant ``capability_override`` column from earlier drafts
+  have been retired.
+- Each workspace and organization is seeded with four system
+  groups: ``owners`` (explicit membership, governance anchor,
+  ≥1 active member at all times), ``managers``,
+  ``all_workers``, ``all_clients`` (membership derived from
+  ``role_grants``).
 - ``work_engagement`` per (user, workspace) carries pay-pipeline data;
   pay rules / shifts / payslips / expense claims key off
   ``work_engagement_id`` rather than ``user_id`` directly.
@@ -97,24 +108,106 @@ class User:
 
 @dataclass
 class RoleGrant:
-    """A permission row: (user, scope_kind, scope_id, grant_role).
+    """A surface / persona row: (user, scope_kind, scope_id, grant_role).
 
-    Multiple rows per user are allowed; resolution is most-specific wins
-    (§02 `role_grants`).
+    In v1 ``role_grants`` no longer carries authority — it carries
+    the UI shell (worker PWA / client portal / manager dashboard)
+    and the RLS filter. Authority lives in
+    ``permission_group`` + ``permission_rule`` (§02).
+
+    The ``owner`` grant_role from earlier drafts is retired;
+    governance is held by membership in the ``owners``
+    permission group instead.
     """
 
     id: str
     user_id: str
     scope_kind: Literal["workspace", "property", "organization"]
     scope_id: str
-    grant_role: Literal["owner", "manager", "worker", "client", "guest"]
+    grant_role: Literal["manager", "worker", "client", "guest"]
     binding_org_id: str | None = None
-    capability_override: dict[str, Any] = field(default_factory=dict)
     started_on: date | None = None
     ended_on: date | None = None
     granted_by_user_id: str | None = None
     revoked_at: datetime | None = None
     revoke_reason: str | None = None
+
+
+@dataclass
+class PermissionGroup:
+    """A named set of users that can be the subject of a
+    ``permission_rule`` (§02).
+
+    Scope is ``workspace`` or ``organization``. Four system
+    groups are seeded per scope: ``owners`` (explicit members,
+    governance anchor), ``managers`` / ``all_workers`` /
+    ``all_clients`` (derived from role_grants on the scope).
+    User-defined groups carry explicit members.
+    """
+
+    id: str
+    scope_kind: Literal["workspace", "organization"]
+    scope_id: str
+    key: str  # e.g. "owners", "managers", "family"
+    name: str
+    description_md: str = ""
+    group_kind: Literal["system", "user"] = "user"
+    is_derived: bool = False  # true for managers / all_workers / all_clients
+    deleted_at: datetime | None = None
+
+
+@dataclass
+class PermissionGroupMember:
+    """Explicit membership for non-derived groups (``owners`` +
+    user-defined). Derived groups compute membership from
+    ``role_grants`` at query time and have no rows here."""
+
+    group_id: str
+    user_id: str
+    added_by_user_id: str | None = None
+    added_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+@dataclass
+class PermissionRule:
+    """Authority on a scope: (scope_kind, scope_id, action_key,
+    subject_kind, subject_id, effect).
+
+    Resolution (§02 "Permission resolution"): most-specific scope
+    first; within a scope ``deny`` beats ``allow``; catalog
+    default fires when no rule matches. Root-only actions
+    short-circuit to owners-only regardless of rules.
+    """
+
+    id: str
+    scope_kind: Literal["workspace", "property", "organization"]
+    scope_id: str
+    action_key: str
+    subject_kind: Literal["user", "group"]
+    subject_id: str
+    effect: Literal["allow", "deny"]
+    created_by_user_id: str | None = None
+    created_at: datetime | None = None
+    revoked_at: datetime | None = None
+    revoke_reason: str | None = None
+
+
+@dataclass
+class ActionCatalogEntry:
+    """Compile-time action catalog entry (§05 action catalog).
+
+    Mirrors the JSON the backend would expose from
+    ``GET /permissions/action_catalog``.
+    """
+
+    key: str
+    description: str
+    valid_scope_kinds: list[str]
+    default_allow: list[str]  # system-group keys
+    root_only: bool = False
+    root_protected_deny: bool = False
+    spec: str = ""
 
 
 @dataclass
@@ -481,7 +574,12 @@ class AuditEntry:
     target: str
     via: Literal["web", "api", "cli", "worker"]
     reason: str | None = None
-    actor_grant_role: Literal["owner", "manager", "worker", "client"] | None = None
+    # Surface grant the actor was using at the time. v1 drops the
+    # ``owner`` value — governance is captured by
+    # ``actor_was_owner_member`` below.
+    actor_grant_role: Literal["manager", "worker", "client", "guest"] | None = None
+    actor_was_owner_member: bool | None = None
+    actor_action_key: str | None = None
     actor_id: str | None = None
     agent_label: str | None = None
 
@@ -1046,9 +1144,11 @@ USERS: list[User] = [
 
 
 ROLE_GRANTS: list[RoleGrant] = [
-    # Élodie owns the Bernard workspace (legacy demo).
-    RoleGrant("rg-elodie-owner", "u-elodie", "workspace", "ws-bernard",
-              "owner", started_on=date(2024, 1, 1)),
+    # Élodie is the Bernard workspace's governance anchor (on the
+    # manager surface + ``owners`` group; see PERMISSION_GROUP_MEMBERS
+    # below).
+    RoleGrant("rg-elodie-manager-bernard", "u-elodie", "workspace", "ws-bernard",
+              "manager", started_on=date(2024, 1, 1)),
     # Maria, Arun, Ben, Ana, Sam hold worker grants on ws-bernard.
     RoleGrant("rg-maria-worker", "u-maria", "workspace", "ws-bernard",
               "worker", started_on=date(2024, 3, 1), granted_by_user_id="u-elodie"),
@@ -1062,26 +1162,291 @@ ROLE_GRANTS: list[RoleGrant] = [
               "worker", started_on=date(2025, 1, 9), granted_by_user_id="u-elodie"),
 
     # ── Vincent scenario (§05 example) ───────────────────────────────
-    # Vincent owns his own workspace and is an organization owner for
-    # his billing entity (DupontFamily). He also holds a CLIENT grant
-    # on CleanCo's AgencyOps workspace, narrowed by binding_org_id
-    # so he only sees data billed to his own org.
-    RoleGrant("rg-vincent-owner-vincent", "u-vincent", "workspace", "ws-vincent",
-              "owner", started_on=date(2024, 1, 1)),
-    RoleGrant("rg-vincent-owner-org", "u-vincent", "organization", "org-dupont-vincent",
-              "owner", started_on=date(2024, 1, 1)),
+    # Vincent runs his own workspace on the manager surface and is
+    # the governance anchor for his billing entity (DupontFamily) —
+    # placed on ``owners`` via PERMISSION_GROUP_MEMBERS below. He also
+    # holds a CLIENT grant on CleanCo's AgencyOps workspace, narrowed
+    # by binding_org_id so he only sees data billed to his own org.
+    RoleGrant("rg-vincent-manager-vincent", "u-vincent", "workspace", "ws-vincent",
+              "manager", started_on=date(2024, 1, 1)),
+    RoleGrant("rg-vincent-manager-org", "u-vincent", "organization", "org-dupont-vincent",
+              "manager", started_on=date(2024, 1, 1)),
     RoleGrant("rg-vincent-client-cleanco", "u-vincent", "workspace", "ws-cleanco",
               "client", binding_org_id="org-dupont-vincent",
               started_on=date(2024, 6, 1), granted_by_user_id="u-julie"),
     # Rachid is a worker in VincentOps only.
     RoleGrant("rg-rachid-worker", "u-rachid", "workspace", "ws-vincent",
               "worker", started_on=date(2024, 6, 1), granted_by_user_id="u-vincent"),
-    # Julie manages CleanCo's AgencyOps workspace.
+    # Julie manages CleanCo's AgencyOps workspace — also the
+    # governance anchor there (see PERMISSION_GROUP_MEMBERS).
     RoleGrant("rg-julie-manager", "u-julie", "workspace", "ws-cleanco",
               "manager", started_on=date(2023, 9, 1)),
     # Joselyn works at AgencyOps.
     RoleGrant("rg-joselyn-worker", "u-joselyn", "workspace", "ws-cleanco",
               "worker", started_on=date(2025, 2, 1), granted_by_user_id="u-julie"),
+]
+
+
+# ── Permission model seed (§02, §05 action catalog) ─────────────────
+
+PERMISSION_GROUPS: list[PermissionGroup] = [
+    # Bernard workspace — system groups.
+    PermissionGroup("pg-ws-bernard-owners",       "workspace", "ws-bernard",
+                    "owners",       "Owners",        group_kind="system"),
+    PermissionGroup("pg-ws-bernard-managers",     "workspace", "ws-bernard",
+                    "managers",     "Managers",      group_kind="system", is_derived=True),
+    PermissionGroup("pg-ws-bernard-all-workers",  "workspace", "ws-bernard",
+                    "all_workers",  "All workers",   group_kind="system", is_derived=True),
+    PermissionGroup("pg-ws-bernard-all-clients",  "workspace", "ws-bernard",
+                    "all_clients",  "All clients",   group_kind="system", is_derived=True),
+    # A user-defined group on Bernard to exercise the UI.
+    PermissionGroup("pg-ws-bernard-family",       "workspace", "ws-bernard",
+                    "family",       "Family",        group_kind="user",
+                    description_md="Household members entitled to approve expenses and accept quotes."),
+
+    # Vincent's workspace — system groups.
+    PermissionGroup("pg-ws-vincent-owners",       "workspace", "ws-vincent",
+                    "owners",       "Owners",        group_kind="system"),
+    PermissionGroup("pg-ws-vincent-managers",     "workspace", "ws-vincent",
+                    "managers",     "Managers",      group_kind="system", is_derived=True),
+    PermissionGroup("pg-ws-vincent-all-workers",  "workspace", "ws-vincent",
+                    "all_workers",  "All workers",   group_kind="system", is_derived=True),
+    PermissionGroup("pg-ws-vincent-all-clients",  "workspace", "ws-vincent",
+                    "all_clients",  "All clients",   group_kind="system", is_derived=True),
+
+    # CleanCo agency workspace — system groups.
+    PermissionGroup("pg-ws-cleanco-owners",       "workspace", "ws-cleanco",
+                    "owners",       "Owners",        group_kind="system"),
+    PermissionGroup("pg-ws-cleanco-managers",     "workspace", "ws-cleanco",
+                    "managers",     "Managers",      group_kind="system", is_derived=True),
+    PermissionGroup("pg-ws-cleanco-all-workers",  "workspace", "ws-cleanco",
+                    "all_workers",  "All workers",   group_kind="system", is_derived=True),
+    PermissionGroup("pg-ws-cleanco-all-clients",  "workspace", "ws-cleanco",
+                    "all_clients",  "All clients",   group_kind="system", is_derived=True),
+    # User-defined group: "Inspectors" empowered to approve vendor
+    # invoices at CleanCo.
+    PermissionGroup("pg-ws-cleanco-inspectors",   "workspace", "ws-cleanco",
+                    "inspectors",   "Inspectors",    group_kind="user",
+                    description_md="Trusted staff who may approve vendor invoices outside the standard manager set."),
+
+    # Organization-scope system groups for DupontFamily.
+    PermissionGroup("pg-org-dupont-owners",       "organization", "org-dupont-vincent",
+                    "owners",       "Owners",        group_kind="system"),
+    PermissionGroup("pg-org-dupont-managers",     "organization", "org-dupont-vincent",
+                    "managers",     "Managers",      group_kind="system", is_derived=True),
+]
+
+
+PERMISSION_GROUP_MEMBERS: list[PermissionGroupMember] = [
+    # Élodie is Bernard's owner anchor.
+    PermissionGroupMember("pg-ws-bernard-owners", "u-elodie",
+                          added_by_user_id=None,
+                          added_at=datetime(2024, 1, 1, 9, 0)),
+    # Élodie also placed a trusted co-manager in ``family``.
+    PermissionGroupMember("pg-ws-bernard-family", "u-elodie",
+                          added_by_user_id="u-elodie",
+                          added_at=datetime(2024, 1, 1, 9, 5)),
+    # Vincent anchors his own workspace and his billing organisation.
+    PermissionGroupMember("pg-ws-vincent-owners", "u-vincent",
+                          added_at=datetime(2024, 1, 1, 9, 0)),
+    PermissionGroupMember("pg-org-dupont-owners", "u-vincent",
+                          added_at=datetime(2024, 1, 1, 9, 0)),
+    # Julie anchors CleanCo.
+    PermissionGroupMember("pg-ws-cleanco-owners", "u-julie",
+                          added_at=datetime(2023, 9, 1, 9, 0)),
+    # Joselyn is an inspector at CleanCo (trusted to approve
+    # vendor invoices at some properties).
+    PermissionGroupMember("pg-ws-cleanco-inspectors", "u-joselyn",
+                          added_by_user_id="u-julie",
+                          added_at=datetime(2025, 3, 1, 10, 0)),
+]
+
+
+ACTION_CATALOG: list[ActionCatalogEntry] = [
+    # Root-only governance actions.
+    ActionCatalogEntry("workspace.archive",               "Archive an entire workspace.",
+                       ["workspace"],                [],                           root_only=True,  spec="§15"),
+    ActionCatalogEntry("organization.archive",            "Archive an organization.",
+                       ["organization"],             [],                           root_only=True,  spec="§22"),
+    ActionCatalogEntry("scope.transfer",                  "Transfer governance to another user.",
+                       ["workspace", "organization"],[],                           root_only=True,  spec="§15"),
+    ActionCatalogEntry("permissions.edit_rules",          "Create, revoke, or edit permission rules on this scope.",
+                       ["workspace", "property", "organization"], [],              root_only=True,  spec="§02"),
+    ActionCatalogEntry("groups.manage_owners_membership", "Add or remove members of the owners group.",
+                       ["workspace", "organization"],[],                           root_only=True,  spec="§02"),
+    ActionCatalogEntry("admin.purge",                     "Hard-delete workspace data.",
+                       ["workspace"],                [],                           root_only=True,  spec="§13"),
+
+    # Rule-driven actions with sane defaults.
+    ActionCatalogEntry("scope.view",                      "See that the scope exists (RLS still filters rows).",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers", "all_workers", "all_clients"], root_protected_deny=True, spec="§14"),
+    ActionCatalogEntry("scope.edit_settings",             "Edit workspace / property / org settings.",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§02"),
+    ActionCatalogEntry("users.invite",                    "Invite a new user to a scope.",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§03"),
+    ActionCatalogEntry("users.archive",                   "Archive a user deployment-wide.",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§05"),
+    ActionCatalogEntry("users.edit_profile_other",        "Edit another user's profile.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§02"),
+    ActionCatalogEntry("users.reissue_magic_link",        "Re-issue a magic link to another user.",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§03"),
+    ActionCatalogEntry("role_grants.create",              "Create a surface grant.",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§02"),
+    ActionCatalogEntry("role_grants.revoke",              "Revoke a surface grant.",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§02"),
+    ActionCatalogEntry("groups.create",                   "Create a user-defined permission group.",
+                       ["workspace", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§02"),
+    ActionCatalogEntry("groups.edit",                     "Edit or delete a user-defined group.",
+                       ["workspace", "organization"],
+                       ["owners", "managers"], spec="§02"),
+    ActionCatalogEntry("groups.manage_members",           "Add / remove members of a non-owners group.",
+                       ["workspace", "organization"],
+                       ["owners"], root_protected_deny=True, spec="§02"),
+    ActionCatalogEntry("properties.create",               "Create a property.",
+                       ["workspace"],
+                       ["owners", "managers"], spec="§04"),
+    ActionCatalogEntry("properties.archive",              "Archive a property.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§04"),
+    ActionCatalogEntry("properties.edit",                 "Edit a property.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§04"),
+    ActionCatalogEntry("properties.view_access_codes",    "View access codes / wifi / door codes.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§04"),
+    ActionCatalogEntry("work_roles.manage",               "Edit the workspace's work-role catalog.",
+                       ["workspace"],
+                       ["owners", "managers"], spec="§05"),
+    ActionCatalogEntry("tasks.create",                    "Create a task or template.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§06"),
+    ActionCatalogEntry("tasks.assign_other",              "Assign a task to someone other than self.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§06"),
+    ActionCatalogEntry("tasks.complete_other",            "Complete a task on behalf of another user.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§06"),
+    ActionCatalogEntry("tasks.skip_other",                "Skip a task on behalf of another user.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§06"),
+    ActionCatalogEntry("shifts.view_other",               "View another user's shifts.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("shifts.edit_other",               "Edit another user's shifts.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("payroll.lock_period",             "Lock a pay period.",
+                       ["workspace"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§09"),
+    ActionCatalogEntry("payroll.issue_payslip",           "Issue a payslip.",
+                       ["workspace"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§09"),
+    ActionCatalogEntry("payroll.view_other",              "View another user's payslips.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("pay_rules.edit",                  "Edit a pay rule.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("expenses.submit",                 "Submit an expense claim.",
+                       ["workspace", "property"],
+                       ["owners", "managers", "all_workers"], spec="§09"),
+    ActionCatalogEntry("expenses.approve",                "Approve or reject an expense claim.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("expenses.reimburse",              "Mark an expense claim reimbursed.",
+                       ["workspace"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§09"),
+    ActionCatalogEntry("inventory.adjust",                "Manually adjust stock levels.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§08"),
+    ActionCatalogEntry("instructions.edit",               "Edit an SOP / instruction.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§07"),
+    ActionCatalogEntry("assets.edit",                     "Create or edit an asset.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§21"),
+    ActionCatalogEntry("api_tokens.manage",               "Create, rotate, or revoke API tokens.",
+                       ["workspace"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§03"),
+    ActionCatalogEntry("audit_log.view",                  "View the audit log.",
+                       ["workspace", "property", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§02"),
+    ActionCatalogEntry("organizations.create",            "Create a client or supplier organization.",
+                       ["workspace"],
+                       ["owners", "managers"], spec="§22"),
+    ActionCatalogEntry("organizations.edit",              "Edit an organization record.",
+                       ["workspace", "organization"],
+                       ["owners", "managers"], spec="§22"),
+    ActionCatalogEntry("organizations.edit_pay_destination",
+                       "Edit an organization's default payout destination.",
+                       ["workspace", "organization"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§22"),
+    ActionCatalogEntry("work_orders.view",                "View work orders on this scope.",
+                       ["workspace", "property"],
+                       ["owners", "managers", "all_workers", "all_clients"], spec="§22"),
+    ActionCatalogEntry("work_orders.create",              "Create a work order.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§22"),
+    ActionCatalogEntry("work_orders.assign_contractor",   "Assign a contractor to a work order.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§22"),
+    ActionCatalogEntry("quotes.submit",                   "Submit a quote on a work order.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§22"),
+    ActionCatalogEntry("quotes.accept",                   "Accept a quote.",
+                       ["workspace", "property"],
+                       ["owners", "managers", "all_clients"], spec="§22"),
+    ActionCatalogEntry("vendor_invoices.submit",          "Submit a vendor invoice.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§22"),
+    ActionCatalogEntry("vendor_invoices.approve",         "Approve a vendor invoice for payment.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], root_protected_deny=True, spec="§22"),
+    ActionCatalogEntry("vendor_invoices.approve_as_client",
+                       "Client-side acceptance of a vendor invoice.",
+                       ["workspace", "property"],
+                       ["all_clients"], spec="§22"),
+    ActionCatalogEntry("messaging.comments.author_global","Comment on tasks outside your assignment.",
+                       ["workspace", "property"],
+                       ["owners", "managers", "all_workers"], spec="§10"),
+    ActionCatalogEntry("messaging.report_issue.triage",   "Triage a reported issue.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§10"),
+]
+
+
+PERMISSION_RULES: list[PermissionRule] = [
+    # Bernard workspace: the "family" group is the only one permitted
+    # to approve expenses — override the default "owners, managers"
+    # with a broader rule plus a deny on the default allow set.
+    PermissionRule("pr-bernard-exp-family", "workspace", "ws-bernard",
+                   "expenses.approve", "group", "pg-ws-bernard-family", "allow",
+                   created_by_user_id="u-elodie",
+                   created_at=datetime(2026, 2, 1, 9, 30)),
+    # CleanCo: allow a specific inspector (Joselyn) to approve vendor
+    # invoices only at Villa du Lac — widens the workspace default
+    # for that property.
+    PermissionRule("pr-cleanco-prop-vdl-inv-joselyn", "property", "prop-villa-lac",
+                   "vendor_invoices.approve", "user", "u-joselyn", "allow",
+                   created_by_user_id="u-julie",
+                   created_at=datetime(2026, 3, 15, 14, 0)),
+    # Vincent: explicitly deny anyone in ``managers`` (no one yet, but
+    # forward-compatibility) from touching organization pay
+    # destinations on DupontFamily — owners-only even though the
+    # catalog default already includes managers.
+    PermissionRule("pr-dupont-org-paydest-mgr-deny", "organization", "org-dupont-vincent",
+                   "organizations.edit_pay_destination", "group", "pg-org-dupont-managers", "deny",
+                   created_by_user_id="u-vincent",
+                   created_at=datetime(2026, 4, 1, 10, 0)),
 ]
 
 
@@ -1509,7 +1874,7 @@ AUDIT: list[AuditEntry] = [
     # v1 `actor_kind` ∈ {user, agent, system}; `actor_grant_role`
     # carries the grant under which the action was authorised.
     AuditEntry(datetime(2026, 4, 15, 10, 8, 12), "user",   "Élodie Bernard", "task.complete",          "t-1",  "web", None,
-               actor_grant_role="owner",  actor_id="u-elodie"),
+               actor_grant_role="manager", actor_was_owner_member=True, actor_action_key="tasks.complete_other", actor_id="u-elodie"),
     AuditEntry(datetime(2026, 4, 15, 9, 47, 2),  "agent",  "digest-agent",   "agent_action.requested", "a-1",  "api", "Auto-reassign pool coverage (Ben on leave)",
                agent_label="digest-agent"),
     AuditEntry(datetime(2026, 4, 15, 9, 41, 0),  "user",   "Maria Alvarez",  "shift.clock_in",         "sh-…", "web", None,

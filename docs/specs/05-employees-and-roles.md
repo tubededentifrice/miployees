@@ -188,9 +188,11 @@ worker surface. Capabilities are a **sparse JSON blob**; unset
 means "inherit from the next layer", which itself may be unset,
 meaning "feature off".
 
-(Grant-scoped capabilities — like `users.invite` or
-`quotes.accept` — live on `role_grants.capability_override` and
-are catalogued in §02.)
+(Administrative authority — `users.invite`, `quotes.accept`,
+etc. — is **not** a work-capability. It lives on
+`permission_rule` rows keyed to the action catalog below, see
+"Permissions: surface, groups, and action catalog" further down
+this document and §02 "Permission resolution".)
 
 ### Canonical catalog
 
@@ -286,26 +288,40 @@ on a more specific layer cannot override it (see §06 "Evidence
 policy inheritance" for the override-vs-forbid interaction and §09
 for how `require | optional | forbid` interact with completion).
 
-## Permissions and the grant catalog
+## Permissions: surface, groups, and action catalog
 
-Authority in the application comes from `role_grants` rows (§02).
-This section documents the defaults that each `grant_role` ships
-with. Every default is overrideable per-grant via
-`role_grants.capability_override`.
+v1 splits permission into two independent layers — see §02
+"Unified identity" and `role_grants` / `permission_group` /
+`permission_rule`. This section documents what each **surface**
+(persona) sees, the workspace-wide **action catalog** consulted
+by the resolver, and the root-only actions that only members of
+the `owners` permission group may perform.
 
-### Grant roles at a glance
+### Surface grants at a glance
 
-| role     | typical user                                  | primary surface                                              |
-|----------|-----------------------------------------------|--------------------------------------------------------------|
-| `owner`  | the head of household or agency operator      | everything in the scope; cannot be demoted by peers          |
-| `manager`| a peer co-manager or agency staff             | like owner, minus the right to demote/transfer the owner     |
-| `worker` | a maid, driver, cook, contractor              | assigned tasks, own shifts, own expenses, own profile        |
-| `client` | a villa owner who pays an agency              | shifts/invoices billed to them; accept/reject quotes         |
-| `guest`  | a short-term stay occupant (post-v1)          | reserved; v1 uses tokenized `guest_link` (§04) not grants    |
+The `role_grants.grant_role` enum is the **surface** — which UI
+shell the user sees and which rows RLS lets them read. Authority
+to perform a specific action is resolved separately through the
+action catalog + `permission_rule` rows.
 
-### Worker permissions (web UI / PWA)
+| role      | typical user                                  | primary surface                                              |
+|-----------|-----------------------------------------------|--------------------------------------------------------------|
+| `manager` | head of household, co-manager, agency staff   | full admin dashboard (properties, tasks, payroll, orgs). Which actions they may *perform* depends on rules + owners-group membership. |
+| `worker`  | a maid, driver, cook, contractor              | PWA: assigned tasks, own shifts, own expenses, own profile   |
+| `client`  | a villa owner who pays an agency              | read-only portal for shifts/invoices billed to them; accept/reject quotes (gated) |
+| `guest`   | a short-term stay occupant (post-v1)          | reserved; v1 uses tokenized `guest_link` (§04) not grants    |
 
-Users whose highest grant in a scope is `worker` see only:
+Governance (archive the workspace, transfer it to another person,
+edit permission rules, hard-purge data) is anchored to the
+`owners` **permission group** on each scope, not to a grant_role.
+A workspace creator is auto-seeded as `grant_role = manager` +
+member of `owners` (see §02 "Bootstrap"); subsequent admins can
+be added to `owners` without giving them `manager`, and vice
+versa.
+
+### Worker surface (web UI / PWA)
+
+Users whose highest surface grant in a scope is `worker` see only:
 
 - Their own profile (read + limited update: display name, avatar,
   timezone, emergency contact, language).
@@ -314,19 +330,28 @@ Users whose highest grant in a scope is `worker` see only:
 - Instructions scoped to those properties/areas/global (read-only).
 - Their own shifts, payslips (read-only), and expense claims.
 - Staff-visible subset of property notes (§04) — not access codes or
-  wifi passwords unless the scope's owner or manager explicitly shares.
+  wifi passwords unless an owners-group member explicitly shares.
 - Comments on tasks they can see, plus authoring comments on those.
-- The staff chat assistant if `chat.assistant` is on.
+- The staff chat assistant if the work-capability `chat.assistant`
+  is on.
 
 Workers never see:
 
 - Other users' wages, hours, or pay rules.
-- Owner/manager invite links.
+- Admin invite links.
 - The API token list.
 - The audit log.
 - Financial aggregates.
 
-### Client permissions (web UI)
+This worker surface is an RLS / data-filter concern, not a rule
+concern. A worker-surface user who is also an `owners` member
+would have broad authority in principle, but because the worker
+PWA does not expose administrative actions at all, there is no
+UI surface for them to exercise it. Power users in this shape
+switch to the manager surface (via a separate `role_grants`
+record with `grant_role = 'manager'`).
+
+### Client surface (web UI)
 
 Users whose grant in a scope is `client` see only:
 
@@ -349,21 +374,198 @@ Clients never see:
   workspace settings.
 - Any data tagged to a `binding_org_id` other than their own.
 
-### Owner and manager permissions
+Client-surface users may be subjects of `permission_rule` rows
+on the actions they are eligible for (e.g. `quotes.accept`,
+`vendor_invoices.approve_as_client`), giving the owner precise
+control over which clients may sign off on what.
 
-Owners and managers see everything in the scope with the exception
-of strict ownership invariants:
+### Manager surface
 
-- Managers cannot revoke, demote, or archive the owner.
-- Only the owner may transfer the owner role (gated by §11).
-- Destructive operations across a workspace (`workspace.archive`,
-  `admin:purge`) are owner-only.
+Users with `grant_role = 'manager'` see the admin dashboard.
+Whether a specific action is allowed to them is resolved per
+action against the action catalog below. A manager who is also
+a member of the scope's `owners` group additionally picks up the
+root-only actions (archive workspace, transfer scope, edit
+rules, admin purge). A manager who is not in `owners` can be
+given any other action through a `permission_rule` — including
+every administrative action except the root-only set — by
+members of `owners`.
 
-### Grant-scoped capability catalog
+### Action catalog
 
-The canonical catalog lives in §02 under `role_grants` → "Catalog
-of grant-scoped capabilities". Cross-reference rather than
-duplicate.
+Every authority check in the system names an `action_key` from
+this catalog. The resolver described in §02 "Permission
+resolution" treats these keys as canonical; writes to
+`permission_rule` referencing a key not in this catalog fail
+with 422 `unknown_action_key`.
+
+Each entry declares:
+
+- `key` — dotted, stable. Prefer existing namespaces (`users.*`,
+  `properties.*`, `tasks.*`, `expenses.*`, `work_orders.*`,
+  `quotes.*`, `vendor_invoices.*`, `permissions.*`, `groups.*`,
+  `organizations.*`, `scope.*`, `workspaces.*`, `admin.*`).
+- `valid_scope_kinds` — which `permission_rule.scope_kind`
+  values the key accepts. E.g. `expenses.approve` is
+  workspace+property; `workspace.archive` is workspace only.
+- `default_allow` — ordered list of system-group keys granted
+  the action when no rule matches. Empty list = default-deny.
+- `root_only` — `true` means only members of the scope's
+  `owners` group may perform it, regardless of any rule. Used
+  for governance-critical actions.
+- `root_protected_deny` — `true` means owners cannot be denied.
+  Non-owners may still be allowed via rules. Used for
+  administrative actions that must never be accidentally
+  locked out.
+
+The catalog below is the v1 canonical set. New actions require a
+spec edit here before the backend can accept them.
+
+#### Root-only actions (governance)
+
+These are always restricted to `owners` members on the scope (or
+a containing scope when the target is a property). Rules
+targeting these keys are accepted at write time for future
+extensibility but have no effect on the resolver.
+
+| action_key                       | valid_scope_kinds              | notes                                                                                   |
+|----------------------------------|--------------------------------|-----------------------------------------------------------------------------------------|
+| `workspace.archive`              | `workspace`                    | Archive an entire workspace. §15.                                                       |
+| `organization.archive`           | `organization`                 | Archive an org-scope record. §22.                                                       |
+| `scope.transfer`                 | `workspace`, `organization`    | Transfer governance (install a new sole member in `owners`, remove self). §15.          |
+| `permissions.edit_rules`         | `workspace`, `property`, `organization` | Create, revoke, or edit `permission_rule` rows on the scope. Root-only so "editing rules" can never be delegated into a foot-gun. |
+| `groups.manage_owners_membership`| `workspace`, `organization`    | Add/remove members of the `owners` group specifically. Distinct from `groups.manage_members` below. |
+| `admin.purge`                    | `workspace`                    | Hard-delete workspace data. CLI only (§13); the action still flows through the resolver to keep the audit trail consistent. |
+
+#### Rule-driven actions (ship with sane defaults)
+
+Everything below is fully rule-configurable. `default_allow`
+captures who the system assumes should do each action absent
+any explicit rule — so a fresh install works with zero
+configuration.
+
+| action_key                              | valid_scope_kinds              | default_allow                 | root_protected_deny | spec |
+|-----------------------------------------|--------------------------------|-------------------------------|:---:|------|
+| `scope.view`                            | `workspace`, `property`, `organization` | `owners, managers, all_workers, all_clients` | ✅ | §14 |
+| `scope.edit_settings`                   | `workspace`, `property`, `organization` | `owners, managers`            | ✅ | §02 |
+| `users.invite`                          | `workspace`, `property`, `organization` | `owners, managers`            | ✅ | §03 |
+| `users.archive`                         | `workspace`, `property`, `organization` | `owners, managers`            | ✅ | §05 |
+| `users.edit_profile_other`              | `workspace`, `property`        | `owners, managers`            | —  | §02 |
+| `role_grants.create`                    | `workspace`, `property`, `organization` | `owners, managers`            | ✅ | §02 |
+| `role_grants.revoke`                    | `workspace`, `property`, `organization` | `owners, managers`            | ✅ | §02 |
+| `groups.create`                         | `workspace`, `organization`    | `owners, managers`            | ✅ | §02 |
+| `groups.edit`                           | `workspace`, `organization`    | `owners, managers`            | —  | §02 |
+| `groups.manage_members`                 | `workspace`, `organization`    | `owners`                      | ✅ | §02 |
+| `properties.create`                     | `workspace`                    | `owners, managers`            | —  | §04 |
+| `properties.archive`                    | `workspace`, `property`        | `owners, managers`            | ✅ | §04 |
+| `properties.edit`                       | `workspace`, `property`        | `owners, managers`            | —  | §04 |
+| `properties.view_access_codes`          | `workspace`, `property`        | `owners, managers`            | —  | §04 |
+| `work_roles.manage`                     | `workspace`                    | `owners, managers`            | —  | §05 |
+| `tasks.create`                          | `workspace`, `property`        | `owners, managers`            | —  | §06 |
+| `tasks.assign_other`                    | `workspace`, `property`        | `owners, managers`            | —  | §06 |
+| `tasks.complete_other`                  | `workspace`, `property`        | `owners, managers`            | —  | §06 |
+| `tasks.skip_other`                      | `workspace`, `property`        | `owners, managers`            | —  | §06 |
+| `shifts.view_other`                     | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `shifts.edit_other`                     | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `payroll.lock_period`                   | `workspace`                    | `owners, managers`            | ✅ | §09 |
+| `payroll.issue_payslip`                 | `workspace`                    | `owners, managers`            | ✅ | §09 |
+| `payroll.view_other`                    | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `pay_rules.edit`                        | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `expenses.submit`                       | `workspace`, `property`        | `owners, managers, all_workers` | — | §09 |
+| `expenses.approve`                      | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `expenses.reimburse`                    | `workspace`                    | `owners, managers`            | ✅ | §09 |
+| `inventory.adjust`                      | `workspace`, `property`        | `owners, managers`            | —  | §08 |
+| `instructions.edit`                     | `workspace`, `property`        | `owners, managers`            | —  | §07 |
+| `assets.edit`                           | `workspace`, `property`        | `owners, managers`            | —  | §21 |
+| `api_tokens.manage`                     | `workspace`                    | `owners, managers`            | ✅ | §03 |
+| `audit_log.view`                        | `workspace`, `property`, `organization` | `owners, managers`            | ✅ | §02 |
+| `organizations.create`                  | `workspace`                    | `owners, managers`            | —  | §22 |
+| `organizations.edit`                    | `workspace`, `organization`    | `owners, managers`            | —  | §22 |
+| `organizations.edit_pay_destination`    | `workspace`, `organization`    | `owners, managers`            | ✅ | §22 |
+| `work_orders.view`                      | `workspace`, `property`        | `owners, managers, all_workers, all_clients` | — | §22 |
+| `work_orders.create`                    | `workspace`, `property`        | `owners, managers`            | —  | §22 |
+| `work_orders.assign_contractor`         | `workspace`, `property`        | `owners, managers`            | —  | §22 |
+| `quotes.submit`                         | `workspace`, `property`        | `owners, managers` (contractors with property grant also match via rule) | — | §22 |
+| `quotes.accept`                         | `workspace`, `property`        | `owners, managers, all_clients` | — | §22 |
+| `vendor_invoices.submit`                | `workspace`, `property`        | `owners, managers`            | —  | §22 |
+| `vendor_invoices.approve`               | `workspace`, `property`        | `owners, managers`            | ✅ | §22 |
+| `vendor_invoices.approve_as_client`     | `workspace`, `property`        | `all_clients`                 | —  | §22 |
+| `messaging.comments.author_global`      | `workspace`, `property`        | `owners, managers, all_workers` | — | §10 |
+| `messaging.report_issue.triage`         | `workspace`, `property`        | `owners, managers`            | —  | §10 |
+
+Notes:
+
+- Workers, clients, and contractors **default** to the actions
+  they need to do their job:
+  - `all_workers` carries `expenses.submit`,
+    `messaging.comments.author_global`, and any task/shift
+    actions scoped to themselves (viewing / editing *your own*
+    shift is not in this catalog — it is an identity-scoped
+    action, not scope-scoped, and does not flow through the
+    resolver).
+  - `all_clients` carries `quotes.accept` (subject to §11
+    gating), `work_orders.view`, and
+    `vendor_invoices.approve_as_client`.
+- Catalog entries with `root_protected_deny = ✅` mean: the
+  `owners` group cannot be denied this action even by a
+  deliberate deny rule. Non-owners can still be granted the
+  action via an allow rule.
+- `scope.view` appearing at `default_allow: owners, managers,
+  all_workers, all_clients` is intentional — it means "every
+  surface-entitled user may see the scope exists". RLS still
+  filters which rows they can read (§15).
+- Identity-scoped actions ("edit my own profile", "clock in/out
+  my own shift", "view my own payslip") are **not** in the
+  action catalog; they are governed by the `users` row / work
+  capability system and do not flow through
+  `permission_rule`.
+- Work-scoped capabilities (`time.clock_in`,
+  `tasks.photo_evidence`, etc. — the table further up this
+  document) are **not** action keys. They are operational
+  per-(user, work_role, property) toggles, resolved through the
+  §05 capability chain.
+
+### How a rule narrows or widens a default
+
+Examples a workspace owner might configure through the admin
+UI, each becoming one or more `permission_rule` rows:
+
+- "Only my spouse approves expenses": delete the implicit
+  default by inserting a workspace-scope rule
+  `(expenses.approve, all_workers, deny)`, then
+  `(expenses.approve, all_managers, deny)`, then
+  `(expenses.approve, user=spouse, allow)`. Cleaner, insert a
+  single `(expenses.approve, group=family, allow)` plus
+  denylist the broader groups.
+- "Julie can accept quotes on behalf of DupontFamily at Villa
+  du Lac but nowhere else": property-scope rule at Villa du
+  Lac `(quotes.accept, user=Julie, allow)`. No other rule
+  needed — the workspace-scope `all_clients` default already
+  covers her if she is a client; the property rule widens it
+  for her specifically.
+- "Kids can view tasks but never complete them on behalf of
+  others": workspace-scope rules `(tasks.assign_other,
+  group=kids, deny)`, `(tasks.complete_other, group=kids,
+  deny)`, `(tasks.skip_other, group=kids, deny)`; the default
+  `all_workers` action set still lets them complete their own
+  tasks (identity-scoped).
+- "Our cleaning agency (CleanCo) may view — but not edit —
+  vendor invoices at Villa du Lac": property-scope
+  `(vendor_invoices.approve, user=Julie, deny)` overrides
+  the workspace default while the read default for clients
+  continues to apply.
+
+### Rule administration UX (anchor)
+
+Spec'd in §14. Minimum shape:
+
+- **Groups** page: list workspace groups; for each, show members
+  (or "auto-populated from grant_role=X" for derived ones),
+  allow add/remove on user-defined groups and `owners`.
+- **Action rules** page: grouped by action; each row shows
+  default + current effective rules at workspace + per-property
+  override widgets. A live "who can do this?" preview resolves
+  against a chosen user to make the model debuggable.
 
 ## Permissions (API tokens)
 
@@ -432,11 +634,11 @@ This needs two workspaces:
 
 ### Role grants
 
-- `role_grants(Vincent,  scope='workspace',    scope_id=VincentOps, role='owner')`
+- `role_grants(Vincent,  scope='workspace',    scope_id=VincentOps, role='manager')` + `permission_group_member(group=owners@VincentOps, user=Vincent)`
 - `role_grants(Rachid,   scope='workspace',    scope_id=VincentOps, role='worker')`
-- `role_grants(Vincent,  scope='organization', scope_id=DupontFamily, role='owner')`
+- `role_grants(Vincent,  scope='organization', scope_id=DupontFamily, role='manager')` + `permission_group_member(group=owners@DupontFamily, user=Vincent)`
 - `role_grants(Vincent,  scope='workspace',    scope_id=AgencyOps,  role='client', binding_org_id=DupontFamily)`
-- `role_grants(Julie,    scope='workspace',    scope_id=AgencyOps,  role='manager')`
+- `role_grants(Julie,    scope='workspace',    scope_id=AgencyOps,  role='manager')` + `permission_group_member(group=owners@AgencyOps, user=Julie)` (CleanCo governance anchor)
 - `role_grants(Joselyn,  scope='workspace',    scope_id=AgencyOps,  role='worker')`
 
 ### Properties

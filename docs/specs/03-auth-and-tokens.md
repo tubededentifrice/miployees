@@ -18,13 +18,16 @@
 ## Actors
 
 - **User.** Every human is a `users` row (§02) with at least one
-  `role_grants` row that authorises them somewhere. Authority comes
-  from the grant, not from a `kind` column — a user may be an
-  `owner` of one workspace, a `worker` in another, and a `client`
-  on a single property in a third, simultaneously. All actions by
-  humans — regardless of grant — log as `actor_kind = 'user'`;
-  the grant under which the action was authorised is captured in
-  `actor_grant_role` (§02 audit_log).
+  `role_grants` row that places them on a surface somewhere. A
+  user may hold a `manager` surface on one workspace, a `worker`
+  surface in another, and a `client` surface on a single property
+  in a third, simultaneously, plus membership in any number of
+  permission groups (including `owners`) for governance. All
+  actions by humans — regardless of surface — log as
+  `actor_kind = 'user'`; the surface the action was taken from is
+  captured in `actor_grant_role`, and whether the actor was an
+  `owners` member at the time is captured in
+  `actor_was_owner_member` (§02 audit_log).
 - **Agent.** Non-human. Standalone agents are identified by a scoped
   API token; never by a session. Embedded agents (§11) use **delegated
   tokens** that act as the creating user — their `actor_kind` in audit
@@ -38,7 +41,8 @@
 kinds. Enrollment, passkey management, session shape, magic-link
 flow, and break-glass recovery are identical across them; the
 differences are entirely in what the user sees and can do once
-authenticated (see §05 capability catalog and §02 role_grants).
+authenticated (see §05 action catalog, §02 `role_grants`, and
+§02 `permission_group` / `permission_rule`).
 
 ## Enrollment flows
 
@@ -48,45 +52,56 @@ they will hold. The only things that vary by grant_role are the
 default magic-link TTL and whether break-glass codes are issued on
 acceptance (see "Break-glass codes" below).
 
-### Owner (first boot)
+### First owner (first boot)
 
 1. First-boot wizard runs once when the DB has no `users` rows. The
    CLI `miployees admin init --email owner@example.com` creates the
-   workspace and emails the owner a **bootstrap magic link** valid for
-   15 minutes. The wizard inserts a `users` row and a single
-   `role_grants` row with
-   `(scope_kind='workspace', scope_id=<ws>, grant_role='owner')`.
-2. Owner clicks the link, chooses a display name and timezone,
+   workspace and emails that user a **bootstrap magic link** valid
+   for 15 minutes. The wizard atomically inserts a `users` row, a
+   single `role_grants` row with
+   `(scope_kind='workspace', scope_id=<ws>, grant_role='manager')`
+   (the manager surface), seeds the four system permission groups
+   (`owners`, `managers`, `all_workers`, `all_clients`) on the new
+   workspace, and inserts a `permission_group_member` row placing
+   the user in `owners@<ws>` — the governance anchor required by
+   the ≥1-owners-member invariant (§02).
+2. User clicks the link, chooses a display name and timezone,
    registers a passkey on their current device.
 3. System generates **break-glass recovery codes** (8 codes, 10 chars
    Crockford base32, shown once, stored argon2id-hashed in
-   `break_glass_code`). Owner must confirm "I wrote them down" before
-   proceeding. Each code is single-use: a successful code
-   redemption generates exactly one magic link (15-min TTL) and marks
-   the code row `used_at = now()`. The consumed code is inert even if
-   the resulting magic link expires unused — the owner must consume
-   another code to get a fresh link.
+   `break_glass_code`). The bootstrap user must confirm "I wrote
+   them down" before proceeding. Each code is single-use: a
+   successful code redemption generates exactly one magic link
+   (15-min TTL) and marks the code row `used_at = now()`. The
+   consumed code is inert even if the resulting magic link expires
+   unused — the user must consume another code to get a fresh
+   link.
 
 ### Additional users (invite)
 
-- A user with an appropriate `users.invite` capability (owners and
-  managers by default) invites another via
-  `POST /api/v1/users/invite` with
-  `{ email, display_name, grants: [ {scope_kind, scope_id, grant_role,
-    binding_org_id?, capability_override?}, ... ],
+- A user who passes the `users.invite` action check on the target
+  scope (owners and managers by default — see §05 action catalog)
+  invites another via `POST /api/v1/users/invite` with
+  `{ email, display_name,
+     grants: [ {scope_kind, scope_id, grant_role, binding_org_id?}, ... ],
+     permission_group_memberships?: [ {group_id}, ... ],
      work_engagement?: {workspace_id, engagement_kind, ...},
      user_work_roles?: [ {workspace_id, work_role_id}, ... ] }`.
   One call creates (or re-uses, if `email` matches an existing row)
-  the `users` row, inserts the requested grants, optionally adds the
+  the `users` row, inserts the requested surface grants, optionally
+  adds explicit permission-group memberships (including the
+  `owners` group when delegating governance), optionally adds the
   work engagement and work-role mappings, and emails a magic link.
-- System emails a magic link (TTL depends on the primary grant:
-  `owner` and `manager` grants default to 24 h; `worker`, `client`,
-  and `guest` also 24 h). On acceptance, recipient registers a
-  passkey.
-- Users invited into an `owner` or `manager` grant also receive a
-  set of break-glass codes on their first passkey registration.
-  Lower-privilege grants do not — recovery for those users runs
-  through an owner/manager-initiated re-issue of a magic link.
+  Inviting someone directly into `owners@<scope>` requires the
+  inviter to pass the root-only
+  `groups.manage_owners_membership` action check for that scope.
+- System emails a magic link (24 h TTL across all surfaces).
+  On acceptance, recipient registers a passkey.
+- Users invited with a `manager` surface grant **or** with
+  `owners` group membership also receive a set of break-glass
+  codes on their first passkey registration. Users invited purely
+  as `worker`, `client`, or `guest` do not — recovery for those
+  users runs through a managerial re-issue of a magic link.
 
 ### Existing user, new grant
 
@@ -106,18 +121,19 @@ acceptance (see "Break-glass codes" below).
 
 ### Re-enrollment side-effects
 
-When an owner or manager re-issues a magic link to a user ("lost
-phone" / "lost device" paths below), accepting the link and
-registering a fresh passkey:
+When a user who passes `users.reissue_magic_link` re-issues a
+magic link ("lost phone" / "lost device" paths below), accepting
+the link and registering a fresh passkey:
 
 1. Revokes **all existing passkeys** for that user (the new one is
    written after revocation in the same transaction).
 2. Revokes **all active sessions** for that user; they must log in
    again on every previously-signed-in browser.
-3. For users who hold an `owner` or `manager` grant anywhere,
-   regenerates the break-glass code set (old codes invalidated).
-   Users who hold only `worker` / `client` / `guest` grants have no
-   code set to regenerate.
+3. For users who hold a `manager` surface grant anywhere **or**
+   who are members of any `owners` permission group, regenerates
+   the break-glass code set (old codes invalidated). Users who
+   hold only `worker` / `client` / `guest` surface grants and are
+   not `owners` members anywhere have no code set to regenerate.
 
 All three events land in the audit log under `auth.reenroll`.
 
@@ -135,8 +151,9 @@ All three events land in the audit log under `auth.reenroll`.
 - Session cookie: `__Host-miployees_session`.
 - Flags: `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, no `Domain`.
 - Value: opaque random 192-bit token → hashed row in `sessions` table.
-- Lifetime: 7 days for users whose highest active grant on any
-  scope is `owner` or `manager`; 30 days for everyone else
+- Lifetime: 7 days for users who hold a `manager` surface grant
+  on any scope **or** who are members of any `owners` permission
+  group; 30 days for everyone else
   (configurable). Recomputed on login, not mid-session — a user who
   gains a manager grant mid-session keeps the longer lifetime until
   their next login. Refreshed on each request after half its
@@ -238,7 +255,8 @@ access.
 - `llm:{read,call}` — `call` required to execute model calls chargeable
   to the workspace
 - `admin:{impersonate,rotate,purge}` — rare; requires approval of
-  another owner or manager before first use (see §11 approval workflow)
+  another `owners`-group member before first use (see §11 approval
+  workflow)
 
 `*:read` implied by `*:write`. `admin:*` implies nothing else — it is a
 narrow escape hatch.
@@ -253,7 +271,7 @@ narrow escape hatch.
 
 ### Revocation and rotation
 
-- Any user with the `users.revoke_grant` grant-capability (owners
+- Any user who passes the `api_tokens.manage` action check (owners
   and managers by default) in the token's home workspace can revoke
   any token in that workspace; scoped tokens and their own delegated
   tokens are always revocable by the creator. Revocation takes effect
@@ -282,11 +300,11 @@ narrow escape hatch.
 
 | Situation                                  | Recovery path                                                  |
 |--------------------------------------------|----------------------------------------------------------------|
-| Worker/client lost phone                   | Any user with `users.revoke_grant` on a shared scope (owners and managers by default) clicks "re-issue magic link" on the user's profile; current passkeys are revoked on registration. |
-| Owner/manager lost only device, has backup code  | Enter recovery code → magic link emailed → register passkey; one backup code is burnt. |
-| Owner/manager lost device + all backup codes, another owner or manager exists on a shared scope | That peer re-issues a magic link to their email. |
-| Last owner/manager locked out completely         | **Host-CLI recovery only in v1.** Stop service, run `miployees admin recover --email ...` on the host, which emits a one-time magic link to stdout. Operator must have shell access to the deployment host. Hosted / SaaS recovery flows (support escalation, out-of-band identity verification) are **out of scope for v1** — see §19. |
-| Email address wrong / changed              | An owner/manager on a shared scope updates email on the user's profile; next magic link goes to the new one. Since email is globally unique (§02), the change fails if another `users` row already holds that address. |
+| Worker/client lost phone                   | Any user who passes `users.reissue_magic_link` on a shared scope (owners and managers by default) clicks "re-issue magic link" on the user's profile; current passkeys are revoked on registration. |
+| Manager or owners-member lost only device, has backup code | Enter recovery code → magic link emailed → register passkey; one backup code is burnt. |
+| Manager or owners-member lost device + all backup codes, another owners-group member exists on a shared scope | That peer re-issues a magic link to their email. |
+| Last owners-group member locked out completely | **Host-CLI recovery only in v1.** Stop service, run `miployees admin recover --email ...` on the host, which emits a one-time magic link to stdout. Operator must have shell access to the deployment host. Hosted / SaaS recovery flows (support escalation, out-of-band identity verification) are **out of scope for v1** — see §19. |
+| Email address wrong / changed              | A user who passes `users.edit_profile_other` on a shared scope updates email on the user's profile; next magic link goes to the new one. Since email is globally unique (§02), the change fails if another `users` row already holds that address. |
 
 ## Break-glass codes
 
@@ -302,8 +320,9 @@ break_glass_code
 └── consumed_magic_link_id ULID?  populated on redemption
 ```
 
-Redemption: the user (whose codes were issued because they hold an
-`owner` or `manager` grant) submits the plaintext code to
+Redemption: the user (whose codes were issued because they hold a
+`manager` surface grant or `owners`-group membership) submits the
+plaintext code to
 `POST /auth/magic/consume` with their email. On success the code's
 `used_at` is set, a fresh `magic_link` is issued (15-min TTL), and its
 id is stored in `consumed_magic_link_id`. A used code is inert even

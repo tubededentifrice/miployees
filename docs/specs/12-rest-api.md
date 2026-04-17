@@ -268,6 +268,24 @@ POST   /role_grants
 PATCH  /role_grants/{id}
 DELETE /role_grants/{id}
 
+# Permission groups + rules (§02, §05)
+GET    /permission_groups                    # ?scope_kind=workspace|organization&scope_id=…
+POST   /permission_groups                    # user-defined groups only; action: groups.create
+GET    /permission_groups/{id}
+PATCH  /permission_groups/{id}               # rename / description; action: groups.edit
+DELETE /permission_groups/{id}               # user-defined groups only; action: groups.edit
+GET    /permission_groups/{id}/members
+POST   /permission_groups/{id}/members       # body: {user_id}; action: groups.manage_members (owners: groups.manage_owners_membership)
+DELETE /permission_groups/{id}/members/{user_id}
+
+GET    /permission_rules                     # ?scope_kind=…&scope_id=…&action_key=…
+POST   /permission_rules                     # action: permissions.edit_rules (root-only)
+DELETE /permission_rules/{id}                # action: permissions.edit_rules (root-only)
+
+GET    /permissions/action_catalog           # read-only; the compile-time catalog from §05
+GET    /permissions/resolved                 # ?user_id=…&action_key=…&scope_kind=…&scope_id=…
+                                             # returns {effect, source_layer, source_rule_id?, matched_groups[]}
+
 GET    /work_engagements          # ?user_id=…&workspace_id=…
 GET    /work_engagements/{id}
 PATCH  /work_engagements/{id}

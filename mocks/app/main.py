@@ -426,6 +426,279 @@ def api_role_grants(user_id: str = "", scope_kind: str = "", scope_id: str = "")
     return ok(rows)
 
 
+# ── Permission model (§02, §05) ─────────────────────────────────────
+
+
+def _derived_group_members(group: "md.PermissionGroup") -> list[str]:
+    """Return user_ids whose active role_grants on this scope make
+    them members of a derived system group (managers / all_workers /
+    all_clients)."""
+    target_role_map = {
+        "managers": "manager",
+        "all_workers": "worker",
+        "all_clients": "client",
+    }
+    grant_role = target_role_map.get(group.key)
+    if grant_role is None:
+        return []
+    return sorted({
+        g.user_id for g in md.ROLE_GRANTS
+        if g.revoked_at is None
+        and g.scope_kind == group.scope_kind
+        and g.scope_id == group.scope_id
+        and g.grant_role == grant_role
+    })
+
+
+def _explicit_group_members(group_id: str) -> list[str]:
+    return sorted({
+        m.user_id for m in md.PERMISSION_GROUP_MEMBERS
+        if m.group_id == group_id and m.revoked_at is None
+    })
+
+
+def _group_member_ids(group: "md.PermissionGroup") -> list[str]:
+    if group.is_derived:
+        return _derived_group_members(group)
+    return _explicit_group_members(group.id)
+
+
+def _find_group(group_id: str) -> "md.PermissionGroup | None":
+    for g in md.PERMISSION_GROUPS:
+        if g.id == group_id and g.deleted_at is None:
+            return g
+    return None
+
+
+def _groups_for_scope(scope_kind: str, scope_id: str) -> list["md.PermissionGroup"]:
+    return [
+        g for g in md.PERMISSION_GROUPS
+        if g.deleted_at is None
+        and g.scope_kind == scope_kind
+        and g.scope_id == scope_id
+    ]
+
+
+def _scope_chain(scope_kind: str, scope_id: str) -> list[tuple[str, str]]:
+    """Most-specific scope first. For a property, yields
+    (property, <id>) then the property's workspaces from
+    property_workspace (§02); for workspace / organization it yields
+    just that scope."""
+    if scope_kind == "property":
+        chain: list[tuple[str, str]] = [("property", scope_id)]
+        for pw in md.PROPERTY_WORKSPACES:
+            if pw.property_id == scope_id:
+                chain.append(("workspace", pw.workspace_id))
+        return chain
+    return [(scope_kind, scope_id)]
+
+
+def _is_owner_member(user_id: str, scope_kind: str, scope_id: str) -> bool:
+    for group in md.PERMISSION_GROUPS:
+        if (
+            group.deleted_at is None
+            and group.key == "owners"
+            and group.scope_kind == scope_kind
+            and group.scope_id == scope_id
+        ):
+            return user_id in _explicit_group_members(group.id)
+    return False
+
+
+def _user_groups_on_scope(user_id: str, scope_kind: str, scope_id: str) -> list[str]:
+    """Return system-group keys + user-defined group ids that contain
+    user on the given scope. Used by the resolver to match rule
+    subjects and catalog defaults."""
+    hits: list[str] = []
+    for g in _groups_for_scope(scope_kind, scope_id):
+        members = _group_member_ids(g)
+        if user_id in members:
+            hits.append(g.key if g.group_kind == "system" else g.id)
+    return hits
+
+
+def _rules_for(scope_kind: str, scope_id: str, action_key: str) -> list["md.PermissionRule"]:
+    return [
+        r for r in md.PERMISSION_RULES
+        if r.revoked_at is None
+        and r.scope_kind == scope_kind
+        and r.scope_id == scope_id
+        and r.action_key == action_key
+    ]
+
+
+def _catalog_entry(action_key: str) -> "md.ActionCatalogEntry | None":
+    for e in md.ACTION_CATALOG:
+        if e.key == action_key:
+            return e
+    return None
+
+
+def _resolve_action(user_id: str, action_key: str,
+                    scope_kind: str, scope_id: str) -> dict[str, Any]:
+    entry = _catalog_entry(action_key)
+    if entry is None:
+        return {
+            "effect": "deny",
+            "source_layer": "unknown_action",
+            "source_rule_id": None,
+            "matched_groups": [],
+        }
+
+    chain = _scope_chain(scope_kind, scope_id)
+
+    # Root-only short-circuit — owners of any scope in the chain win.
+    if entry.root_only:
+        for sk, sid in chain:
+            if _is_owner_member(user_id, sk, sid):
+                return {
+                    "effect": "allow",
+                    "source_layer": "root_only_owners",
+                    "source_rule_id": None,
+                    "matched_groups": ["owners"],
+                }
+        return {
+            "effect": "deny",
+            "source_layer": "root_only_owners",
+            "source_rule_id": None,
+            "matched_groups": [],
+        }
+
+    # Root-protected-deny: owners cannot be denied.
+    owner_on_chain = any(
+        _is_owner_member(user_id, sk, sid) for sk, sid in chain
+    )
+
+    for sk, sid in chain:
+        rules = _rules_for(sk, sid, action_key)
+        user_groups = set(_user_groups_on_scope(user_id, sk, sid))
+        matched: list["md.PermissionRule"] = []
+        for rule in rules:
+            if rule.subject_kind == "user" and rule.subject_id == user_id:
+                matched.append(rule)
+            elif rule.subject_kind == "group":
+                # Match rule subject to either a system group key or
+                # user-defined group id. Translate the subject_id:
+                subject_group = _find_group(rule.subject_id)
+                if subject_group is None:
+                    continue
+                target = (
+                    subject_group.key if subject_group.group_kind == "system"
+                    else subject_group.id
+                )
+                if target in user_groups and subject_group.scope_kind == sk and subject_group.scope_id == sid:
+                    matched.append(rule)
+                # A group-subject rule targeting a scope in the chain
+                # but on a different (scope_kind, scope_id) than the
+                # group itself would be a validation error; skip.
+        if not matched:
+            continue
+        deny = next((r for r in matched if r.effect == "deny"), None)
+        if deny is not None:
+            if entry.root_protected_deny and owner_on_chain:
+                # Owners cannot be denied; fall through to the allow
+                # lookup below but without this deny influencing the
+                # outcome.
+                pass
+            else:
+                return {
+                    "effect": "deny",
+                    "source_layer": f"rule:{sk}",
+                    "source_rule_id": deny.id,
+                    "matched_groups": sorted(user_groups),
+                }
+        allow = next((r for r in matched if r.effect == "allow"), None)
+        if allow is not None:
+            return {
+                "effect": "allow",
+                "source_layer": f"rule:{sk}",
+                "source_rule_id": allow.id,
+                "matched_groups": sorted(user_groups),
+            }
+
+    # Catalog default.
+    default_allow = set(entry.default_allow)
+    for sk, sid in chain:
+        user_groups = set(_user_groups_on_scope(user_id, sk, sid))
+        hit = default_allow & user_groups
+        if hit:
+            return {
+                "effect": "allow",
+                "source_layer": "catalog_default",
+                "source_rule_id": None,
+                "matched_groups": sorted(hit),
+            }
+    return {
+        "effect": "deny",
+        "source_layer": "catalog_default",
+        "source_rule_id": None,
+        "matched_groups": [],
+    }
+
+
+@app.get("/api/v1/permission_groups")
+def api_permission_groups(scope_kind: str = "", scope_id: str = "") -> Response:
+    rows = [
+        g for g in md.PERMISSION_GROUPS
+        if g.deleted_at is None
+        and (not scope_kind or g.scope_kind == scope_kind)
+        and (not scope_id or g.scope_id == scope_id)
+    ]
+    return ok(rows)
+
+
+@app.get("/api/v1/permission_groups/{gid}")
+def api_permission_group(gid: str) -> Response:
+    g = _find_group(gid)
+    if g is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    return ok(g)
+
+
+@app.get("/api/v1/permission_groups/{gid}/members")
+def api_permission_group_members(gid: str) -> Response:
+    g = _find_group(gid)
+    if g is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    member_ids = _group_member_ids(g)
+    return ok({
+        "group_id": gid,
+        "is_derived": g.is_derived,
+        "members": [
+            {"user_id": uid, "derived": g.is_derived}
+            for uid in member_ids
+        ],
+    })
+
+
+@app.get("/api/v1/permission_rules")
+def api_permission_rules(scope_kind: str = "", scope_id: str = "",
+                         action_key: str = "") -> Response:
+    rows = [
+        r for r in md.PERMISSION_RULES
+        if r.revoked_at is None
+        and (not scope_kind or r.scope_kind == scope_kind)
+        and (not scope_id or r.scope_id == scope_id)
+        and (not action_key or r.action_key == action_key)
+    ]
+    return ok(rows)
+
+
+@app.get("/api/v1/permissions/action_catalog")
+def api_action_catalog() -> Response:
+    return ok(md.ACTION_CATALOG)
+
+
+@app.get("/api/v1/permissions/resolved")
+def api_permissions_resolved(
+    user_id: str,
+    action_key: str,
+    scope_kind: str,
+    scope_id: str,
+) -> Response:
+    return ok(_resolve_action(user_id, action_key, scope_kind, scope_id))
+
+
 @app.get("/api/v1/work_engagements")
 def api_work_engagements(user_id: str = "", workspace_id: str = "") -> Response:
     rows = [

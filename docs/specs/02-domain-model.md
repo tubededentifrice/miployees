@@ -74,16 +74,27 @@ identity model below, not against the home workspace alone.
 ### Unified identity
 
 v1 replaces the v0 split between `manager` and `employee` with a
-single `users` table and a **role-grant** permission model. One
-person = one `users` row (one login identity, one passkey set, one
-email), regardless of whether they are the head of a household, a
-maid, a driver, a billing client, or all four at once on different
-scopes. Their authority in any given scope is expressed by one or
-more `role_grants` rows — see "Shared tables → `users`" and
-"Shared tables → `role_grants`" below, plus §03 (auth) and §05
-(work roles and capabilities).
+single `users` table. Each person is represented by exactly one
+`users` row (one login identity, one passkey set, one email),
+regardless of whether they are the head of a household, a maid, a
+driver, a billing client, or all four at once on different scopes.
 
-This collapses three things that used to be separate:
+Permissions are split in two, deliberately:
+
+- **Surface (persona, data filter).** `role_grants` rows with
+  `grant_role ∈ {manager, worker, client, guest}` — which UI
+  shell the user sees and which rows RLS (§15) lets them read.
+- **Authority (who may do what).** Membership in
+  `permission_group` plus rules on `permission_rule` targeting
+  an `action_key` — a purely reverse, action-first model.
+  Governance lives in the `owners` permission group on each
+  scope (≥1 member invariant replaces the v0 "exactly one
+  `owner` grant" rule). See "Shared tables → `role_grants`",
+  "Shared tables → `permission_group`", "Shared tables →
+  `permission_rule`", plus §03 (auth) and §05 (work roles,
+  capabilities, action catalog).
+
+This collapses three things that used to be separate in v0:
 
 - v0 `manager` rows (logins with workspace-wide authority).
 - v0 `employee` rows (logins with task-scoped authority).
@@ -95,7 +106,8 @@ This collapses three things that used to be separate:
 The term "employee" is retained only as a **domain term** for a
 person who performs work under a `work_engagement` (§22) — it is
 no longer an entity in the schema. New code and new specs refer to
-`users` and their `role_grants`.
+`users`, their `role_grants`, and the `permission_group` /
+`permission_rule` pair.
 
 ### User belongs to many workspaces
 
@@ -123,10 +135,20 @@ erDiagram
     USER ||--o{ WORK_ENGAGEMENT : earns_under
     USER ||--o{ USER_WORK_ROLE : fills
     USER ||--o{ PASSKEY_CREDENTIAL : authenticates_with
+    USER ||--o{ PERMISSION_GROUP_MEMBER : belongs_to
 
     ROLE_GRANT }o--|| WORKSPACE : may_scope_to
     ROLE_GRANT }o--|| PROPERTY : may_scope_to
     ROLE_GRANT }o--|| ORGANIZATION : may_scope_to
+
+    WORKSPACE ||--o{ PERMISSION_GROUP : hosts
+    ORGANIZATION ||--o{ PERMISSION_GROUP : hosts
+    PERMISSION_GROUP ||--o{ PERMISSION_GROUP_MEMBER : contains
+    PERMISSION_GROUP ||--o{ PERMISSION_RULE : subject_of
+    USER ||--o{ PERMISSION_RULE : subject_of
+    WORKSPACE ||--o{ PERMISSION_RULE : scopes
+    PROPERTY ||--o{ PERMISSION_RULE : scopes
+    ORGANIZATION ||--o{ PERMISSION_RULE : scopes
 
     PROPERTY_WORKSPACE }o--|| PROPERTY : links
     USER_WORKSPACE }o--|| USER : links
@@ -203,14 +225,20 @@ Entities in the diagram but not detailed inline here have their
 columns defined in the section referenced in the catalog below.
 `task_assignment` is not an entity — task assignment is captured as
 `task.assigned_user_id` (see §06). `capability_flag` is not an
-entity either — capabilities are sparse JSON blobs on `work_role`
-and `user_work_role` (see §05), and `role_grants.capability_override`
-shadows them for scope-wide overrides.
+entity either — work-scoped capabilities are sparse JSON blobs
+on `work_role` and `user_work_role` (see §05). Authority
+(who-may-do-what) lives on the `permission_rule` + action
+catalog pair (see `permission_rule` below and the catalog in
+§05).
 
 ### Core entities (by document)
 
 - **Auth / identity** (§03): `user`, `role_grant`, `passkey_credential`,
   `magic_link`, `break_glass_code`, `api_token`, `session`.
+- **Permissions** (§02, §05): `permission_group`,
+  `permission_group_member`, `permission_rule`. Governance anchor is
+  the `owners` group on each scope; rule resolution is documented
+  inline above.
 - **Places** (§04): `property`, `unit`, `area`, `stay`, `guest_link`,
   `ical_feed`.
 - **People, work roles, engagements** (§05, §22): `work_role`,
@@ -374,10 +402,19 @@ workspace `default_locale`, then `en-US`.
 
 ### `role_grants`
 
-The permission model. One row per `(user, scope_kind, scope_id,
-grant_role)`; a user may hold several grants on the same scope
-(e.g. owner of workspace W plus worker of workspace W, as long as
-the `grant_role`s differ).
+The **surface** model. A `role_grants` row says "user U has a
+persona on scope S": which UI shell they see (worker PWA vs
+manager dashboard vs client portal vs guest placeholder), and
+which data the row-level security filters let them read
+(§15). It does **not** carry per-action authority — authority
+lives on `permission_rule` (see below).
+
+One row per `(user, scope_kind, scope_id, grant_role)`; a user
+may hold several grants on the same scope with different
+`grant_role`s (e.g. manager of workspace W plus worker of
+workspace W — they then see a surface switcher). A user's
+governance power in a scope is expressed separately by
+membership in that scope's `owners` permission group.
 
 | column             | type      | notes                                                                 |
 |--------------------|-----------|-----------------------------------------------------------------------|
@@ -385,9 +422,8 @@ the `grant_role`s differ).
 | user_id            | ULID FK   |                                                                       |
 | scope_kind         | text      | `workspace \| property \| organization`                               |
 | scope_id           | ULID      | references `workspace.id` / `property.id` / `organization.id`         |
-| grant_role         | text      | `owner \| manager \| worker \| client \| guest`                       |
+| grant_role         | text      | `manager \| worker \| client \| guest` (see note on dropped `owner`)  |
 | binding_org_id     | ULID FK?  | only meaningful when `scope_kind = 'workspace'` and `grant_role = 'client'`; narrows the client's visibility to data billed to this organization within the workspace |
-| capability_override | jsonb    | sparse merge on top of the grant_role's catalog defaults              |
 | started_on         | date      | when the grant takes effect                                           |
 | ended_on           | date?     | when it expired (null = active)                                       |
 | granted_by_user_id | ULID FK?  | audit; null for the self-grant emitted at workspace creation          |
@@ -400,104 +436,292 @@ Primary key `(user_id, scope_kind, scope_id, grant_role)` with
 `revoked_at IS NULL` (partial index; revoked rows are kept for
 audit and a user may be re-granted the same role later).
 
+Note: v1 drops the `owner` grant_role and the per-row
+`capability_override` column that existed in earlier drafts.
+Governance lives on the `owners` **permission group** (below);
+fine-grained authority lives on `permission_rule`. `role_grants`
+is now strictly the surface/persona anchor.
+
 **Valid `grant_role` per `scope_kind`:**
 
-| scope_kind     | owner | manager | worker | client | guest |
-|----------------|:-----:|:-------:|:------:|:------:|:-----:|
-| `workspace`    | ✅    | ✅      | ✅     | ✅     | ✅*   |
-| `property`     | ✅    | ✅      | ✅     | ✅     | ✅*   |
-| `organization` | ✅    | ✅      | —      | —      | —     |
+| scope_kind     | manager | worker | client | guest |
+|----------------|:-------:|:------:|:------:|:-----:|
+| `workspace`    | ✅      | ✅     | ✅     | ✅*   |
+| `property`     | ✅      | ✅     | ✅     | ✅*   |
+| `organization` | ✅      | —      | —      | —     |
 
 \* `guest` is reserved for future use — v1 guests still enter
 through the tokenized `guest_link` (§04), not through `role_grants`.
 Rows with `grant_role = 'guest'` are allowed in the schema but
 have no UI surface in v1. See §19.
 
-**Semantics.**
+**Semantics (surface / persona).**
 
-- **`owner`** — full authority in the scope, including the right
-  to grant/revoke every other role. Exactly one `owner` grant per
-  scope, enforced by a partial unique index on
-  `(scope_kind, scope_id, grant_role)` where
-  `grant_role = 'owner' AND revoked_at IS NULL`. Transfer requires
-  the outgoing owner's approval or an admin action (§15).
-- **`manager`** — full authority except cannot demote, archive, or
-  transfer the owner. Multiple managers allowed.
-- **`worker`** — operational access. A workspace-level worker grant
-  requires at least one `user_work_role` row in the same workspace
-  (validated at write time); the worker surface is further narrowed
-  by `property_work_role_assignment` rows (§05). A property-level
-  worker grant may exist without a workspace-level one — that models
-  a worker who only operates at one specific shared property.
-- **`client`** — read access to data they are billed for, plus the
-  ability to accept/reject quotes and invoices tied to them (money-
-  routing actions remain unconditionally approval-gated, §11).
-  Workspace-scope client grants with `binding_org_id` see
-  everything in the workspace tagged to that org; property-scope
-  client grants see that property only.
+- **`manager`** — "admin UI shell". Sees the full management
+  dashboard (properties, tasks, payroll, organizations,
+  settings). Whether they may *perform* a given administrative
+  action is resolved per-action through `permission_rule` (see
+  below). A manager who is also in the scope's `owners` group
+  additionally unlocks the root-only actions.
+- **`worker`** — "worker PWA shell". A workspace-level worker
+  grant requires at least one `user_work_role` row in the same
+  workspace (validated at write time); the worker surface is
+  further narrowed by `property_work_role_assignment` rows
+  (§05). A property-level worker grant may exist without a
+  workspace-level one — that models a worker who only operates
+  at one specific shared property.
+- **`client`** — "client portal shell". Read access to data
+  they are billed for, plus action-gated controls (accept/
+  reject quotes, approve/reject invoices billed to them). Money-
+  routing actions remain unconditionally approval-gated in §11
+  regardless of rule outcome. Workspace-scope client grants
+  with `binding_org_id` see everything in the workspace tagged
+  to that org; property-scope client grants see that property
+  only.
 - **`guest`** — reserved; see above.
 
-**Resolution order for property access** — given a `(user, property)`
-pair:
+**Resolution order for surface on a property** — given a
+`(user, property)` pair:
 
 1. A `role_grants` row with `scope_kind = 'property'` and
    `scope_id = property.id` — use its `grant_role`.
 2. Otherwise, for each workspace in the property's
    `property_workspace` junction, look for a `role_grants` row
    with `scope_kind = 'workspace'` and `scope_id = <that workspace>`.
-   If multiple workspaces match, use the highest-privilege
-   `grant_role` across them (`owner > manager > worker > client > guest`).
+   If multiple workspaces match, pick the surface that exposes
+   the most (`manager > worker > client > guest`) — but note
+   this picks the **UI shell**, not authority. Authority for a
+   specific action is always resolved via `permission_rule`.
 3. Otherwise, no access.
 
-**Resolution order for workspace access** — given a `(user, workspace)`
-pair, use the `role_grants` row with `scope_kind = 'workspace'`
-directly, or any property-level grant on a property in that
-workspace (narrower — user sees only the tasks/shifts of that
-property, not the workspace at large).
-
-**Capability cascade** for grant-scoped capabilities:
-
-1. `role_grants.capability_override` (most specific)
-2. Catalog defaults for the effective `grant_role`
-3. Compile-time catalog default (see §05)
-
-Where a capability is relevant to **work** rather than **grant**
-(e.g. `time.clock_in`, `tasks.photo_evidence`), the resolution
-chain from §05 applies (`user_work_role` / `property_work_role_assignment`
-/ `work_role.default_capabilities`). The grant cascade above
-controls UI-access capabilities (`managers.invite`,
-`organizations.edit_pay_destination`, `clients.accept_quote`, etc.).
-
-**Catalog of grant-scoped capabilities.** See §05 for the
-work-scoped catalog; the grant-scoped catalog is:
-
-| key                                | owner | manager | worker | client | guest |
-|------------------------------------|:-----:|:-------:|:------:|:------:|:-----:|
-| `scope.view`                       | ✅    | ✅      | ✅     | ✅     | ✅    |
-| `users.invite`                     | ✅    | ✅      | —      | —      | —     |
-| `users.revoke_grant`               | ✅    | ✅*     | —      | —      | —     |
-| `users.archive`                    | ✅    | ✅*     | —      | —      | —     |
-| `scope.edit_settings`              | ✅    | ✅      | —      | —      | —     |
-| `scope.transfer_owner`             | ✅    | —       | —      | —      | —     |
-| `properties.create`                | ✅    | ✅      | —      | —      | —     |
-| `properties.archive`               | ✅    | ✅      | —      | —      | —     |
-| `workspaces.archive`               | ✅    | —       | —      | —      | —     |
-| `organizations.edit_pay_destination` | ✅  | ✅      | —      | —      | —     |
-| `work_orders.view`                 | ✅    | ✅      | ✅†    | ✅‡    | —     |
-| `quotes.accept`                    | ✅    | ✅      | —      | ✅§    | —     |
-| `vendor_invoices.approve`          | ✅    | ✅      | —      | —      | —     |
-
-\* Managers cannot revoke grants or archive users whose sole
-remaining grant in that scope is `owner`.
-† Workers see work_orders they are assigned to.
-‡ Clients see work_orders billed to them.
-§ `client.quotes.accept` is subject to §11 approval gating.
+**Resolution order for surface on a workspace** — given a
+`(user, workspace)` pair, use the `role_grants` row with
+`scope_kind = 'workspace'` directly, or any property-level
+grant on a property in that workspace (narrower — user sees
+only the tasks/shifts of that property, not the workspace at
+large).
 
 **Revocation.** Revoking a grant writes `revoked_at` and clears
 the row's effective state without deleting it (audit trail).
 Re-granting the same `(user, scope_kind, scope_id, grant_role)`
 triple inserts a new row with a new `id`; the old row stays for
-history.
+history. Revoking a user's last active `role_grants` row on a
+scope also implicitly removes them from every derived
+(`managers`, `all_workers`, `all_clients`) system group on that
+scope (see `permission_group` below); explicit group
+membership rows (`owners`, user-defined groups) are **not**
+auto-removed — the operator revokes them deliberately.
+
+### `permission_group`
+
+Named set of users for the purpose of granting authority.
+Workspace- or organization-local; organization-scope groups are
+rare but exist for governance parity with workspaces.
+
+Every workspace and organization is seeded at creation with
+four **system groups**: `owners`, `managers`, `all_workers`,
+`all_clients`. Membership of the three `managers`/`all_*`
+groups is **derived** from `role_grants` at query time and
+cannot be edited directly. Membership of `owners` is
+**explicit** — stored on `permission_group_member` — because
+`owners` is the governance anchor and must be deliberately
+maintained (see invariant below). User-defined groups
+(`family`, `parents`, `front_desk`, etc.) are also explicit.
+
+| column         | type      | notes                                                                             |
+|----------------|-----------|-----------------------------------------------------------------------------------|
+| id             | ULID PK   |                                                                                   |
+| scope_kind     | text      | `workspace \| organization` — groups live on a single governance scope            |
+| scope_id       | ULID      | references `workspaces.id` or `organizations.id`                                  |
+| key            | text      | stable slug. System keys: `owners`, `managers`, `all_workers`, `all_clients`. User-defined keys are free-form, unique per `(scope_kind, scope_id)`. |
+| name           | text      | display name (i18n via §18 — user-defined groups have a workspace-language name; system group labels are localised)  |
+| description_md | text      | optional                                                                          |
+| group_kind     | text      | `system \| user`                                                                  |
+| is_derived     | bool      | true for `managers`, `all_workers`, `all_clients` (membership computed, `permission_group_member` unused); false for `owners` and user-defined groups |
+| created_at     | tstz      |                                                                                   |
+| updated_at     | tstz      |                                                                                   |
+| deleted_at     | tstz?     | system groups cannot be soft-deleted; write fails with 422 `system_group_undeletable` |
+
+Primary key on `id`; unique `(scope_kind, scope_id, key)` where
+`deleted_at IS NULL`.
+
+**Invariants.**
+
+- Every workspace has exactly the four system groups at any
+  time; every organization has exactly the two applicable
+  system groups (`owners`, `managers` — `all_workers` and
+  `all_clients` are skipped since organization scope does not
+  carry worker/client grants). Missing system groups are
+  re-seeded by the worker job that materialises grants.
+- The `owners` group on any scope has **at least one active
+  member** at all times. A write that would leave it empty
+  fails with 422 `error = "would_orphan_owners_group"`. This
+  replaces the v0 "exactly one `owner` grant per scope"
+  invariant.
+- A user cannot be archived (`users.archived_at`) while they
+  are the sole active member of any `owners` group across the
+  deployment. The error code is
+  `would_orphan_owners_group`.
+
+**Groups do not nest.** A rule subject is either a single user
+or a single group — groups cannot contain other groups. This
+keeps resolution linear and the UI legible.
+
+### `permission_group_member`
+
+Explicit membership. Only populated for `owners` and
+user-defined groups (`is_derived = false`); derived groups
+(`managers`, `all_workers`, `all_clients`) compute membership
+from `role_grants` at query time.
+
+| column           | type    | notes                                            |
+|------------------|---------|--------------------------------------------------|
+| group_id         | ULID FK | references `permission_group.id`                 |
+| user_id          | ULID FK | references `users.id`                            |
+| added_by_user_id | ULID FK?| null for system-bootstrap rows                   |
+| added_at         | tstz    |                                                  |
+| revoked_at       | tstz?   | soft-revoke; history is preserved                |
+
+Primary key `(group_id, user_id)` with `revoked_at IS NULL`
+(partial index).
+
+Writing a row requires the acting user to pass the
+`groups.manage_members` action check for the **scope of the
+group** (workspace or organization). Managing membership of
+the `owners` group itself requires the distinct
+`groups.manage_owners_membership` root-only action — see the
+action catalog below — because owners membership is what
+ultimately authorises every other change to the permission
+model.
+
+### `permission_rule`
+
+The authority model. Each row says "on scope S, subject X is
+allowed or denied action A". Resolution walks from most-
+specific to least-specific scope and falls back to the catalog
+default when no rule matches.
+
+| column          | type      | notes                                                                                               |
+|-----------------|-----------|-----------------------------------------------------------------------------------------------------|
+| id              | ULID PK   |                                                                                                     |
+| scope_kind      | text      | `workspace \| property \| organization`                                                             |
+| scope_id        | ULID      | references the scope row                                                                            |
+| action_key      | text      | must exist in the action catalog (§05). Writes referencing an unknown key fail with 422 `unknown_action_key`. |
+| subject_kind    | text      | `user \| group`                                                                                     |
+| subject_id      | ULID      | `users.id` when `subject_kind = 'user'`; `permission_group.id` when `subject_kind = 'group'`. A rule whose group belongs to a different scope fails validation (`subject_group_scope_mismatch`). |
+| effect          | text      | `allow \| deny`                                                                                     |
+| created_by_user_id | ULID FK |                                                                                                    |
+| created_at      | tstz      |                                                                                                     |
+| revoked_at      | tstz?     | soft-revoke; history preserved                                                                      |
+| revoked_by_user_id | ULID FK?|                                                                                                    |
+| revoke_reason   | text?     |                                                                                                     |
+
+Primary key `(scope_kind, scope_id, action_key, subject_kind,
+subject_id, effect)` with `revoked_at IS NULL` — a given
+(scope, action, subject, effect) combination has at most one
+active rule. Adding the opposite effect on the same (scope,
+action, subject) triple is allowed; resolution within a scope
+treats `deny` as winning over `allow`.
+
+Editing `permission_rule` requires the acting user to pass the
+root-only `permissions.edit_rules` action check. Because that
+action is root-only, only members of the `owners` group of the
+scope (or any containing scope) may edit rules on that scope.
+
+### Permission resolution
+
+Given a triple `(user U, action_key A, target_scope S)`, the
+permission resolver returns `allow | deny` using this order.
+
+1. **Action existence.** If `A` is not registered in the
+   action catalog (§05), the resolver returns `deny` and logs
+   a warning — unknown actions do not fall through.
+2. **Root-only check.** If the action is flagged `root_only`
+   in the catalog:
+   - If `U` is an active member of the `owners` group of `S`
+     (or of the workspace containing `S` when `S` is a
+     property) → `allow`. Stop.
+   - Otherwise → `deny`. Stop. (Allow and deny rules on
+     root-only actions are accepted at write time for
+     forward-compatibility but have **no effect** on
+     resolution. The admin UI surfaces this explicitly.)
+3. **Owners fast-path on protected actions.** Each scope's
+   `owners` group is implicitly allowed on the catalog's
+   root-protected-deny actions: governance actions that are
+   not root-only but must never be deniable (see §05). For
+   these, step 4's deny rules do not fire against owners
+   members.
+4. **Scope walk (most-specific first).** Build the scope
+   chain: `[property, workspace]` when `S` is a property,
+   `[workspace]` when `S` is a workspace, `[organization]`
+   when `S` is an organization. For each scope in order:
+   - Gather all active `permission_rule` rows on that scope
+     with `action_key = A` whose subject matches `U` — either
+     `subject_kind = 'user' AND subject_id = U` or
+     `subject_kind = 'group' AND U` is a member of that group
+     (derived or explicit).
+   - If any matching rule has `effect = 'deny'` → `deny`.
+     Stop. (Exception: step 3 for owners on protected-deny
+     actions.)
+   - Else if any matching rule has `effect = 'allow'` →
+     `allow`. Stop.
+   - Else continue to the next scope.
+5. **Catalog default.** If the walk produced no decision, fall
+   back to the action's `default_allow` list of system group
+   keys. If any of `U`'s active memberships on the scope chain
+   intersects `default_allow` → `allow`. Otherwise → `deny`.
+
+**Deny within a scope beats allow within the same scope.** A
+more-specific scope overrides a broader one — so a property
+rule can widen a workspace deny (allow at property wins),
+which is the point. Root-only actions are the exception and
+cannot be widened or narrowed.
+
+**Derived group membership** for a user `U` and scope `S`:
+
+- `U` ∈ `owners@S` iff an active `permission_group_member` row
+  exists pairing `U` with `S`'s owners group.
+- `U` ∈ `managers@S` iff `U` holds an active `role_grants` row
+  with `grant_role = 'manager'` on `S` (workspace or
+  organization). Property-level manager grants contribute to
+  the `managers` group of that property's workspace **only
+  when** the property is the explicit subject of a
+  property-scope rule; they do not silently join the
+  workspace's `managers` group.
+- `U` ∈ `all_workers@S` iff `U` holds an active `role_grants`
+  row with `grant_role = 'worker'` on `S`.
+- `U` ∈ `all_clients@S` iff `U` holds an active `role_grants`
+  row with `grant_role = 'client'` on `S`.
+
+The resolver API `resolve_action(user_id, action_key,
+scope_kind, scope_id) → {effect, source_layer,
+source_rule_id?, matched_groups[]}` returns both the decision
+and provenance (which layer decided, which rule id if any,
+and which of the user's group memberships matched). The UI
+exposes this as `GET /permissions/resolved` (§12).
+
+**Bootstrap.** Creating a new workspace atomically:
+
+1. Inserts the `workspaces` row.
+2. Seeds the four system groups (`owners`, `managers`,
+   `all_workers`, `all_clients`).
+3. Inserts a `role_grants(user=creator, scope=workspace,
+   grant_role='manager')` so the creator has the admin
+   surface.
+4. Inserts a `permission_group_member(group=owners,
+   user=creator)` so the creator is the initial governance
+   anchor.
+
+Creating an organization does the same with `owners` +
+`managers` only.
+
+**Audit.** Every mutation of `permission_group`,
+`permission_group_member`, `permission_rule`, and `role_grants`
+emits an `audit_log` entry keyed to the scope. Field
+`actor_was_owner_member` (see `audit_log` below) records
+whether the acting user was an owner at the time of the
+mutation; reviewers use it to tell governance action apart
+from ordinary administration.
 
 ### `work_engagement`
 
@@ -543,7 +767,9 @@ Append-only. Written in the same transaction as every mutation.
 | occurred_at        | tstz    |                                       |
 | actor_kind         | text    | `user`, `agent`, `system`. Every human action — whether the user holds an `owner`, `manager`, `worker`, or `client` grant — is logged as `user`; the grant under which the action was taken is captured in `actor_grant_role` below. `agent` is used only for standalone scoped-token callers (delegated-token requests log as `user`). |
 | actor_id           | ULID    | references `users.id` for `actor_kind = 'user'`; nullable only for `system` |
-| actor_grant_role   | text?   | `owner | manager | worker | client`; the grant_role under which the action was authorised. Null when the action is identity-scoped rather than scope-scoped (e.g. a user editing their own profile). |
+| actor_grant_role   | text?   | `manager | worker | client | guest`; the surface grant_role under which the action was taken. Null when the action is identity-scoped rather than scope-scoped (e.g. a user editing their own profile). The former `owner` value is retired — governance is captured by `actor_was_owner_member` below. |
+| actor_was_owner_member | bool | true iff the acting user was an active member of the scope's `owners` permission group at the time the action was recorded. Lets reviewers tell governance actions apart from ordinary administration; captured per-mutation, not per-session. Null when the action is identity-scoped (no scope). |
+| actor_action_key   | text?   | the action catalog `action_key` the resolver checked, when the action flowed through `resolve_action`. Null for pure identity or system actions. |
 | via                | text    | `web`, `api`, `cli`, `worker`         |
 | token_id           | ULID    | nullable; populated for `api`/`cli`   |
 | action             | text    | `task.create`, `task.complete`, etc.  |
@@ -729,15 +955,18 @@ scope, and the spec that defines the feature:
 "WE" in the scope column refers to the **work_engagement** layer
 (per-(user, workspace) row), replacing the v0 "employee" scope tag.
 
-### Relationship to capabilities
+### Relationship to capabilities and permissions
 
-Capabilities (§05) remain a parallel system for per-(user_work_role,
-work_role, property) feature toggles — they gate UI affordances and
-scheduling behaviour. `role_grants.capability_override` (see
-`role_grants` above) is the third parallel system, scoping
-identity/authority capabilities per grant. The settings cascade
-handles **entity-level configuration**: values that shape how a
-feature works rather than whether it is available.
+Capabilities (§05) remain a parallel system for
+per-(user_work_role, work_role, property) feature toggles — they
+gate worker-UI affordances and scheduling behaviour
+(`time.clock_in`, `tasks.photo_evidence_required`, etc.). The
+**permission system** (§02 `permission_rule` + §05 action
+catalog) is a separate mechanism for *who-may-do-what* on
+administrative actions (`expenses.approve`, `users.invite`, …).
+The settings cascade handles **entity-level configuration**:
+values that shape how a feature works rather than whether it is
+available to a given user.
 
 Where keys overlap (e.g. `time.clock_mode` appears in both the
 capability catalog and the settings catalog), the settings cascade
@@ -789,7 +1018,11 @@ Defined once per document where the enum lives; summarized here.
 
 - `actor_kind`: `user | agent | system` (`agent` for standalone scoped-token callers only; delegated tokens log as `user` — see §03)
 - `scope_kind`: `workspace | property | organization`
-- `grant_role`: `owner | manager | worker | client | guest`
+- `grant_role`: `manager | worker | client | guest` (v1 drops the v0 `owner` value; see `permission_group` / `owners`)
+- `permission_group.group_kind`: `system | user`
+- `permission_group.key` (system values): `owners | managers | all_workers | all_clients`
+- `permission_rule.subject_kind`: `user | group`
+- `permission_rule.effect`: `allow | deny`
 - `property_workspace.membership_role`: `owner_workspace | managed_workspace | observer_workspace`
 - `user_workspace.source`: `workspace_grant | property_grant | org_grant | work_engagement`
 - `task_state`: `scheduled | pending | in_progress | completed | skipped | cancelled | overdue`
@@ -922,3 +1155,37 @@ a single `users` table and role-grant permissions. Concretely:
   compatibility views or a dual-read phase — the schema lands in
   the unified shape at first deploy. New deployments just pick up
   the new shape; there is no v0-data migration to run.
+
+### v1 authority split (surface vs. authority)
+
+v1 goes further than earlier drafts and splits the permission
+model in two:
+
+- **Surface** stays on `role_grants.grant_role`, narrowed to
+  `manager | worker | client | guest`. The `owner` value is
+  retired; `role_grants.capability_override` is removed entirely.
+  A v0 draft `role_grants(owner)` on scope `S` becomes, at
+  install time, two writes: a `role_grants(manager)` row for the
+  surface, plus a `permission_group_member` row placing the user
+  in `S`'s `owners` permission group.
+- **Authority** moves to the pair (`permission_group`,
+  `permission_rule`). System groups (`owners`, `managers`,
+  `all_workers`, `all_clients`) are seeded per workspace /
+  organization at first boot; user-defined groups (`family`,
+  `parents`, etc.) are created by owners in the admin UI.
+  Per-action defaults live in the action catalog in §05 and
+  apply when no rule matches.
+- The invariant "exactly one `owner` grant per scope" is
+  replaced by "the `owners` permission group on each scope has
+  ≥1 active member". Archive-last-owner checks now consult
+  group membership rather than the `grant_role = 'owner'` rows.
+- Audit log: `actor_grant_role` enum loses `owner`; new column
+  `actor_was_owner_member` captures whether the actor was a
+  member of the scope's owners group at the time. The
+  permission-lifecycle webhook family gains
+  `permission_group.*`, `permission_group_member.*`, and
+  `permission_rule.*` events alongside the existing
+  `role_grant.*` family.
+
+Because there is no production data yet, this split ships as
+first-deploy shape — no dual-write, no shim, no v0 backfill.

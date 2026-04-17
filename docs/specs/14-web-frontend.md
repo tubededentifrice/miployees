@@ -112,6 +112,7 @@ Everything above plus:
 /stays                    → stays list & calendar
 /users                    → staff list
 /user/<id>                → profile, role grants, work roles, capabilities, settings, shifts, payslips, leaves, availability overrides
+/permissions              → permissions hub (two tabs: Groups, Rules) — see "Permissions admin surface" below
 /user/<id>/leaves         → leave ledger (approve/reject)
 /user/<id>/availability   → availability override calendar (weekly pattern + date overrides)
 /leaves                   → cross-user leave inbox (pending approvals)
@@ -168,6 +169,56 @@ The desktop owner/manager UI is framed by three layout regions:
 The sidebar is load-bearing for the agent-first invariant (§11):
 any verb the owner/manager can click in `.desk__nav` or
 `.desk__main` can also be requested of the agent in `.desk__agent`.
+
+### Permissions admin surface
+
+`/permissions` is the top-level hub for the permission model
+(§02 `permission_group` / `permission_rule`, §05 action
+catalog). Available on the manager surface; writes are gated by
+the `permissions.edit_rules` and `groups.manage_members` action
+checks (with `groups.manage_owners_membership` for the
+`owners` group specifically — root-only, so only
+owners-group members can ever edit it).
+
+Two tabs, each a separate page under the shared frame:
+
+- **Groups** (`/permissions/groups`) — left column lists the
+  four system groups (`owners`, `managers`, `all_workers`,
+  `all_clients`) plus every user-defined group, with counts.
+  Right column shows the selected group's members. System
+  groups except `owners` render members as **read-only
+  derived** (with a muted explainer like "auto-populated from
+  role_grants"); `owners` and user-defined groups expose
+  add/remove controls. Adding a member to `owners` triggers an
+  inline confirmation reminding the user the target will gain
+  governance authority, then invokes
+  `groups.manage_owners_membership`. Removing the last
+  `owners` member is blocked with the same error code used by
+  the API (`would_orphan_owners_group`).
+- **Rules** (`/permissions/rules`) — grouped by action. Each
+  action row shows: the `action_key`, its catalog
+  `default_allow` (rendered as static group chips), and the
+  active `permission_rule` rows at the workspace scope below.
+  A per-property accordion reveals rules attached to specific
+  properties. Each rule is a subject chip (user or group) + an
+  `allow` / `deny` pill; deleting removes the rule; an "Add
+  rule" menu presents user + group pickers + effect. A
+  persistent "Who can do this?" sidebar lets the admin pick a
+  user and resolves the action through
+  `GET /permissions/resolved` (§12), rendering the
+  decision, source layer, matched rule id, and matched groups
+  so the model is debuggable from the UI.
+
+Root-only actions (e.g. `workspace.archive`, `admin.purge`)
+are listed in the catalog with a **"Owners only"** pill and
+no rule editor — rules written against them are accepted at
+write time for forward-compatibility but produce a warning
+badge ("rule has no effect"). Non-root root-protected-deny
+actions are decorated with a shield icon and the tooltip
+"Cannot be denied to owners".
+
+Mobile workers never see `/permissions`; the route is excluded
+from the worker bundle split (see §14 "JavaScript inventory").
 
 ### Calendar surfaces
 
@@ -306,30 +357,30 @@ Each task card shows:
 - Evidence: photo picker, note text area.
 - Skip flow opens a modal with reason textarea.
 
-## Chat page (employee)
+## Chat page (worker)
 
-`/chat` is a full agent conversation — the employee's **universal
+`/chat` is a full agent conversation — the worker's **universal
 inbox** for task notes, comments, issue reports, expense photos,
 and Q&A grounded in instructions (§07).
 
 - Voice-input mic button (capability-gated on `voice.employee`);
   audio transcribed via `voice.transcribe` before dispatch.
-- **Auto-language detection** on inbound: the employee writes in
+- **Auto-language detection** on inbound: the worker writes in
   their own language; the agent stores both the original and the
-  workspace-language translation per §10. The employee always sees
+  workspace-language translation per §10. The worker always sees
   their own original.
 - Issue reporting: the attach flow includes a "Report as issue"
   button that routes the thread segment into `/issues/new`.
 - Expense uploads: the attach flow includes "Receipt" → camera
   picker → background `expenses.autofill` (§09).
-- Task notes: when the employee opens a task, a sub-thread filtered
+- Task notes: when the worker opens a task, a sub-thread filtered
   to that task is shown; messages written there also appear on the
   task detail inline chat.
 
 No DMs, no group chats outside a task thread — just the one
-per-employee conversation with the workspace agent.
+per-user conversation with the workspace agent.
 
-## Me page (employee)
+## Me page (worker)
 
 Simplified from v0. Contents:
 
@@ -341,19 +392,19 @@ Simplified from v0. Contents:
 
 Explicitly **not** on the Me page:
 
-- No capabilities list (capabilities are manager-configured; the
-  employee sees them implicitly through the features that work).
-- No "switch to manager preview" link.
+- No capabilities list (capabilities are owner/manager-configured;
+  the worker sees them implicitly through the features that work).
+- No "switch to owner/manager preview" link.
 
-## History (employee)
+## History (worker)
 
-`/history` is a new employee route with four tabs:
+`/history` is a new worker route with four tabs:
 
 - **Tasks** — completed + skipped + cancelled tasks with filters.
 - **Chats** — archived chat topics (post-compaction; full-text
   searchable, see §11 "Conversation compaction").
 - **Expenses** — all submitted claims, with states.
-- **Leaves** — one-off `employee_leave` rows, availability overrides,
+- **Leaves** — one-off `user_leave` rows, availability overrides,
   and upcoming weekly-availability exceptions.
 
 History is read-only.

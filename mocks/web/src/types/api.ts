@@ -333,17 +333,124 @@ export interface LLMCall {
 
 export interface AuditEntry {
   at: string;
-  // v1 collapses to user|agent|system; the grant under which a user
-  // acted lives in actor_grant_role (§02).
+  // v1 collapses to user|agent|system; the surface grant under
+  // which a user acted lives in actor_grant_role (§02). The
+  // separate actor_was_owner_member bit captures whether the
+  // actor held ``owners`` permission-group membership at the
+  // time — so reviewers can tell governance actions apart from
+  // ordinary administration.
   actor_kind: "user" | "agent" | "system";
   actor: string;
   action: string;
   target: string;
   via: "web" | "api" | "cli" | "worker";
   reason: string | null;
-  actor_grant_role: "owner" | "manager" | "worker" | "client" | null;
+  actor_grant_role: "manager" | "worker" | "client" | "guest" | null;
+  actor_was_owner_member: boolean | null;
+  actor_action_key: string | null;
   actor_id: string | null;
   agent_label: string | null;
+}
+
+// ── Permission model (§02, §05) ───────────────────────────────────
+
+export type ScopeKind = "workspace" | "property" | "organization";
+export type GroupScopeKind = "workspace" | "organization";
+export type RuleEffect = "allow" | "deny";
+export type GrantRole = "manager" | "worker" | "client" | "guest";
+
+export interface User {
+  id: string;
+  email: string;
+  display_name: string;
+  timezone: string;
+  languages: string[];
+  preferred_locale: string | null;
+  avatar_file_id: string | null;
+  primary_workspace_id: string | null;
+  phone_e164: string | null;
+  notes_md: string;
+  archived_at: string | null;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  timezone: string;
+  default_currency: string;
+  default_country: string;
+  default_locale: string;
+}
+
+export interface RoleGrant {
+  id: string;
+  user_id: string;
+  scope_kind: ScopeKind;
+  scope_id: string;
+  grant_role: GrantRole;
+  binding_org_id: string | null;
+  started_on: string | null;
+  ended_on: string | null;
+  granted_by_user_id: string | null;
+  revoked_at: string | null;
+  revoke_reason: string | null;
+}
+
+export interface PermissionGroup {
+  id: string;
+  scope_kind: GroupScopeKind;
+  scope_id: string;
+  key: string;
+  name: string;
+  description_md: string;
+  group_kind: "system" | "user";
+  is_derived: boolean;
+  deleted_at: string | null;
+}
+
+export interface PermissionGroupMember {
+  group_id: string;
+  user_id: string;
+  added_by_user_id: string | null;
+  added_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface PermissionGroupMembersResponse {
+  group_id: string;
+  is_derived: boolean;
+  members: { user_id: string; derived: boolean }[];
+}
+
+export interface PermissionRule {
+  id: string;
+  scope_kind: ScopeKind;
+  scope_id: string;
+  action_key: string;
+  subject_kind: "user" | "group";
+  subject_id: string;
+  effect: RuleEffect;
+  created_by_user_id: string | null;
+  created_at: string | null;
+  revoked_at: string | null;
+  revoke_reason: string | null;
+}
+
+export interface ActionCatalogEntry {
+  key: string;
+  description: string;
+  valid_scope_kinds: ScopeKind[];
+  default_allow: string[];
+  root_only: boolean;
+  root_protected_deny: boolean;
+  spec: string;
+}
+
+export interface ResolvedPermission {
+  effect: RuleEffect;
+  source_layer: string;
+  source_rule_id: string | null;
+  matched_groups: string[];
 }
 
 export interface Webhook {

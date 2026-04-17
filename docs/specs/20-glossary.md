@@ -60,15 +60,16 @@ fix the offender.
   workspace scope, the `binding_org_id` narrows the client's view
   to data tagged to that organization within the workspace. See §02.
 - **Break-glass code.** Single-use recovery code issued to users
-  who hold an `owner` or `manager` grant; generates exactly one
-  magic link on redemption (§03).
-- **Capability.** A per-(user, work_role, property) feature flag,
-  resolved from a four-level sparse JSON stack
-  (property_work_role_assignment → user_work_role →
+  who hold a `manager` surface grant or membership in any
+  `owners` permission group; generates exactly one magic link on
+  redemption (§03).
+- **Capability (work-scoped).** A per-(user, work_role,
+  property) feature flag, resolved from a four-level sparse
+  JSON stack (property_work_role_assignment → user_work_role →
   work_role.default_capabilities → catalog default). Explicit
-  `false` blocks inheritance; absent keys inherit. Parallel to
-  `role_grants.capability_override` (grant-scoped capabilities).
-  Canonical catalog in §05.
+  `false` blocks inheritance; absent keys inherit. Canonical
+  catalog in §05. Administrative authority is a separate
+  system — see **Action catalog** and **Permission rule**.
 - **Condition (asset).** The physical state of an asset: `new | good |
   fair | poor | needs_replacement`. Changes are audit-logged as
   `asset.condition_changed`. See §21.
@@ -133,26 +134,59 @@ fix the offender.
 - **Magic link.** Single-use, signed URL used to enroll or recover a
   passkey. Consumes a break-glass code (if that's the source)
   regardless of whether the link is later clicked.
-- **Grant role.** The permission role a user holds on a scope:
-  `owner | manager | worker | client | guest`. Stored on
+- **Grant role (surface).** The UI-shell / data-filter persona
+  a user holds on a scope: `manager | worker | client | guest`.
+  Stored on
   `role_grants`. See §02.
-- **Manager (grant role).** A user with workspace-wide or scope-wide
-  authority (minus owner-only verbs). All managers are peers in v1.
-  Held via a `role_grants` row with `grant_role = 'manager'`; no
-  `managers` table exists in v1.
+- **Manager (grant role).** A user placed on the **admin UI
+  shell** on a scope. What they may actually *do* is resolved
+  per-action via the action catalog and `permission_rule` —
+  the `manager` grant names the surface, not a fixed authority
+  level. All managers are peers in v1. Held via a `role_grants`
+  row with `grant_role = 'manager'`.
 - **Model assignment.** The capability → model mapping (§11).
 - **Off-app reach-out.** Agent-initiated WhatsApp or SMS message to
   a user for low-stakes checks. Requires the user's
   `preferred_offapp_channel` to be set. See §10.
-- **Owner (grant role).** A user with full authority on a scope,
-  including the exclusive right to transfer ownership. Exactly one
-  per scope. Held via a `role_grants` row with `grant_role = 'owner'`.
+- **Owner / owners group.** **v0** had an `owner` grant_role
+  with "exactly one per scope". **v1** replaces this with the
+  `owners` **permission group**: a system group seeded per
+  scope whose members hold root authority. The invariant is now
+  "the `owners` group has ≥ 1 active member". `grant_role =
+  'owner'` no longer exists. See `permission_group` in §02.
 - **Owner workspace.** On `property_workspace`, the workspace whose
   creator controls access grants for the property
   (`membership_role = 'owner_workspace'`). Other workspaces that
   share the property are `managed_workspace` or `observer_workspace`.
   See §02.
 - **Passkey.** WebAuthn platform or roaming authenticator credential.
+- **Permission group.** A named set of users that can appear as
+  the subject of a `permission_rule`. Workspace- or
+  organization-scoped. Four system groups are seeded per scope:
+  `owners` (explicit membership, the governance anchor),
+  `managers`, `all_workers`, `all_clients` (derived from
+  `role_grants`). User-defined groups (`family`, `parents`,
+  `front_desk`, etc.) are also explicit. Groups do not nest. See
+  §02.
+- **Permission rule.** A row in `permission_rule` saying, on a
+  scope (workspace / property / organization), a subject (user
+  or group) is `allow`'d or `deny`'d an `action_key`. Deny
+  beats allow within a scope; more-specific scope beats
+  broader. Catalog defaults apply when no rule matches. See §02
+  "Permission resolution".
+- **Action catalog.** The canonical list of administrative
+  actions the permission resolver understands. Each entry
+  declares `key`, `valid_scope_kinds`, `default_allow` (system
+  groups granted by default), `root_only` (owners-only,
+  un-ruleable — e.g. `workspace.archive`, `admin.purge`), and
+  `root_protected_deny` (owners cannot be denied). Canonical
+  list in §05.
+- **Root-only action.** An action flagged `root_only` in the
+  catalog. Only members of the scope's `owners` group may
+  perform it, regardless of any `permission_rule`.
+- **Surface grant.** Synonym for the `role_grants.grant_role`
+  persona — `manager | worker | client | guest`. Names the UI
+  shell and the RLS filter, not the authority.
 - **Pay period.** A date-bucket inside which shifts roll up into a
   payslip. `open → locked → paid`; `paid` is set automatically when
   every contained payslip reaches `paid`.
@@ -227,13 +261,16 @@ fix the offender.
   (leave, holiday, day off). Bounded by `max_advance_days` on the
   lifecycle rule. See §06 "Pull-back logic for before_checkin tasks".
 - **Role.** Ambiguous in v0. In v1, prefer **Work role** (the job:
-  maid, cook, driver) or **Grant role** (the permission:
-  owner/manager/worker/client/guest). The v0 `role` entity was
-  renamed `work_role` in v1; stable slug `work_role.key` is
+  maid, cook, driver) or **Grant role (surface)** (the UI
+  persona: manager/worker/client/guest). The v0 `role` entity
+  was renamed `work_role` in v1; stable slug `work_role.key` is
   editable but external integrations should prefer the ULID.
 - **Role grant.** A row in `role_grants` attaching a user to a
-  scope with a grant_role and optional capability overrides. The
-  only source of authority for humans in v1. See §02.
+  scope with a surface `grant_role` (no authority column — v1
+  dropped `capability_override`). Authority comes from
+  permission-group membership plus `permission_rule` rows;
+  `role_grants` only says which UI shell the user sees and
+  which rows RLS lets them read. See §02.
 - **Schedule.** Description of when tasks materialize (RRULE).
   `paused_at` wins over `active_from/active_until`.
 - **Scope (instruction).** The visibility level of an instruction:

@@ -39,6 +39,7 @@ import AssetTypesPage from "@/pages/manager/AssetTypesPage";
 import DocumentsPage from "@/pages/manager/DocumentsPage";
 import PayPage from "@/pages/manager/PayPage";
 import AuditPage from "@/pages/manager/AuditPage";
+import PermissionsPage from "@/pages/manager/PermissionsPage";
 import WebhooksPage from "@/pages/manager/WebhooksPage";
 import LlmPage from "@/pages/manager/LlmPage";
 import SettingsPage from "@/pages/manager/SettingsPage";
@@ -112,6 +113,7 @@ export default function App() {
           <Route path="/documents" element={<DocumentsPage />} />
           <Route path="/pay" element={<PayPage />} />
           <Route path="/audit" element={<AuditPage />} />
+          <Route path="/permissions" element={<PermissionsPage />} />
           <Route path="/webhooks" element={<WebhooksPage />} />
           <Route path="/llm" element={<LlmPage />} />
           <Route path="/settings" element={<SettingsPage />} />

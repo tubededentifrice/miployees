@@ -46,4 +46,14 @@ export const qk = {
   assets: () => ["assets"] as const,
   asset: (aid: string) => ["asset", aid] as const,
   documents: () => ["documents"] as const,
+  users: (workspaceId?: string) => ["users", workspaceId ?? "all"] as const,
+  workspaces: () => ["workspaces"] as const,
+  permissionGroups: (scopeKind?: string, scopeId?: string) =>
+    ["permission_groups", scopeKind ?? "all", scopeId ?? "all"] as const,
+  permissionGroupMembers: (gid: string) => ["permission_group_members", gid] as const,
+  permissionRules: (scopeKind?: string, scopeId?: string) =>
+    ["permission_rules", scopeKind ?? "all", scopeId ?? "all"] as const,
+  actionCatalog: () => ["action_catalog"] as const,
+  permissionResolved: (userId: string, actionKey: string, scopeKind: string, scopeId: string) =>
+    ["permissions", "resolved", userId, actionKey, scopeKind, scopeId] as const,
 } as const;
