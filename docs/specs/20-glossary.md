@@ -16,6 +16,26 @@ fix the offender.
   agent described in §11. Default model `google/gemma-4-31b-it`;
   tool surface is the full CLI + REST surface of the delegating user
   (no filtered catalog). Voice input is capability-gated.
+- **Agent approval mode.** Per-user enum on `users.agent_approval_mode`
+  — `bypass | auto | strict`, default `strict`. Decides when the
+  user's own embedded chat agent pauses for an inline confirmation
+  card in the same chat channel before executing a mutating
+  delegated-token request. `bypass` never pauses, `auto` pauses on
+  routes carrying an `x-agent-confirm` annotation, `strict` pauses
+  on every mutation. Workspace policy (§11) still gates its own
+  list regardless of mode. See §11 "Per-user agent approval mode".
+- **Action confirmation annotation (`x-agent-confirm`).** Optional
+  OpenAPI route extension in §12 declaring the inline confirmation
+  card's `summary` template, `risk`, `fields_to_show`, and `verb`.
+  Single source of truth shared by the CLI (§13), the REST
+  middleware, and the chat UI — so the card copy is authored once
+  per action, not per surface. See §11 "Action confirmation
+  annotation".
+- **Inline confirmation card.** The "[Confirm] [Reject]" card
+  rendered in a user's chat channel (owner/manager sidebar or
+  worker PWA Chat tab) when their own embedded agent proposes a
+  gated action. The same row also appears on `/approvals` for
+  owner/manager oversight. See §11 "Inline approval UX".
 - **Auto-clock.** The `auto` value of `time.clock_mode` (§05, §09).
   First checklist tick or task action of the day opens a shift;
   `time.auto_clock_idle_minutes` of inactivity closes it. Per-property
@@ -26,7 +46,11 @@ fix the offender.
   `suppressed_until` timestamp (§11). Permanent suppression is not
   offered by design.
 - **Approvable action.** A write that requires owner or manager
-  approval regardless of token scope (§11). Default TTL 7 days.
+  approval at the **workspace-policy** layer, regardless of token
+  scope (§11). Lands on `/approvals` desk as an `agent_action`
+  row, TTL 7 days by default. Distinct from the per-user inline
+  confirmation card produced by **agent approval mode**, which is
+  decided by the delegating user themselves in their own chat.
 - **Archive / reinstate.** The canonical verbs for off-boarding and
   bringing back a worker's `work_engagement` (§05). Replaces "end",
   "terminate", "rehire".

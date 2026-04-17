@@ -203,6 +203,22 @@ export interface Stay {
   status: StayStatus;
 }
 
+// §11 — which layer of the gate fired and where its confirmation
+// lands. `desk` rows live on /approvals only; `inline_chat` rows
+// also render in the user's chat sidebar / PWA chat tab.
+export type GateSource =
+  | "workspace_always"
+  | "workspace_configurable"
+  | "user_auto_annotation"
+  | "user_strict_mutation";
+export type GateDestination = "desk" | "inline_chat";
+export type InlineChannel =
+  | "desk_only"
+  | "web_owner_sidebar"
+  | "web_worker_chat"
+  | "offapp_whatsapp"
+  | "offapp_sms";
+
 export interface ApprovalRequest {
   id: string;
   agent: string;
@@ -212,6 +228,13 @@ export interface ApprovalRequest {
   requested_at: string;
   risk: "low" | "medium" | "high";
   diff: string[];
+  gate_source: GateSource;
+  gate_destination: GateDestination;
+  inline_channel: InlineChannel;
+  card_summary: string;
+  card_fields: [string, string][];
+  for_user_id: string | null;
+  resolved_user_mode: AgentApprovalMode | null;
 }
 
 export interface Leave {
@@ -473,6 +496,10 @@ export interface AgentAction {
   title: string;
   detail: string;
   risk: "low" | "medium" | "high";
+  card_summary: string;
+  card_fields: [string, string][];
+  gate_source: GateSource;
+  inline_channel: "web_owner_sidebar" | "web_worker_chat";
 }
 
 export interface WorkspaceSettings {
@@ -518,6 +545,10 @@ export interface EntitySettingsPayload {
 }
 
 
+// §11 — per-user setting governing when the user's embedded chat
+// agent pauses for an inline confirmation card before executing.
+export type AgentApprovalMode = "bypass" | "auto" | "strict";
+
 export interface Me {
   role: Role;
   theme: Theme;
@@ -526,6 +557,8 @@ export interface Me {
   manager_name: string;
   today: string;
   now: string;
+  user_id: string | null;
+  agent_approval_mode: AgentApprovalMode;
 }
 
 export interface HistoryPayload {

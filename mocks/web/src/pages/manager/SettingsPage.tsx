@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
+import AgentApprovalModePanel from "@/components/AgentApprovalModePanel";
 import { Chip, Loading } from "@/components/common";
 import type {
   Employee,
@@ -130,6 +131,9 @@ export default function SettingsPage() {
 
   return (
     <DeskPage title="Settings" sub={sub}>
+      {/* Personal (your account) — agent approval mode is a per-user setting (§11). */}
+      <AgentApprovalModePanel variant="desktop" />
+
       {/* Workspace identity */}
       <section className="panel">
         <header className="panel__head"><h2>Workspace</h2></header>

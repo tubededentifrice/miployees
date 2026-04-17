@@ -215,9 +215,15 @@ def agent_sidebar_set(state: str) -> Response:
 # JSON API — reads
 # ══════════════════════════════════════════════════════════════════════
 
+def current_user_id(request: Request) -> str:
+    """Resolve the signed-in user's ULID from the role cookie (§03, §11)."""
+    return md.DEFAULT_MANAGER_USER_ID if current_role(request) == "manager" else md.DEFAULT_EMPLOYEE_USER_ID
+
+
 @app.get("/api/v1/me")
 def api_me(request: Request) -> Response:
     emp = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
+    me_user = md.user_by_id(current_user_id(request))
     return ok({
         "role": current_role(request),
         "theme": current_theme(request),
@@ -226,7 +232,35 @@ def api_me(request: Request) -> Response:
         "manager_name": md.DEFAULT_MANAGER_NAME,
         "today": md.TODAY,
         "now": md.NOW,
+        "user_id": me_user.id if me_user else None,
+        "agent_approval_mode": me_user.agent_approval_mode if me_user else "strict",
     })
+
+
+@app.get("/api/v1/me/agent_approval_mode")
+def api_me_agent_approval_mode(request: Request) -> Response:
+    user = md.user_by_id(current_user_id(request))
+    if user is None:
+        return ok({"error": "not_found"}, status_code=404)
+    return ok({"mode": user.agent_approval_mode})
+
+
+@app.put("/api/v1/me/agent_approval_mode")
+async def api_me_agent_approval_mode_set(request: Request) -> Response:
+    user = md.user_by_id(current_user_id(request))
+    if user is None:
+        return ok({"error": "not_found"}, status_code=404)
+    body = await request.json()
+    new_mode = (body or {}).get("mode")
+    if new_mode not in {"bypass", "auto", "strict"}:
+        return ok({"error": "invalid_mode", "allowed": ["bypass", "auto", "strict"]}, status_code=400)
+    old_mode = user.agent_approval_mode
+    user.agent_approval_mode = new_mode
+    hub.publish(
+        "auth.agent_mode_changed",
+        {"user_id": user.id, "old_mode": old_mode, "new_mode": new_mode},
+    )
+    return ok({"mode": user.agent_approval_mode})
 
 
 @app.get("/api/v1/properties")

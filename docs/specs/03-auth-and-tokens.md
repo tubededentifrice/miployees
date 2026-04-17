@@ -222,6 +222,13 @@ Key properties:
   tokens; any user with the `users.revoke_grant` grant-capability
   (owners and managers by default) in any scope that the delegating
   user is active in can revoke that user's delegated tokens.
+- Every write made through a delegated token is filtered through
+  the delegating user's **agent approval mode** (§11 "Per-user
+  agent approval mode"): `bypass` never pauses, `auto` pauses on
+  routes that carry an `x-agent-confirm` annotation, `strict`
+  pauses on every mutation. Workspace policy actions still land
+  on `/approvals` regardless of mode. The user changes their own
+  mode on their profile and no other user can change it for them.
 
 **`api_token` columns for delegation:**
 

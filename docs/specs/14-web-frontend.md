@@ -132,6 +132,7 @@ Everything above plus:
 /audit                    → audit log viewer
 /webhooks                 → subscriptions
 /llm                      → model assignments, call log, budget
+/me                       → your own profile: display name, language, passkeys, agent approval mode (see "Me page (worker)"; identical shape on the owner/manager surface)
 /settings                 → workspace settings (defaults grouped by namespace,
                             override summary, policy & danger zone)
 ```
@@ -153,12 +154,20 @@ The desktop owner/manager UI is framed by three layout regions:
       bubbles, voice-input button when capability is on. The log
       lazy-loads older messages when the user scrolls up and pins
       to the latest message on open.
-    - A **pending-actions tray** listing `agent_action` rows that
-      the agent has queued for approval (§11); each row has
-      `approve` / `reject` buttons wired to the same endpoints as
-      `/approvals`. The tray sits between the log and the
-      composer, sized to its content, so approvals are always
-      visible without scrolling the sidebar.
+    - A **pending-actions tray** listing `agent_action` rows
+      whose `gate_destination = inline_chat` and whose
+      `for_user_id` is the current user (§11). Each row renders as
+      a confirmation card: the server-rendered `card_summary`
+      ("Create expense *Marché Provence* for €22.10?") with
+      `card_fields_json` laid out as a compact key/value table
+      and a `card_risk` tone (`low` / `medium` / `high`). The
+      `[Confirm]` / `[Reject]` buttons call the same
+      `/approvals/{id}/{decision}` endpoints the desk uses. The
+      tray sits between the log and the composer, sized to its
+      content, so approvals are always visible without scrolling
+      the sidebar. New rows are pushed via the SSE event
+      `agent.action.pending` (§12), scoped per-user so other
+      users' agents never leak into this tray.
     - A **composer** fixed at the bottom of the sidebar — the
       owner/manager can always ask the agent something without
       scrolling or hunting.
@@ -388,6 +397,13 @@ Simplified from v0. Contents:
 - **Language preference** — BCP-47 picker (§05 `languages[0]`),
   used as the agent's reply language and the auto-translation
   source (§10, §18).
+- **Agent approval mode** — three-radio selector
+  (`bypass | auto | strict`, default `strict`; §11 "Per-user
+  agent approval mode"). Plain-language labels explain each
+  choice ("Never pause", "Pause on impactful actions", "Pause on
+  every change"). Writes through `PUT /me/agent_approval_mode`
+  (§12). Owners and managers cannot change this setting for
+  other users — it is each user's personal safety rail.
 - **Passkeys** — list + "add passkey" + revoke.
 
 Explicitly **not** on the Me page:

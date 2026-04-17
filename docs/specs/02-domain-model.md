@@ -375,6 +375,7 @@ properties, or organizations they are connected to.
 | preferred_locale    | text?     | BCP-47 locale tag; formatting override (§18)                      |
 | emergency_contact   | jsonb     | `{name, phone_e164, relation}`; manager/owner-visible only        |
 | notes_md            | text      | visible to `manager`/`owner` grants on any scope the user is on   |
+| agent_approval_mode | text      | `bypass \| auto \| strict`, default `strict`. Governs when this user's own embedded chat agent pauses for an inline confirmation card (§11 "Per-user agent approval mode"). Self-writable only; every change writes `auth.agent_mode_changed` to `audit_log`. |
 | archived_at         | tstz?     | global archive — revokes all passkeys and sessions deployment-wide |
 | created_at          | tstz      |                                                                   |
 | updated_at          | tstz      |                                                                   |

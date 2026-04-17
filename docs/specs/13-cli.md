@@ -144,6 +144,22 @@ An agent can explore the full CLI surface with:
 - `miployees surface --json` — dumps the entire `_surface.json` for
   programmatic discovery (one command to learn everything).
 
+### Confirmation cards (`x-agent-confirm`)
+
+For every mutating operation, `_surface.json` carries the
+`x-agent-confirm` extension from §12 when present. This is the
+**single source of truth** for the confirmation card that surfaces
+in the user's chat when their agent approval mode asks for it
+(§11 "Per-user agent approval mode"). The CLI itself does not
+prompt — delegated-token requests are gated by the REST
+middleware, which reads the same annotation. Re-declaring
+per-command confirmation copy in the CLI is explicitly avoided:
+authors maintain one template per route, used everywhere.
+
+Non-delegated callers (human running `miployees` with a scoped
+token or a passkey session) never see these cards; they are not
+the subject of the per-user gate.
+
 ## Global flags
 
 | flag                | meaning                                            |
@@ -229,6 +245,8 @@ miployees users
   magic-link <id>             # (re-)issue
   archive <id>
   reinstate <id>
+  approval-mode show          # your own agent approval mode (bypass|auto|strict)
+  approval-mode set <mode>    # bypass | auto | strict — self only (see §11)
 
 miployees work-roles
   list

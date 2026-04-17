@@ -60,11 +60,53 @@ Extension schema:
 | `composite` | no       | Names a hand-written override module that replaces the generated command |
 | `streaming` | no       | `true` for endpoints that stream ndjson (audit tail, calls list) |
 | `never_agent` | no     | `true` for endpoints that agents should never call (informational only) |
+| `mutates`   | no       | `true` (default) if the route commits state; `false` for read-only endpoints (`list`, `show`, resolvers, previews). Consumed by §11 "Per-user agent approval mode" — read-only endpoints always execute silently regardless of user mode. HTTP method is the fallback when this flag is absent: `GET` / `HEAD` / `OPTIONS` = read, others = mutating. |
 
 CI fails any route that lacks an `operation_id` or an `x-cli`
 extension, unless the route is explicitly listed in
 `cli/miployees/_exclusions.yaml` (see §13). The parity gate in §17
 enforces each independently.
+
+### Agent confirmation extension (`x-agent-confirm`)
+
+An optional OpenAPI extension that declares the inline
+confirmation card rendered when the caller is a delegated-token
+embedded agent and the delegating user's mode asks for it (§11
+"Per-user agent approval mode"). Presence is the single signal
+that an action is "impactful enough to pause on" under
+`auto` mode; absence means the route executes silently under
+`auto` (and surfaces a generic card only under `strict`).
+
+Extension schema:
+
+| field            | required | description                                                                 |
+|------------------|----------|-----------------------------------------------------------------------------|
+| `summary`        | yes      | One-line template, rendered against the resolved request payload at request time. Placeholder syntax matches §18's i18n seam; the built-in filter `\|money:<currency-key>` renders minor-unit integers as localized amounts. Example: `"Create expense {vendor} for {amount_minor\|money:currency}?"` |
+| `verb`           | no       | Short audit-friendly verb (e.g. `"Create expense"`); defaults to OpenAPI `summary` |
+| `risk`           | no       | `low \| medium \| high`; defaults to `medium` for mutations. `high` forces the "Details" pane open by default in the chat card. |
+| `fields_to_show` | no       | Ordered list of payload keys (with optional `\|<filter>`) rendered as a compact table under the summary. Defaults to all request-body top-level fields. |
+
+The extension lives alongside `x-cli` on the same route and is
+emitted into both `_surface.json` (§13) and the generated
+OpenAPI. The middleware pre-renders `summary` and
+`fields_to_show` against the resolved payload at the moment the
+`agent_action` row is written, stores the result in
+`agent_action.card_summary` / `card_fields_json`, and never
+re-templates — so the card the user sees at decision time is
+stable even if the underlying rows or templates change later.
+
+**CI lint** (§17): every mutating route is inspected; any
+placeholder in `summary` or `fields_to_show` that cannot be
+resolved against the route's request model is a build failure,
+so cards never render blank values in production. Routes that
+deliberately omit `x-agent-confirm` list their `operationId` in
+`app/agent_confirm/_exclusions.yaml` with a one-line reason,
+mirroring `x-cli` exclusions.
+
+Not every mutating route needs a bespoke card. A starter list of
+v1 routes that carry `x-agent-confirm` is in §11 "Action
+confirmation annotation"; new routes default to "no annotation"
+and opt in surgically as product surfaces need them.
 
 ## Common conventions
 
@@ -551,10 +593,36 @@ a key to `null` deletes the override (restores inheritance).
 GET    /llm/assignments
 PUT    /llm/assignments/{capability}
 GET    /llm/calls                  # audit of prior calls
-GET    /approvals                  # agent_action rows
-POST   /approvals/{id}/approve
-POST   /approvals/{id}/reject
+GET    /approvals                  # agent_action rows; ?scope=desk|inline|me filters
+POST   /approvals/{id}/approve     # body: {note?}
+POST   /approvals/{id}/reject      # body: {note}
+GET    /me/agent_approval_mode     # {mode: bypass|auto|strict}
+PUT    /me/agent_approval_mode     # body: {mode}; self only
 ```
+
+Mode writes for another user are **not exposed** — every user
+controls their own `agent_approval_mode`. Oversight is through
+`audit_log` (the `auth.agent_mode_changed` event) rather than a
+permission-group-gated admin endpoint.
+
+Delegated-token requests (§03) carry two agent headers in
+addition to the tokens described above (§11 "Agent action
+approval" flow):
+
+- `X-Agent-Channel` — enum
+  `web_owner_sidebar | web_worker_chat | offapp_whatsapp | offapp_sms`;
+  absent means `desk_only`. Written onto
+  `agent_action.inline_channel`.
+- `X-Agent-Reason` / `X-Agent-Conversation-Ref` — free-text and
+  opaque conversation id, as already documented.
+
+An SSE event joins the existing catalog:
+
+- `agent.action.pending` — fired when the middleware writes an
+  `agent_action` with `gate_destination = inline_chat` and
+  `for_user_id = <uid>`; delivered to that user's open tabs only.
+  Payload includes `approval_id`, `card_summary`, `card_risk`,
+  `card_fields_json`, `inline_channel`, and `requested_at`.
 
 ### Messaging
 

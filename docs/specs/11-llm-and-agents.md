@@ -56,12 +56,26 @@ execute in the UI or CLI is available to the agent. There is no
 filtered capability catalog; tool descriptors are resolved
 dynamically from the user's current role grants.
 
-High-impact tools are routed through the approval pipeline (§ "Agent
-action approval" below). The agent does **not** bypass its own
-approval: when it proposes a payroll issuance it still goes to the
-`/approvals` queue, where the same owner or manager clicks "Approve"
-before execution. This costs one extra tap and buys a canonical
-audit trail.
+High-impact tools are routed through the approval pipeline (§
+"Agent action approval" below). Two things can gate them:
+
+- **Workspace policy** — committee-level actions (money routing,
+  bulk destructives) go to the `/approvals` desk where a manager
+  clicks "Approve" before execution.
+- **Per-user agent approval mode** — the delegating user's own
+  setting controls how eagerly the agent pauses for an inline
+  confirmation card in the chat sidebar (`bypass | auto |
+  strict`, default `strict`). The copy of each card is declared
+  once on the API route as an `x-agent-confirm` annotation (§
+  "Action confirmation annotation"), so CLI, REST middleware, and
+  the chat UI all share the same wording.
+
+The agent does **not** bypass its own approvals: when it proposes a
+payroll issuance it still goes to the `/approvals` queue; when it
+proposes an expense under an `auto`-mode user, a "Create expense
+… for €22.10? [Confirm] [Reject]" card surfaces in that user's
+chat and the agent waits for the tap. This costs one extra tap and
+buys a canonical audit trail.
 
 Default model: `google/gemma-4-31b-it`. Overridable via
 `llm.assignments.set` under capability `chat.manager`.
@@ -266,11 +280,143 @@ action is also visible in the user's own audit trail.
 
 ## Agent action approval
 
-High-impact actions require a manager to click "Approve" before they
-commit, regardless of whether the request comes from a direct session
-or a delegated token.
+Two independent layers of gating protect agent-initiated writes:
 
-### Which actions
+- **Workspace policy (committee).** The workspace's owner/manager
+  curates a list of actions that require a **manager to click
+  "Approve" in `/approvals`** before they commit — a
+  committee-style decision on workspace-wide safety (money
+  routing, bulk destructives, engagement-kind changes crossing
+  payroll). This layer applies to every non-passkey writer
+  (scoped and delegated tokens alike) and the "always-gated"
+  items inside it cannot be disabled from the UI. See "Workspace
+  policy: which actions" below.
+- **Per-user agent approval mode (self).** On top of the
+  workspace layer, every user carries a personal mode
+  (`bypass | auto | strict`) that decides when **the user's own
+  embedded chat agent pauses to show a confirmation card in the
+  same chat channel** before executing. The card says things like
+  "Create expense *Groceries Marché Provence* for €22.10?
+  [Confirm] [Reject]". The per-action copy of the card is
+  declared on the OpenAPI route (see "Action confirmation
+  annotation" below), so the same text is used by the REST
+  middleware, the CLI, and the chat UI without duplication. This
+  layer never narrows the workspace policy; it only adds inline
+  self-confirmations on top.
+
+The two layers are complementary: an action in the workspace
+always-gated list always goes to `/approvals` regardless of the
+user's mode; an action that only carries an `x-agent-confirm`
+annotation goes to the user's chat channel when their mode is
+`auto` or `strict`; an action with neither still surfaces in chat
+under `strict`. Reads are never gated by either layer.
+
+All gates — workspace and self — produce the same `agent_action`
+rows. They appear together in the `/approvals` desk for
+owner/manager oversight and, when the triggering channel supports
+it, are rendered inline in the chat surface where the agent lives
+(see "Inline approval UX").
+
+### Action confirmation annotation
+
+Instead of maintaining a separate "approvable actions" list per
+surface, every mutating route in §12 may carry an OpenAPI
+extension declaring its inline-confirmation copy and metadata:
+
+```yaml
+# e.g. POST /api/v1/expenses
+x-agent-confirm:
+  summary: "Create expense {vendor} for {amount_minor|money:currency}?"
+  risk: medium
+  fields_to_show: [vendor, amount_minor, currency, property_id, category]
+  verb: "Create expense"
+```
+
+- `summary` — one-line template rendered against the resolved
+  request payload. The placeholder syntax matches the i18n seam
+  (§18); `|money:<currency-key>` is the one built-in filter in
+  v1 so expense cards render as `€22.10` and not `2210`. Authors
+  can mix payload keys with server-resolved fields (e.g. the
+  resolved property name) without leaking unpromoted internals.
+- `risk` — `low | medium | high`; drives the card's tone and, for
+  `high`, forces the "Details" pane open by default.
+- `fields_to_show` — ordered list of payload keys rendered as a
+  compact key/value table under the summary.
+- `verb` — short label for logs and audit, defaults to the
+  operation's `summary` when absent.
+
+An endpoint that omits `x-agent-confirm` is considered not to
+need inline confirmation. It executes silently under `auto` and
+surfaces a generic "Run `{operation_id}` with these fields?" card
+only under `strict`.
+
+The annotation is the **single source of truth** for confirmation
+copy. The CLI `_surface.json` exposes it alongside `x-cli`
+(§13); the REST middleware reads it at request time; the chat UI
+renders the same summary without a second copy of the strings.
+A CI lint (§17) flags any mutating route whose `x-agent-confirm`
+references a payload key that does not exist on the route's
+request model, so the cards never show blank values.
+
+A small starter list of routes that carry
+`x-agent-confirm` in v1:
+
+| route                                        | summary template                                                    |
+|----------------------------------------------|---------------------------------------------------------------------|
+| `POST /tasks`                                 | "Create task *{title}* at {property_id|property:name} on {when}?"    |
+| `POST /tasks/{id}/assign`                     | "Assign *{task_id|task:title}* to {user_id|user:display_name}?"      |
+| `POST /tasks/{id}/complete`                   | "Mark *{task_id|task:title}* complete?"                              |
+| `POST /expenses`                              | "Create expense *{vendor}* for {amount_minor|money:currency}?"      |
+| `POST /issues`                                | "Report *{title}* at {property_id|property:name}?"                  |
+| `POST /inventory/{id}/restock`                | "Restock *{id|inventory:name}* by {qty} {unit}?"                     |
+| `POST /schedules`                             | "Add schedule *{template_id|template:name}* on {rrule}?"             |
+| `POST /stays`                                 | "Create stay at {property_id|property:name} {check_in}–{check_out}?" |
+| `POST /messaging/broadcast` (single-recipient path) | "Message {recipient_user_id|user:display_name}: *{subject}*?" |
+
+Routes not in this starter list (and not in the workspace policy
+lists) execute silently in `auto` mode; the list grows
+surgically per surface, not at the annotation layer.
+
+### Per-user agent approval mode
+
+Every `users` row carries `agent_approval_mode`, an enum the user
+sets on their own profile (§14). It decides when the user's own
+embedded chat agent (§ "Embedded agents") pauses for an inline
+confirmation card before executing a **mutating** delegated-token
+request.
+
+| mode     | `x-agent-confirm` on the route? | no annotation, mutating |
+|----------|---------------------------------|--------------------------|
+| `bypass` | execute silently                | execute silently         |
+| `auto`   | show inline confirmation card using the annotation's `summary` / `fields_to_show` / `risk` | execute silently |
+| `strict` | show inline confirmation card using the annotation | show generic card (`verb` + full payload) |
+
+Reads and `--dry-run` / `--explain` invocations (§13) always
+execute silently — approval fatigue is the enemy of a working
+safety rail.
+
+**Defaults.** New `users` rows are seeded at `strict`; on-boarding
+walks the user through the three choices so the first agent
+interaction is never a surprise. Mode changes are a **per-user
+decision** — the user changes it on their own profile, and no
+other user (not even an owner) may change it for them. Every
+change writes `auth.agent_mode_changed` to `audit_log` (§02) so
+oversight remains possible via the audit surface.
+
+**Scope.** The mode applies **only** to requests authenticated by
+a delegated token (§03) whose `delegate_for_user_id` equals this
+user's id. Passkey sessions, scoped API tokens, host-CLI runs
+(§13), and other users' delegated tokens are unaffected. In
+short: the gate fires for "my embedded chat agent acting as me"
+and nothing else. External CLI and REST callers are unchanged.
+
+**Workspace policy still wins.** `bypass` does **not** weaken the
+workspace always-gated list. Those rows still land in
+`/approvals`, still require a manager click, and are immovable.
+The per-user mode is additive only — on actions the workspace
+does not already gate.
+
+### Workspace policy: which actions
 
 The canonical list, configurable per workspace:
 
@@ -360,17 +506,42 @@ command writes directly, and deployment-level controls on who can
 ### Flow
 
 1. Agent calls the endpoint normally.
-2. Middleware detects an approvable action; instead of executing, it
-   writes an `agent_action` row with the fully-resolved request
-   payload (including idempotency key).
-3. Returns `202 Accepted` with
+2. Middleware resolves whether to gate, in order:
+   - action in the workspace **always-gated** list → gate, source
+     `workspace_always`, destination `/approvals` desk;
+   - action in the workspace **configurable** list → gate, source
+     `workspace_configurable`, destination `/approvals` desk;
+   - token is delegated AND user mode is `auto` AND the route
+     carries `x-agent-confirm` → gate, source
+     `user_auto_annotation`, destination user's inline chat;
+   - token is delegated AND user mode is `strict` AND the action
+     is mutating → gate, source `user_strict_mutation`,
+     destination user's inline chat (the card uses
+     `x-agent-confirm` when present, falls back to a generic
+     `{verb} with these fields?` template otherwise);
+   - otherwise → execute.
+3. On gate, the middleware writes an `agent_action` row with the
+   fully-resolved request payload (including idempotency key),
+   `pre_approval_source`, `inline_channel` (from `X-Agent-Channel`
+   if present, else `desk_only`), `for_user_id`, and a snapshot of
+   `resolved_user_mode`.
+4. Returns `202 Accepted` with
    `{ "approval_id": "appr_…", "status": "pending", "expires_at": "…" }`.
-4. Owners and managers are notified (email + webhook `approval.pending`).
-5. Owner or manager reviews in `/approvals` and approves or rejects.
-6. On approval, the original handler is invoked with the recorded
+5. Deciders are notified:
+    - **Inline** — for `inline_channel` in `{web_owner_sidebar,
+      web_worker_chat}`, the `agent.action.pending` SSE event is
+      pushed to the delegating user's tabs and the chat surface
+      renders an approval card.
+    - **Desk** — owners and managers receive the existing email +
+      `approval.pending` webhook; the row is visible on
+      `/approvals`.
+6. Any authorised decider (the delegating user in their own inline
+   chat, or any owner/manager in `/approvals`) approves or rejects.
+7. On approval, the original handler is invoked with the recorded
    payload; result is stored. Agent polls `GET /api/v1/approvals/
    {id}` (or receives `approval.decided` webhook) and proceeds.
-7. If `expires_at` passes without decision, status becomes `expired`.
+8. If `expires_at` passes without decision, status becomes
+   `expired`.
 
 ### Model
 
@@ -380,11 +551,19 @@ agent_action
 ├── approval_id                # human-shown
 ├── requested_at
 ├── requested_by_token_id
+├── for_user_id                # users.id — delegating user; null for scoped-token requests
 ├── correlation_id
-├── action                     # dotted verb
-├── resolved_payload_json      # includes resolved URL, method, body
+├── action                     # dotted verb (operationId)
+├── resolved_payload_json      # full resolved URL, method, body
 ├── idempotency_key
 ├── state                      # pending | approved | rejected | expired | executed
+├── gate_source                # workspace_always | workspace_configurable | user_auto_annotation | user_strict_mutation
+├── gate_destination           # desk | inline_chat
+├── card_summary               # rendered `x-agent-confirm.summary` at request time (authoritative for inline)
+├── card_risk                  # low | medium | high — from annotation, else derived from gate_source
+├── card_fields_json           # resolved {key: display_value} map from `fields_to_show`
+├── inline_channel             # desk_only | web_owner_sidebar | web_worker_chat | offapp_whatsapp | offapp_sms
+├── resolved_user_mode         # bypass | auto | strict — snapshot of the delegating user's mode at request time; null if no delegated token
 ├── decided_at
 ├── decided_by_user_id
 ├── decision_note_md
@@ -392,12 +571,56 @@ agent_action
 └── result_json
 ```
 
+The `card_*` fields are **rendered at request time** and stored,
+so later renders — or a /approvals desk fetch — always show the
+same copy even if the template, the referenced row, or the user's
+locale has changed since. The middleware templates `summary`
+using the resolved payload plus the i18n filters in §18.
+
 ### Bypass
 
 Neither a scoped token carrying `admin:*` scope nor a delegated token
-can bypass approval on default-approvable actions. The only way to
-disable approval on an action is for an owner or manager to flip the
-workspace-level setting in `/settings/approvals`.
+can bypass the workspace policy on default-approvable actions. The
+only way to disable workspace-level gating on a configurable action
+is for an owner or manager to flip the workspace-level setting in
+`/settings/approvals`; always-gated actions never disable.
+
+The per-user `bypass` mode (§ "Per-user agent approval mode") is
+distinct and does **not** touch workspace policy. It declares that
+the user adds no further gates on top of workspace policy for their
+own delegated-token writes — it cannot remove what the workspace
+already requires.
+
+### Inline approval UX
+
+When a gated action originates from an embedded chat agent, the
+`agent_action` row is annotated with the chat channel that
+triggered it. The agent's HTTP request carries an
+**`X-Agent-Channel`** header; accepted values for v1:
+
+| value                 | channel                                                |
+|-----------------------|--------------------------------------------------------|
+| `web_owner_sidebar`   | Owner/manager desktop sidebar chat (§14 `.desk__agent`) |
+| `web_worker_chat`     | Worker PWA Chat tab (§14)                              |
+| `offapp_whatsapp`     | WhatsApp thread (§10 `preferred_offapp_channel`)        |
+| `offapp_sms`          | SMS thread (§10)                                       |
+| *absent*              | `desk_only` — approval appears only in `/approvals`    |
+
+For the two web channels, pending approvals are pushed to the
+delegating user's open tabs over SSE via
+`agent.action.pending` (scoped to `for_user_id`), and the chat
+surface renders an approval card with **Approve** / **Reject**
+buttons wired to the same `/approvals/{id}/{decision}` endpoints
+that the desk uses. The same row remains visible on `/approvals`
+so owners and managers can oversee agent activity across users.
+
+The off-app channel values are named here for schema stability —
+`agent_action.inline_channel` accepts them and audit surfaces flag
+them — but the v1 implementation delivers inline approvals only
+through the two web channels and the `/approvals` desk. The
+WhatsApp / SMS reply-based flow (send a one-tap confirmation
+message, parse `YES` / `NO` from the reply, defeat replay of the
+same message id) is tracked under §19 "Beyond v1".
 
 ### TTL
 

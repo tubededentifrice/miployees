@@ -114,6 +114,7 @@ live in the skill files themselves.
 | Skill | When |
 |-------|------|
 | `/create-pr` | Every PR body, rebase merges, description upkeep |
+| `/specs` | Interactive spec + mock co-evolution while there's no prod code — see `.claude/skills/specs/` |
 | `/audit-spec` | After any feature adding or removing behavior — see `.claude/skills/audit-spec/` |
 | `/selfreview` | Skeptical pass on your own changes before handoff — `.claude/skills/selfreview/` |
 | `/security-check` | Red-team pass on a feature or spec — `.claude/skills/security-check/` |

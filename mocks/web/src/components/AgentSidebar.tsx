@@ -126,16 +126,26 @@ export default function AgentSidebar() {
             <div className="agent-actions__list">
               {actions.data.map((a) => (
                 <div key={a.id} className={"agent-action agent-action--" + a.risk}>
-                  <div className="agent-action__title">{a.title}</div>
+                  <div className="agent-action__title">{a.card_summary || a.title}</div>
+                  {a.card_fields.length > 0 && (
+                    <dl className="agent-action__fields">
+                      {a.card_fields.map(([k, v]) => (
+                        <div key={k} className="agent-action__field">
+                          <dt>{k}</dt>
+                          <dd>{v}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
                   <div className="agent-action__detail">{a.detail}</div>
                   <div className="agent-action__ctas">
                     <button type="button" className="btn btn--approve"
                             onClick={() => decideAction.mutate({ id: a.id, decision: "approve" })}>
-                      Approve
+                      Confirm
                     </button>
                     <button type="button" className="btn btn--deny"
                             onClick={() => decideAction.mutate({ id: a.id, decision: "deny" })}>
-                      Deny
+                      Reject
                     </button>
                   </div>
                 </div>

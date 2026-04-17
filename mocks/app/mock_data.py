@@ -103,6 +103,10 @@ class User:
     primary_workspace_id: str | None = None
     phone_e164: str | None = None
     notes_md: str = ""
+    # §11 — governs when the user's own embedded chat agent pauses for
+    # an inline confirmation card before executing a delegated-token
+    # mutation. Self-writable only; default `strict`.
+    agent_approval_mode: Literal["bypass", "auto", "strict"] = "strict"
     archived_at: datetime | None = None
 
 
@@ -419,6 +423,26 @@ class ApprovalRequest:
     requested_at: datetime
     risk: Literal["low", "medium", "high"]
     diff: list[str] = field(default_factory=list)
+    # §11 — which layer produced the gate, where it is rendered, and
+    # the server-rendered card copy (authoritative for inline chat).
+    gate_source: Literal[
+        "workspace_always",
+        "workspace_configurable",
+        "user_auto_annotation",
+        "user_strict_mutation",
+    ] = "workspace_configurable"
+    gate_destination: Literal["desk", "inline_chat"] = "desk"
+    inline_channel: Literal[
+        "desk_only",
+        "web_owner_sidebar",
+        "web_worker_chat",
+        "offapp_whatsapp",
+        "offapp_sms",
+    ] = "desk_only"
+    card_summary: str = ""
+    card_fields: list[tuple[str, str]] = field(default_factory=list)
+    for_user_id: str | None = None
+    resolved_user_mode: Literal["bypass", "auto", "strict"] | None = None
 
 
 @dataclass
@@ -1111,13 +1135,16 @@ USERS: list[User] = [
     # Bernard-workspace humans (legacy demo).
     User("u-elodie",  "elodie.bernard@example.com",  "Élodie Bernard",  languages=["fr", "en"],
          preferred_locale="fr-FR", primary_workspace_id="ws-bernard",
-         phone_e164="+33 6 11 22 33 44"),
+         phone_e164="+33 6 11 22 33 44",
+         agent_approval_mode="auto"),
     User("u-maria",   "maria@example.com",           "Maria Alvarez",   languages=["fr"],
          preferred_locale="fr-FR", primary_workspace_id="ws-bernard",
-         phone_e164="+33 6 12 34 56 78"),
+         phone_e164="+33 6 12 34 56 78",
+         agent_approval_mode="strict"),
     User("u-arun",    "arun@example.com",            "Arun Patel",      languages=["en", "hi"],
          preferred_locale="en-GB", primary_workspace_id="ws-bernard",
-         phone_e164="+33 6 22 45 67 89"),
+         phone_e164="+33 6 22 45 67 89",
+         agent_approval_mode="bypass"),
     User("u-ben",     "ben@example.com",             "Ben Traoré",      languages=["fr"],
          preferred_locale="fr-FR", primary_workspace_id="ws-bernard",
          phone_e164="+33 6 33 56 78 90"),
@@ -1671,6 +1698,17 @@ APPROVALS: list[ApprovalRequest] = [
         "Ben Traoré is on approved leave 18–21 Apr; Sam is the configured backup for pool care.",
         datetime(2026, 4, 15, 9, 47), "low",
         diff=["assignee: e-ben → e-sam", "note appended: 'auto-reassigned: covering leave'"],
+        gate_source="user_auto_annotation",
+        gate_destination="inline_chat",
+        inline_channel="web_owner_sidebar",
+        card_summary="Reassign pool check at Villa Sud from Ben to Sam?",
+        card_fields=[
+            ("task", "Pool check — Villa Sud"),
+            ("new assignee", "Sam Leclerc"),
+            ("reason", "Ben on leave 18–21 Apr"),
+        ],
+        for_user_id="u-elodie",
+        resolved_user_mode="auto",
     ),
     ApprovalRequest(
         "a-2", "payroll-agent", "payroll.issue",
@@ -1678,6 +1716,15 @@ APPROVALS: list[ApprovalRequest] = [
         "Monthly pay run. Totals within 4% of last month. No open shifts.",
         datetime(2026, 4, 15, 8, 2), "medium",
         diff=["5× payslip draft → issued", "period 2026-04: locked → paid (on last payslip pay)"],
+        gate_source="workspace_configurable",
+        gate_destination="desk",
+        inline_channel="desk_only",
+        card_summary="Issue April payslips for 5 employees?",
+        card_fields=[
+            ("period", "2026-04"),
+            ("payslip count", "5"),
+            ("total gross", "€12 480"),
+        ],
     ),
     ApprovalRequest(
         "a-3", "procurement-agent", "expenses.agent_purchase",
@@ -1685,6 +1732,18 @@ APPROVALS: list[ApprovalRequest] = [
         "Current vacuum flagged by Maria with photo; motor burned. Budget remaining €820.",
         datetime(2026, 4, 14, 16, 18), "medium",
         diff=["create expense: €449 EUR to Brico Dépôt", "attach issue #iss-3 as justification"],
+        gate_source="user_auto_annotation",
+        gate_destination="inline_chat",
+        inline_channel="web_owner_sidebar",
+        card_summary="Create expense Brico Dépôt for €449.00?",
+        card_fields=[
+            ("vendor", "Brico Dépôt"),
+            ("amount", "€449.00"),
+            ("property", "Villa Sud"),
+            ("category", "equipment"),
+        ],
+        for_user_id="u-elodie",
+        resolved_user_mode="auto",
     ),
 ]
 
@@ -2583,10 +2642,32 @@ class AgentMessage:
 
 @dataclass
 class AgentAction:
+    """Row rendered in the chat sidebar's pending-actions tray (§14).
+
+    Mirrors the inline fields of `ApprovalRequest` for the subset of
+    `agent_action` rows whose `gate_destination = inline_chat` and
+    `for_user_id = current_user`.
+    """
+
     id: str
     title: str
     detail: str
     risk: Literal["low", "medium", "high"]
+    # §11 — the server-rendered confirmation summary ("Create expense
+    # Marché Provence for €22.10?") and a small key/value list of
+    # resolved payload fields to show under it.
+    card_summary: str = ""
+    card_fields: list[tuple[str, str]] = field(default_factory=list)
+    gate_source: Literal[
+        "workspace_always",
+        "workspace_configurable",
+        "user_auto_annotation",
+        "user_strict_mutation",
+    ] = "user_auto_annotation"
+    inline_channel: Literal[
+        "web_owner_sidebar",
+        "web_worker_chat",
+    ] = "web_owner_sidebar"
 
 
 MANAGER_AGENT_LOG: list[AgentMessage] = [
@@ -2606,12 +2687,31 @@ MANAGER_AGENT_LOG: list[AgentMessage] = [
 ]
 
 MANAGER_AGENT_ACTIONS: list[AgentAction] = [
-    AgentAction("aa-1", "Reassign pool check to Sam",
-                "Ben on leave 18–21; Sam is the configured backup.", "low"),
-    AgentAction("aa-2", "Purchase Dyson V11 — €449",
-                "Vacuum motor burnt out; Maria photo attached; budget remaining €820.", "medium"),
-    AgentAction("aa-3", "Draft April payslips",
-                "Period closed; all shifts reconciled. Totals within 4% of March.", "medium"),
+    AgentAction(
+        "aa-1", "Reassign pool check to Sam",
+        "Ben on leave 18–21; Sam is the configured backup.", "low",
+        card_summary="Reassign pool check at Villa Sud from Ben to Sam?",
+        card_fields=[("task", "Pool check — Villa Sud"), ("new assignee", "Sam Leclerc")],
+        gate_source="user_auto_annotation",
+    ),
+    AgentAction(
+        "aa-2", "Create expense Brico Dépôt €449",
+        "Vacuum motor burnt out; Maria photo attached; budget remaining €820.", "medium",
+        card_summary="Create expense Brico Dépôt for €449.00?",
+        card_fields=[
+            ("vendor", "Brico Dépôt"),
+            ("amount", "€449.00"),
+            ("property", "Villa Sud"),
+        ],
+        gate_source="user_auto_annotation",
+    ),
+    AgentAction(
+        "aa-3", "Draft April payslips",
+        "Period closed; all shifts reconciled. Totals within 4% of March.", "medium",
+        card_summary="Draft April payslips (5 employees)?",
+        card_fields=[("period", "2026-04"), ("count", "5")],
+        gate_source="workspace_configurable",
+    ),
 ]
 
 
@@ -2757,7 +2857,9 @@ def lifecycle_rules_for_property(pid: str) -> list[StayLifecycleRule]:
 
 # The "signed-in" user for each role.
 DEFAULT_EMPLOYEE_ID = "e-maria"
+DEFAULT_EMPLOYEE_USER_ID = "u-maria"
 DEFAULT_MANAGER_NAME = "Élodie Bernard"
+DEFAULT_MANAGER_USER_ID = "u-elodie"
 
 
 # ── v1 helpers ──────────────────────────────────────────────────────

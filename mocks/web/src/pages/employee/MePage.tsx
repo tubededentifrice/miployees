@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { Loading } from "@/components/common";
+import AgentApprovalModePanel from "@/components/AgentApprovalModePanel";
 import type { Leave, Me } from "@/types/api";
 
 interface LeavesPayload {
@@ -169,6 +170,8 @@ export default function MePage() {
           <button type="button" className="btn btn--ghost btn--sm">Change</button>
         </div>
       </section>
+
+      <AgentApprovalModePanel variant="phone" />
 
       <section className="phone__section">
         <h2 className="section-title">Clock mode</h2>

@@ -299,7 +299,8 @@ owner/manager UI.
 - Transitioning `draft → quoted` requires at least one `quote` row
   with `status = submitted`.
 - Transitioning `quoted → accepted` is an approvable action
-  (§11 "Which actions"): `work_order.accept_quote`. An owner,
+  (§11 "Workspace policy: which actions"):
+  `work_order.accept_quote`. An owner,
   manager, or authorised client picks exactly one submitted quote;
   the work_order records
   `accepted_quote_id`, the chosen quote flips to `accepted`, all
