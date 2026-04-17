@@ -203,7 +203,7 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
           </p>
           <p className="muted">
             Read the raw Markdown (and revision history) via{" "}
-            <code className="inline-code">miployees agent-prefs show {scope}
+            <code className="inline-code">crewday agent-prefs show {scope}
               {scopeId ? " " + scopeId : ""}</code>{" "}
             or <code className="inline-code">GET /api/v1/agent_preferences/
               {scope === "user" ? "me" : scope + (scopeId ? "/" + scopeId : "")}</code>.

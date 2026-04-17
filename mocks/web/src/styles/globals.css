@@ -1,4 +1,4 @@
-/* miployees mocks — §14 design system.
+/* crewday mocks — §14 design system.
    Semantic BEM blocks are global (per project CLAUDE.md "no utility
    classes" rule). Element/modifier sub-selectors for truly private
    structure can live in per-component `.module.css` files.
@@ -361,6 +361,7 @@
 .evidence__picker input { display: none; }
 .evidence__picker-cta { font-weight: 600; font-family: "Fraunces", serif; }
 .evidence__picker-sub { color: var(--ink-3); font-size: 12px; }
+.evidence__note-hint { margin: 4px 2px 0; font-size: 13px; line-height: 1.5; }
 
 /* ── Task detail ──────────────────────────────────────────── */
 .task-detail__head { margin-top: 8px; }
@@ -397,11 +398,33 @@
 .task-detail__sticky-form { flex: 1; }
 .task-detail__sticky .btn { width: 100%; justify-content: center; }
 .task-detail__sticky .btn--ghost { flex: 0 0 auto; width: auto; padding-inline: 20px; }
+.task-detail__sticky .back-link {
+  flex: 0 0 auto;
+  min-height: 48px;
+  padding: 10px 18px;
+  font-size: 15px;
+}
 
 .back-link {
-  color: var(--ink-3); font-size: 13px;
-  min-height: 44px; padding: 10px 14px;
-  display: inline-flex; align-items: center;
+  /* Styled as a ghost button so a back action looks and feels like
+     the other buttons on the page (≥ 44px target, visible outline). */
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 44px; padding: 8px 16px;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: transparent; color: var(--ink-2);
+  font-family: "Inter Tight", sans-serif; font-size: 14px; font-weight: 500;
+  line-height: 1.3;
+  text-decoration: none;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.back-link:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+  border-color: var(--ink-3);
+}
+.back-link:active { transform: scale(0.98); }
+.back-link:focus-visible {
+  outline: 2px solid var(--moss); outline-offset: 2px;
 }
 .done-banner {
   width: 100%; padding: 14px; background: var(--moss-soft);
@@ -1527,27 +1550,6 @@
     var(--paper);
   border-top: 1px solid var(--line);
 }
-.chat-screen__header {
-  padding: 8px 20px 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--card);
-  display: flex; align-items: center; gap: 12px;
-}
-.chat-screen__title {
-  font-family: "Fraunces", serif; font-size: 1.05rem; font-weight: 600;
-  letter-spacing: -0.01em; margin: 0;
-}
-.chat-screen__status {
-  display: inline-flex; align-items: center; gap: 6px;
-  color: var(--ink-3); font-size: 11px;
-  font-family: "JetBrains Mono", monospace;
-}
-.chat-screen__dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--moss);
-  box-shadow: 0 0 0 3px var(--moss-soft);
-}
-
 .chat-log {
   flex: 1 1 auto; min-height: 0;
   display: flex; flex-direction: column; gap: 6px;
@@ -1556,7 +1558,12 @@
   scroll-behavior: smooth;
   overscroll-behavior: contain;
 }
-.chat-log--inline { padding: 8px 0; }
+.chat-log--inline {
+  padding: 8px 0;
+  flex: initial;
+  max-height: 340px;
+  overflow-y: auto;
+}
 
 .chat-msg {
   padding: 8px 12px 6px; border-radius: 14px;
@@ -1658,6 +1665,26 @@
 .chat-composer__send-icon--send { display: none; }
 .chat-composer__send--ready .chat-composer__send-icon--mic { display: none; }
 .chat-composer__send--ready .chat-composer__send-icon--send { display: inline-flex; }
+
+/* Inline variant — used when the composer sits inside a regular page
+   section (e.g. task detail) rather than at the viewport bottom. */
+.chat-composer--inline {
+  position: static;
+  max-width: none;
+  margin: 0;
+  transform: none;
+  padding: 8px 0 0;
+  border-top: 0;
+  background: transparent;
+  z-index: auto;
+}
+@media (min-width: 480px) {
+  .chat-composer--inline {
+    left: auto; right: auto;
+    transform: none;
+    border-left: 0; border-right: 0;
+  }
+}
 
 /* Desktop/tablet chat overrides — placed after all .phone--chat /
    .chat-composer base rules so they beat the mobile defaults. */

@@ -377,12 +377,12 @@ A tokenized URL shared with each guest. No login. Read-only.
 ## CLI (examples, see §13)
 
 ```
-miployees properties add "Villa Sud" --tz Europe/Paris --kind str
-miployees units add <prop> "Room 1" --checkin-time 16:00 --checkout-time 10:00
-miployees units list <prop>
-miployees areas add <prop> "Pool" --kind outdoor
-miployees areas add <prop> "Bedroom 1" --kind indoor_room --unit <unit>
-miployees ical add --property <prop> --unit <unit> --source airbnb --url https://...
-miployees stays list --property <prop> --upcoming 14d
-miployees stays welcome-link <stay-id>   # emits the guest URL
+crewday properties add "Villa Sud" --tz Europe/Paris --kind str
+crewday units add <prop> "Room 1" --checkin-time 16:00 --checkout-time 10:00
+crewday units list <prop>
+crewday areas add <prop> "Pool" --kind outdoor
+crewday areas add <prop> "Bedroom 1" --kind indoor_room --unit <unit>
+crewday ical add --property <prop> --unit <unit> --source airbnb --url https://...
+crewday stays list --property <prop> --upcoming 14d
+crewday stays welcome-link <stay-id>   # emits the guest URL
 ```

@@ -1,5 +1,5 @@
 // Static (mock) recovery surface. The real flow is manager-initiated
-// (`miployees admin recover`) — this page only shows what the operator
+// (`crewday admin recover`) — this page only shows what the operator
 // would see after they receive the one-time code.
 
 export default function RecoverPage() {
@@ -9,11 +9,11 @@ export default function RecoverPage() {
         <div className="login__card">
           <div className="login__brand">
             <span className="desk__logo" aria-hidden="true">◈</span>
-            <span className="desk__wordmark">miployees</span>
+            <span className="desk__wordmark">crewday</span>
           </div>
           <h1 className="login__headline">Lost your device?</h1>
           <p className="login__sub">
-            Ask your manager to run <code className="inline-code">miployees admin recover</code>{" "}
+            Ask your manager to run <code className="inline-code">crewday admin recover</code>{" "}
             and send you a one-time recovery code. Then enter it below.
           </p>
           <form className="form" onSubmit={(e) => e.preventDefault()}>

@@ -40,6 +40,7 @@ export const qk = {
   agentEmployeeLog: () => ["agent", "employee", "log"] as const,
   agentManagerLog: () => ["agent", "manager", "log"] as const,
   agentManagerActions: () => ["agent", "manager", "actions"] as const,
+  agentTaskChat: (tid: string) => ["agent", "task", tid, "log"] as const,
   agentApprovalMode: () => ["me", "agent_approval_mode"] as const,
   shifts: () => ["shifts"] as const,
   guest: () => ["guest"] as const,

@@ -5,7 +5,7 @@ per logical slice — that agents read at the start of a session so they do
 not re-explore from scratch (see [`AGENTS.md`](../../AGENTS.md) §Session
 bootstrap).
 
-> Miployees is currently pre-implementation. There is no code to map yet.
+> Crewday is currently pre-implementation. There is no code to map yet.
 > When code lands, the first few files to write here are likely:
 >
 > - `app-layout.md` — package structure, entry points, import graph
@@ -15,7 +15,7 @@ bootstrap).
 > - `api.md` — REST surface (mirrors
 >   [`docs/specs/12-rest-api.md`](../../docs/specs/12-rest-api.md) against
 >   the actual FastAPI routers)
-> - `cli.md` — command map for the `miployees` CLI (mirrors
+> - `cli.md` — command map for the `crewday` CLI (mirrors
 >   [`docs/specs/13-cli.md`](../../docs/specs/13-cli.md))
 > - `testing.md` — test layout, fixtures, how to run a narrow slice
 

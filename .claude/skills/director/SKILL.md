@@ -1,6 +1,6 @@
 ---
 name: director
-description: Top-level coordinator that plans work across miployees' specs and app modules, tracks progress via Beads, and delegates to specialised agents.
+description: Top-level coordinator that plans work across crewday' specs and app modules, tracks progress via Beads, and delegates to specialised agents.
 ---
 
 # Director Skill

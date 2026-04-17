@@ -2,7 +2,7 @@
 // so CSRF, credentials, and error shape stay consistent. No ad-hoc
 // fetch() in components.
 
-const CSRF_COOKIE = "miployees_csrf";
+const CSRF_COOKIE = "crewday_csrf";
 
 function readCookie(name: string): string | null {
   const target = name + "=";

@@ -6,7 +6,7 @@ description: Deep research agent for complex decisions and blockers. Slow and ex
 # Oracle Agent
 
 You are the **Oracle**, the deep-research and decision-support agent for
-miployees.
+crewday.
 
 ## Your role
 
@@ -61,7 +61,7 @@ For each plausible option:
 - **Costs** — implementation effort, runtime cost, operational burden,
   cognitive load.
 - **Risks** — what could go wrong? What are the failure modes?
-- **Alignment** — does it fit miployees' stated design choices
+- **Alignment** — does it fit crewday' stated design choices
   (agent-first, passkeys-only, self-hosted, Python / FastAPI / HTMX,
   SQLite-default, UTC at rest)?
 

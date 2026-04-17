@@ -2,7 +2,8 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
-import { Chip, Dot, EmptyState, Loading, ProgressBar } from "@/components/common";
+import { Chip, EmptyState, Loading, ProgressBar } from "@/components/common";
+import TaskListCard from "@/components/TaskListCard";
 import type { Property, Task } from "@/types/api";
 
 interface TodayPayload {
@@ -53,7 +54,7 @@ export default function TodayPage() {
           )}
           {upcoming.map((t) => (
             <li key={t.id}>
-              <UpcomingCard task={t} property={propsById.get(t.property_id)!} />
+              <TaskListCard task={t} property={propsById.get(t.property_id)!} />
             </li>
           ))}
         </ul>
@@ -112,25 +113,6 @@ function NowCard({ task, property }: { task: Task; property: Property }) {
         </div>
       )}
       <div className="task-card__cta">{ctaLabel(task)} →</div>
-    </Link>
-  );
-}
-
-function UpcomingCard({ task, property }: { task: Task; property: Property }) {
-  return (
-    <Link to={"/task/" + task.id} className="task-card task-card--compact task-card--split">
-      <div className="task-card__main">
-        <div className="task-card__title task-card__title--sm">{task.title}</div>
-        <div className="task-card__meta">{task.area} · {task.estimated_minutes} min</div>
-      </div>
-      <div className="task-card__aside">
-        <span className="task-card__when">{hhmm(task.scheduled_start)}</span>
-        <Chip tone={property.color} size="sm">{property.name}</Chip>
-        {(task.priority === "high" || task.priority === "urgent") && (
-          <Dot tone="rust" />
-        )}
-        {task.photo_evidence === "required" && <Dot tone="sand" />}
-      </div>
     </Link>
   );
 }

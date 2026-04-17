@@ -1,4 +1,4 @@
-// miployees — JSON API types.
+// crewday — JSON API types.
 // Shapes mirror the dataclasses in mocks/app/mock_data.py. The FastAPI
 // layer serializes via dataclasses.asdict, so dates arrive as ISO-8601
 // strings and enums as their literal string values.
@@ -730,7 +730,15 @@ export interface AssetDetailPayload {
 // feeds `data` into TanStack Query invalidations.
 export type SseEvent =
   | { event: "tick"; data: { now: string } }
-  | { event: "agent.message.appended"; data: { scope: "employee" | "manager"; message: AgentMessage } }
+  | {
+      event: "agent.message.appended";
+      data: {
+        scope: "employee" | "manager" | "task";
+        /** Present when `scope === "task"`; identifies which task the message belongs to. */
+        task_id?: string;
+        message: AgentMessage;
+      };
+    }
   | { event: "task.updated"; data: { task: Task } }
   | { event: "task.completed"; data: { task: Task } }
   | { event: "task.skipped"; data: { task: Task; reason: string | null } }

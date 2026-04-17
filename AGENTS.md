@@ -13,7 +13,7 @@ the two disagree, this file wins.
 
 ## Environments
 
-- **Dev**: <https://dev.miployees.com> is the dev version of the app,
+- **Dev**: <https://dev.crewday.app> is the dev version of the app,
   served by the mocks container running locally on this host. It is
   exposed through Pangolin + Traefik with badger auth (same wiring as
   `../fj2`) and bound locally to `127.0.0.1:8100` (FastAPI mocks) and
@@ -199,7 +199,7 @@ its own plan mode — this is intentional.
 
 ## Issue tracking with Beads
 
-Miployees uses **Beads** (`bd` CLI) as its task queue. Non-trivial
+Crewday uses **Beads** (`bd` CLI) as its task queue. Non-trivial
 work — anything bigger than a typo, a one-line clarification, or an
 obvious same-file fix — should have a Beads issue so follow-ups don't
 get lost between sessions. Day-to-day tweaks can skip it.

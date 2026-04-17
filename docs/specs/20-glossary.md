@@ -233,7 +233,7 @@ fix the offender.
   `secret_envelope`; only a `display_stub` (IBAN last-4 + country,
   card last-4, wallet handle) is returned over the API. Creating,
   editing, or changing a default is always approval-gated for bearer
-  tokens (scoped and delegated) — miployees does not execute
+  tokens (scoped and delegated) — crewday does not execute
   payments, but routing decisions are security-critical and treated
   accordingly.
 - **Payout snapshot.** The immutable `payout_snapshot_json` captured
@@ -264,7 +264,7 @@ fix the offender.
   `agent_conversation_ref` fields flagging the action as
   agent-executed and linking back to the triggering conversation.
   See §03.
-- **Host-CLI-only administrative command.** A `miployees admin`
+- **Host-CLI-only administrative command.** A `crewday admin`
   verb with no HTTP surface at all, agent or human: envelope-key
   rotation, offline lockout recovery, hard-delete purge (§11). Run
   on the deployment host; authorisation is by shell access.

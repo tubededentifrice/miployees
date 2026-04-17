@@ -529,6 +529,21 @@ so reports can reconstruct exactly what was ticked even if items are
 later edited. Files go through the `file` entity (§02) backed by the
 `storage` abstraction (local disk by default, §15).
 
+**The worker UI exposes the photo picker only.** There is no
+free-form "note" textarea on the task detail page. Observations
+flow through the task-scoped chat with the workspace agent (see
+"Task notes are the agent inbox" below): the employee tells the
+agent what they saw, and the agent — reading the task's
+instructions (§07) and the workspace / user preference stack (§11)
+— decides whether the turn is worth persisting as a
+`task_evidence {kind: note}` row or folded into
+`task.completion_note_md`. The write is a normal delegated-token
+tool call (§11), so it honours the user's `agent_approval_mode`
+(the inline confirmation card is declared by the route's
+`x-agent-confirm` annotation, §11). If the agent is unavailable,
+the task still completes; the observation remains in the chat
+transcript and can be promoted to an evidence row later.
+
 ## Task notes are the agent inbox
 
 The previous v0 concept of free-form per-task "comments" is replaced
@@ -554,6 +569,15 @@ Data-model shape (persisted to `task_comment`):
   if they are offline, but the canonical surface is the chat page
   (§14) inside the owner, manager, or worker UI, where the thread is
   a native conversation with the embedded agent.
+- **UI parity with the global chat tab.** The task-detail `Notes
+  (chat)` section and the worker PWA `/chat` tab must render
+  messages and accept input through the **same** React components
+  (message-kind list + composer), so an action-card button, voice /
+  attachment affordance, or approval flow added to one surface
+  appears on the other without per-page reimplementation. The
+  difference is scope only: the global tab shows the user's whole
+  thread with their agent, while the task-detail view is scoped to
+  this task's `task_comment` rows.
 
 The agent enforces only the rules it is told to enforce (task-local
 instructions, workspace defaults); it does not silently moderate.
@@ -724,12 +748,12 @@ commit` with the preview id. Idempotent.
 ## CLI (examples)
 
 ```
-miployees tasks list --property prop_01… --on 2026-04-21
-miployees tasks create "airport pickup" --property prop_01… \
+crewday tasks list --property prop_01… --on 2026-04-21
+crewday tasks create "airport pickup" --property prop_01… \
                        --role driver --when 'tomorrow 06:30 Europe/Paris'
-miployees tasks assign <task-id> --to usr_…
-miployees tasks complete <task-id> --photo ./done.jpg --note 'all good'
-miployees schedules add --template tmpl_… --property prop_… \
+crewday tasks assign <task-id> --to usr_…
+crewday tasks complete <task-id> --photo ./done.jpg --note 'all good'
+crewday schedules add --template tmpl_… --property prop_… \
                         --rrule 'FREQ=WEEKLY;BYDAY=MO,TH' --at 09:00
-miployees schedules preview --template tmpl_… --rrule '...' --for 30d
+crewday schedules preview --template tmpl_… --rrule '...' --for 30d
 ```

@@ -22,7 +22,7 @@ Beads tasks for code that doesn't match the intended specification.
    - Spec is correct and code is wrong → **create a Beads task**.
    - Unclear → **ask the user** with `AskUserQuestion`.
 
-Miployees is spec-first: the default when in doubt is to update the
+Crewday is spec-first: the default when in doubt is to update the
 code to match the spec. But the spec can still lag — especially after
 incremental implementation learnings — and reality eventually wins.
 
@@ -80,7 +80,7 @@ The specs, as of this skill's writing:
 | `10-messaging-notifications.md` | Comments, issues, email, webhooks |
 | `11-llm-and-agents.md` | OpenRouter, model assignment, audit |
 | `12-rest-api.md` | OpenAPI surface, conventions |
-| `13-cli.md` | `miployees` CLI |
+| `13-cli.md` | `crewday` CLI |
 | `14-web-frontend.md` | HTMX, PWA, offline, a11y |
 | `15-security-privacy.md` | Threat model, secrets, GDPR |
 | `16-deployment-operations.md` | Packaging, backups, observability |

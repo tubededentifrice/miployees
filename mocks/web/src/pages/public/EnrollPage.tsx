@@ -13,7 +13,7 @@ export default function EnrollPage() {
         <div className="login__card login__card--wide">
           <div className="login__brand">
             <span className="desk__logo" aria-hidden="true">◈</span>
-            <span className="desk__wordmark">miployees</span>
+            <span className="desk__wordmark">crewday</span>
           </div>
           <h1 className="login__headline">Welcome to the household, Maria</h1>
           <p className="login__sub">

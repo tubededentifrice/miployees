@@ -1,4 +1,4 @@
-# miployees
+# crewday
 
 A self-hosted, agent-first system for managing household and short-term-rental
 staff across one or more properties: maids, cooks, drivers, gardeners,
@@ -21,7 +21,7 @@ behind. Existing hotel PMS software assumes a hotel's org chart, a front desk,
 and a commercial chart of accounts. Household managers end up juggling
 WhatsApp groups, paper checklists, and spreadsheets.
 
-miployees starts from a different premise: **the operator is an LLM agent**,
+crewday starts from a different premise: **the operator is an LLM agent**,
 and the humans (owner, head of house, staff) interact through the surfaces
 that are natural to them — a phone for the cleaner, an email digest for the
 owner, a REST API for the agent.
@@ -69,7 +69,7 @@ The spec is split across focused documents. Start at
 | 10 | [`messaging-notifications.md`](docs/specs/10-messaging-notifications.md) | Comments, issues, email, webhooks |
 | 11 | [`llm-and-agents.md`](docs/specs/11-llm-and-agents.md) | OpenRouter, model assignment, audit |
 | 12 | [`rest-api.md`](docs/specs/12-rest-api.md) | OpenAPI surface, conventions |
-| 13 | [`cli.md`](docs/specs/13-cli.md) | `miployees` CLI for agents |
+| 13 | [`cli.md`](docs/specs/13-cli.md) | `crewday` CLI for agents |
 | 14 | [`web-frontend.md`](docs/specs/14-web-frontend.md) | React SPA, PWA, offline, a11y |
 | 15 | [`security-privacy.md`](docs/specs/15-security-privacy.md) | Threat model, secrets, GDPR |
 | 16 | [`deployment-operations.md`](docs/specs/16-deployment-operations.md) | Packaging, backups, observability |

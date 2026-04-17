@@ -1,6 +1,6 @@
 # 22 — Clients, vendors, work orders, and billing
 
-miployees started life as a **single-employer, single-household**
+crewday started life as a **single-employer, single-household**
 operations tool. Real deployments extend beyond that shape:
 
 - A **cleaning / property-management agency** whose workspace owns
@@ -556,8 +556,8 @@ what was quoted vs. what was billed.
 
 ### CLI
 
-Mirrors §13 conventions: `miployees exports client_billable
---client ... --from ... --to ...` and `miployees exports
+Mirrors §13 conventions: `crewday exports client_billable
+--client ... --from ... --to ...` and `crewday exports
 work_orders ...`.
 
 ## Client surface (client login)
@@ -669,7 +669,7 @@ Appended to §10's catalog:
   rates + CSV; render PDFs when a real agency asks for it.
 - **Multi-currency within a single work_order.** Same rationale as
   §09 single-currency-per-pay-period.
-- **Payment execution.** miployees does not move money — vendor
+- **Payment execution.** crewday does not move money — vendor
   invoices and payslips alike produce routing metadata; operators
   push funds from their bank and mark the row paid.
 - **Real-time tax calculation.** Invoices and quotes carry an

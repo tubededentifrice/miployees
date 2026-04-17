@@ -417,13 +417,13 @@ GET    /assets/reports/maintenance_due              # overdue + upcoming actions
 ## CLI (examples)
 
 ```
-miployees assets list --property prop_… --status active
-miployees assets add "Pool pump #2" --property prop_… --type pool_pump \
+crewday assets list --property prop_… --status active
+crewday assets add "Pool pump #2" --property prop_… --type pool_pump \
                      --area pool --installed 2024-03-15
-miployees assets qr-print --property prop_…
-miployees asset-actions activate <action-id>
-miployees documents list --property prop_… --kind warranty --expires-before 2026-06-01
-miployees documents add --asset <id> --kind manual --title "AC user manual" --file ./manual.pdf
+crewday assets qr-print --property prop_…
+crewday asset-actions activate <action-id>
+crewday documents list --property prop_… --kind warranty --expires-before 2026-06-01
+crewday documents add --asset <id> --kind manual --title "AC user manual" --file ./manual.pdf
 ```
 
 ## Guest welcome page integration

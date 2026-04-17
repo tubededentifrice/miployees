@@ -64,7 +64,7 @@ Extension schema:
 
 CI fails any route that lacks an `operation_id` or an `x-cli`
 extension, unless the route is explicitly listed in
-`cli/miployees/_exclusions.yaml` (see §13). The parity gate in §17
+`cli/crewday/_exclusions.yaml` (see §13). The parity gate in §17
 enforces each independently.
 
 ### Agent confirmation extension (`x-agent-confirm`)
@@ -131,7 +131,7 @@ Problem Details (RFC 7807):
 
 ```json
 {
-  "type": "https://miployees.dev/errors/validation",
+  "type": "https://crewday.dev/errors/validation",
   "title": "Validation error",
   "status": 422,
   "detail": "property_id must be provided",
@@ -161,7 +161,7 @@ Canonical error `type` URIs:
   re-audits, and re-decrypts from the current secret store. (Other
   sensitive admin operations — envelope-key rotation, offline
   recovery, hard purge — have no HTTP surface; they run via
-  `miployees admin <verb>` on the host and are covered under §11
+  `crewday admin <verb>` on the host and are covered under §11
   "Host-CLI-only administrative commands".)
 
 ### Agent audit headers
@@ -612,8 +612,8 @@ GET    /files/{id}/blob            # signed redirect or stream
 
 Files are stored through a pluggable backend driver (§02 `file`
 entity). v1 ships the `local` driver only, writing under
-`$MIPLOYEES_DATA_DIR/files/{workspace_id}/{sha256[0:2]}/{sha256[2:4]}/{sha256}`.
-Setting `MIPLOYEES_STORAGE=s3` (recipe B) routes to the S3/MinIO
+`$CREWDAY_DATA_DIR/files/{workspace_id}/{sha256[0:2]}/{sha256[2:4]}/{sha256}`.
+Setting `CREWDAY_STORAGE=s3` (recipe B) routes to the S3/MinIO
 driver. API callers never see the storage path — only the ULID.
 
 ### Clients, work orders, invoices (§22)

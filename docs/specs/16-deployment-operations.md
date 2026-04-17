@@ -11,21 +11,21 @@ $5/mo 1 vCPU / 1 GB RAM VPS.
 
 - Base: `python:3.12-slim-bookworm` with digest pin.
 - **Runs as a non-root user.** The Dockerfile creates
-  `miployees:10001` (fixed uid/gid, no shell, no login) and ends
-  with `USER miployees` so every process in the image — server,
+  `crewday:10001` (fixed uid/gid, no shell, no login) and ends
+  with `USER crewday` so every process in the image — server,
   worker, `admin` subcommands — starts unprivileged. The image
   must **never** contain a `USER 0`, `USER root`, or an unset
   `USER` at the final stage; the release build fails CI if the
   resolved runtime user is `0` (see §17 image smoke test).
 - No `setuid` / `setgid` binaries are installed. Filesystem under
-  `/app` is owned by `miployees:miployees` and `/data` is writable
-  only by `miployees`.
+  `/app` is owned by `crewday:crewday` and `/data` is writable
+  only by `crewday`.
 - At process start the server and worker verify `os.geteuid() != 0`
   and refuse to run otherwise, with a clear error pointing to this
   section. This catches the case where an operator overrode the
   image's `USER` via `docker run --user 0` or an orchestrator's
   `securityContext.runAsUser: 0`.
-- Single `ENTRYPOINT ["miployees-server"]` binary-like wrapper that
+- Single `ENTRYPOINT ["crewday-server"]` binary-like wrapper that
   switches on subcommand (`serve`, `worker`, `admin`).
 - Worker runs **in-process** by default; no separate container needed.
 
@@ -34,25 +34,25 @@ $5/mo 1 vCPU / 1 GB RAM VPS.
 ```yaml
 services:
   app:
-    image: ghcr.io/<org>/miployees:<tag>
+    image: ghcr.io/<org>/crewday:<tag>
     restart: unless-stopped
     user: "10001:10001"
     environment:
-      MIPLOYEES_DATABASE_URL: "sqlite+aiosqlite:///data/miployees.db"
-      MIPLOYEES_DATA_DIR: "/data"
+      CREWDAY_DATABASE_URL: "sqlite+aiosqlite:///data/crewday.db"
+      CREWDAY_DATA_DIR: "/data"
       # Bind to 0.0.0.0 *inside the container* so Docker's port map can
       # reach the app. The §15 bind guard is strict: we set
       # ALLOW_PUBLIC_BIND=1 explicitly here, alongside the `ports:`
       # mapping below which is what actually limits reachability to
       # the host loopback.
-      MIPLOYEES_BIND: "0.0.0.0:8000"
-      MIPLOYEES_ALLOW_PUBLIC_BIND: "1"
-      MIPLOYEES_ROOT_KEY: "${MIPLOYEES_ROOT_KEY}"
-      MIPLOYEES_PUBLIC_URL: "https://ops.example.com"
+      CREWDAY_BIND: "0.0.0.0:8000"
+      CREWDAY_ALLOW_PUBLIC_BIND: "1"
+      CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
+      CREWDAY_PUBLIC_URL: "https://ops.example.com"
       SMTP_HOST: "..."
       SMTP_USER: "..."
       SMTP_PASS: "..."
-      MAIL_FROM: "miployees <ops@example.com>"
+      MAIL_FROM: "crewday <ops@example.com>"
       OPENROUTER_API_KEY: "..."
     volumes:
       - ./data:/data
@@ -79,19 +79,19 @@ ports:
 For **bare-metal** installs (no Docker), bind the app process itself
 to loopback or a trusted interface. The §15 guard verifies the target
 address is assigned to an interface whose name matches a glob in
-`MIPLOYEES_TRUSTED_INTERFACES` (default `tailscale*`, replaced
+`CREWDAY_TRUSTED_INTERFACES` (default `tailscale*`, replaced
 wholesale when set); CGNAT ranges are not trusted by CIDR:
 
 ```
-MIPLOYEES_BIND: "127.0.0.1:8000"     # always passes
-MIPLOYEES_BIND: "100.x.y.z:8000"     # passes if that address is on tailscale0
+CREWDAY_BIND: "127.0.0.1:8000"     # always passes
+CREWDAY_BIND: "100.x.y.z:8000"     # passes if that address is on tailscale0
 ```
 
 ### Backup
 
-- SQLite is a single file. The `miployees admin backup` command:
+- SQLite is a single file. The `crewday admin backup` command:
   1. Runs `PRAGMA wal_checkpoint(FULL)`.
-  2. Copies `miployees.db`, `data/files/`, and the encrypted
+  2. Copies `crewday.db`, `data/files/`, and the encrypted
      `secret_envelope` rows into a tar.zst.
   3. Rotates old backups (keep last 30 daily + 12 monthly, tunable).
 
@@ -109,12 +109,12 @@ Cron:
 
 ```
 # Run from the directory containing your compose.yaml.
-0 3 * * * cd /srv/miployees && docker compose exec -T app miployees admin backup --to /backups/
+0 3 * * * cd /srv/crewday && docker compose exec -T app crewday admin backup --to /backups/
 ```
 
 **Lockout recovery** is host-CLI-only in v1. If the last owner is
 locked out, the operator stops the service, runs
-`miployees admin recover --email ...` on the host, and opens the
+`crewday admin recover --email ...` on the host, and opens the
 magic link printed to stdout. SaaS / hosted-operator recovery flows
 are out of scope (see §03 recovery paths).
 
@@ -132,21 +132,21 @@ port — Caddy reaches it over Docker's internal network at `app:8000`.
 
 ```yaml
 x-app-env: &app-env
-  MIPLOYEES_DATABASE_URL: "postgresql+asyncpg://miployees:${PG_PASS}@db:5432/miployees"
-  MIPLOYEES_DATA_DIR: "/data"
+  CREWDAY_DATABASE_URL: "postgresql+asyncpg://crewday:${PG_PASS}@db:5432/crewday"
+  CREWDAY_DATA_DIR: "/data"
   # 0.0.0.0 is bound *inside the container only*; the app service
   # publishes no host port, so reachability is strictly Caddy →
   # app:8000 on the internal compose network. The §15 guard is strict
   # and requires the opt-in below to be explicit.
-  MIPLOYEES_BIND: "0.0.0.0:8000"
-  MIPLOYEES_ALLOW_PUBLIC_BIND: "1"
-  MIPLOYEES_ROOT_KEY: "${MIPLOYEES_ROOT_KEY}"
-  MIPLOYEES_PUBLIC_URL: "https://ops.example.com"
-  MIPLOYEES_STORAGE: "s3"
+  CREWDAY_BIND: "0.0.0.0:8000"
+  CREWDAY_ALLOW_PUBLIC_BIND: "1"
+  CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
+  CREWDAY_PUBLIC_URL: "https://ops.example.com"
+  CREWDAY_STORAGE: "s3"
   AWS_ACCESS_KEY_ID: "${MINIO_USER}"
   AWS_SECRET_ACCESS_KEY: "${MINIO_PASS}"
   S3_ENDPOINT: "http://minio:9000"
-  S3_BUCKET: "miployees"
+  S3_BUCKET: "crewday"
   OPENROUTER_API_KEY: "..."
   SMTP_HOST: "..."
 
@@ -161,10 +161,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    networks: [miployees]
+    networks: [crewday]
 
   app:
-    image: ghcr.io/<org>/miployees:<tag>
+    image: ghcr.io/<org>/crewday:<tag>
     restart: unless-stopped
     user: "10001:10001"
     environment: *app-env
@@ -173,31 +173,31 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    networks: [miployees]
+    networks: [crewday]
 
   worker:
-    image: ghcr.io/<org>/miployees:<tag>
-    command: ["miployees-server", "worker"]
+    image: ghcr.io/<org>/crewday:<tag>
+    command: ["crewday-server", "worker"]
     user: "10001:10001"
     environment: *app-env
     depends_on: [db, minio]
-    networks: [miployees]
+    networks: [crewday]
 
   db:
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: miployees
+      POSTGRES_USER: crewday
       POSTGRES_PASSWORD: ${PG_PASS}
-      POSTGRES_DB: miployees
+      POSTGRES_DB: crewday
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U miployees"]
+      test: ["CMD-SHELL", "pg_isready -U crewday"]
       interval: 5s
       timeout: 5s
       retries: 20
     volumes:
       - db-data:/var/lib/postgresql/data
-    networks: [miployees]
+    networks: [crewday]
 
   minio:
     image: minio/minio
@@ -209,7 +209,7 @@ services:
       - minio-data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
-    networks: [miployees]
+    networks: [crewday]
 
 volumes:
   db-data:
@@ -218,7 +218,7 @@ volumes:
   caddy-config:
 
 networks:
-  miployees:
+  crewday:
 ```
 
 ### Caddyfile
@@ -244,11 +244,11 @@ ops.example.com {
 
 ```
 # Generate a root key once and keep it SAFE.
-export MIPLOYEES_ROOT_KEY=$(python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())")
+export CREWDAY_ROOT_KEY=$(python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())")
 
 # First boot:
 docker compose up -d
-docker compose exec app miployees admin init --email owner@example.com
+docker compose exec app crewday admin init --email owner@example.com
 
 # The command prints a magic link URL. Open on your phone to register.
 ```
@@ -257,17 +257,17 @@ docker compose exec app miployees admin init --email owner@example.com
 
 | var                         | default                        | notes                    |
 |-----------------------------|--------------------------------|--------------------------|
-| `MIPLOYEES_DATABASE_URL`    | sqlite+aiosqlite:///./data/db  |                          |
-| `MIPLOYEES_DATA_DIR`        | `./data`                       |                          |
-| `MIPLOYEES_BIND`            | `127.0.0.1:8000`               |                          |
-| `MIPLOYEES_PUBLIC_URL`      | -                              | required for link building |
-| `MIPLOYEES_ROOT_KEY`        | -                              | required                 |
-| `MIPLOYEES_STORAGE`         | `local`                        | or `s3`                  |
-| `MIPLOYEES_WORKER`          | `inprocess`                    | or `external`            |
-| `MIPLOYEES_SESSION_IDLE_DAYS`| 14                            |                          |
-| `MIPLOYEES_SESSION_ABS_DAYS`| 30                             |                          |
-| `MIPLOYEES_ALLOW_PUBLIC_BIND`| 0                              | required for any bind that isn't loopback or on a trusted interface; compose recipes set it explicitly |
-| `MIPLOYEES_TRUSTED_INTERFACES`| `tailscale*`                  | comma-separated fnmatch globs of interface names whose addresses pass without the opt-in; set value **replaces** the default (no implicit baseline) |
+| `CREWDAY_DATABASE_URL`    | sqlite+aiosqlite:///./data/db  |                          |
+| `CREWDAY_DATA_DIR`        | `./data`                       |                          |
+| `CREWDAY_BIND`            | `127.0.0.1:8000`               |                          |
+| `CREWDAY_PUBLIC_URL`      | -                              | required for link building |
+| `CREWDAY_ROOT_KEY`        | -                              | required                 |
+| `CREWDAY_STORAGE`         | `local`                        | or `s3`                  |
+| `CREWDAY_WORKER`          | `inprocess`                    | or `external`            |
+| `CREWDAY_SESSION_IDLE_DAYS`| 14                            |                          |
+| `CREWDAY_SESSION_ABS_DAYS`| 30                             |                          |
+| `CREWDAY_ALLOW_PUBLIC_BIND`| 0                              | required for any bind that isn't loopback or on a trusted interface; compose recipes set it explicitly |
+| `CREWDAY_TRUSTED_INTERFACES`| `tailscale*`                  | comma-separated fnmatch globs of interface names whose addresses pass without the opt-in; set value **replaces** the default (no implicit baseline) |
 | `SMTP_*`                    | -                              | see §10                  |
 | `OPENROUTER_API_KEY`        | -                              | see §11                  |
 
@@ -280,7 +280,7 @@ A full env reference lives in `deploy/.env.example`.
   containers safe.
 - On a major version upgrade, the app refuses to start if the schema
   revision range includes an annotated `requires-backfill` migration;
-  the admin runs `miployees admin migrate --with-backfill` which
+  the admin runs `crewday admin migrate --with-backfill` which
   performs the backfill and then restarts.
 
 ## Healthchecks
@@ -298,7 +298,7 @@ A full env reference lives in `deploy/.env.example`.
 - JSON-lines to stdout. Captured by Docker.
 - Key fields: `at`, `level`, `event`, `correlation_id`, `actor_*`,
   `token_id`, `path`, `status`, `duration_ms`.
-- Log level controlled via `MIPLOYEES_LOG_LEVEL`.
+- Log level controlled via `CREWDAY_LOG_LEVEL`.
 
 ### Metrics
 
@@ -341,7 +341,7 @@ Documented in `docs/runbooks/dr-drill.md`. Quarterly exercise:
 
 ## Tailscale
 
-- The app binds to `tailscale0` naturally if `MIPLOYEES_BIND` is set
+- The app binds to `tailscale0` naturally if `CREWDAY_BIND` is set
   to `<tailscale-ip>:8000`.
 - The compose recipe documents a `tailscale` sidecar for hosts that
   prefer to keep Caddy off the public Internet.

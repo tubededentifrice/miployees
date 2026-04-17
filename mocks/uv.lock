@@ -118,7 +118,7 @@ wheels = [
 ]
 
 [[package]]
-name = "miployees-mocks"
+name = "crewday-mocks"
 version = "0.0.1"
 source = { virtual = "." }
 dependencies = [

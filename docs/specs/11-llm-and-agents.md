@@ -10,7 +10,7 @@ agents) share the same plumbing.
 
 ## The agent-first invariant
 
-miployees is built around a hard rule: **every human UI verb exists
+crewday is built around a hard rule: **every human UI verb exists
 as a CLI or REST command first, and the UI is a shell around those
 commands.** There is no owner/manager-only button, no worker-only
 button, that cannot also be driven by the CLI (§13) or by an agent
@@ -136,7 +136,7 @@ first," overridable per workspace.
 ## Agent preferences
 
 A seam for free-form, human-authored guidance that shapes how
-agents talk back — the miployees analogue of stacked `CLAUDE.md`
+agents talk back — the crewday analogue of stacked `CLAUDE.md`
 files. Preferences are **soft** directives: they live alongside
 the structured §02 settings cascade (hard rules) and feed into
 the same LLM turns that the settings cascade already constrains.
@@ -255,7 +255,7 @@ agent behaviour. The UI, however, only surfaces the editor
 **and the full body** to users who pass the corresponding edit
 key — viewers without write access see a short notice
 ("preferences are set by your manager; read the full text via
-`miployees agent-prefs show workspace`") rather than the raw
+`crewday agent-prefs show workspace`") rather than the raw
 Markdown, to keep the settings page from doubling as a leak
 surface for casual observers. User-layer preferences are
 private to their author; no one else may read another user's
@@ -685,7 +685,7 @@ rather than serving a cached body.
 
 A related but distinct class: administrative commands that have
 **no HTTP surface at all**, agent or human. They are invoked only
-via `miployees admin <verb>` on the deployment host, with shell
+via `crewday admin <verb>` on the deployment host, with shell
 access to the running service's environment. This is a stronger
 boundary than interactive-session-only — there is literally no network path to
 them, so the approval system does not apply and the idempotency
@@ -693,10 +693,10 @@ cache does not exist for them.
 
 v1 members:
 
-- `miployees admin rotate-root-key` — envelope-key rotation (§15).
-- `miployees admin recover` — offline lockout magic-link issuance
+- `crewday admin rotate-root-key` — envelope-key rotation (§15).
+- `crewday admin recover` — offline lockout magic-link issuance
   (§03).
-- `miployees admin purge` — hard-delete per-person payload (§02,
+- `crewday admin purge` — hard-delete per-person payload (§02,
   §15).
 
 The agent-approval flow (§11) does not apply here because there is

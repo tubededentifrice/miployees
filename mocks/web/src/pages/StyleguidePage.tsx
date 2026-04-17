@@ -6,7 +6,7 @@ export default function StyleguidePage() {
   return (
     <main className="styleguide">
       <header className="styleguide__hero">
-        <span className="styleguide__eyebrow">miployees design system</span>
+        <span className="styleguide__eyebrow">crewday design system</span>
         <h1 className="styleguide__title">Paper, moss, and a little grit.</h1>
         <p className="styleguide__lede">
           A warm, editorial operations product for households. Fraunces sets the voice;

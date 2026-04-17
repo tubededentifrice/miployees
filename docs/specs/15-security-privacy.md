@@ -65,11 +65,11 @@ environment-sniffing, no container-detection, no CIDR-based trust of
 generic ranges. We want one knob so that an operator can audit it at
 a glance.
 
-**Rule:** at start-up, the server resolves `MIPLOYEES_BIND` to a set
+**Rule:** at start-up, the server resolves `CREWDAY_BIND` to a set
 of concrete addresses and applies this check:
 
 1. Loopback (`127.0.0.0/8`, `::1`) always passes.
-2. The server enumerates local network interfaces. `MIPLOYEES_
+2. The server enumerates local network interfaces. `CREWDAY_
    TRUSTED_INTERFACES` is a comma-separated list of `fnmatch`-style
    globs of interface names (default `tailscale*`). If **every**
    address the bind resolves to is assigned to an interface whose
@@ -80,7 +80,7 @@ of concrete addresses and applies this check:
    opt-in below, because they inherently bind every interface
    regardless of trust.
 4. Any other bind (a non-loopback IPv4/IPv6, a hostname resolving to
-   one) requires `MIPLOYEES_ALLOW_PUBLIC_BIND=1`.
+   one) requires `CREWDAY_ALLOW_PUBLIC_BIND=1`.
 
 We deliberately do **not** trust the CGNAT range (`100.64.0.0/10`)
 by CIDR: it is used by ISP carrier-grade NAT, mobile carriers, and
@@ -95,7 +95,7 @@ renamed interface, wireguard) override the env var to list their own
 globs — e.g. `tailscale*,wg*,nebula*`. The baseline is **not**
 additive: setting the env var replaces the default, so an operator
 who wants to also trust `wg0` must set
-`MIPLOYEES_TRUSTED_INTERFACES=tailscale*,wg*` explicitly. We chose
+`CREWDAY_TRUSTED_INTERFACES=tailscale*,wg*` explicitly. We chose
 replace-semantics so the configured value is a complete, auditable
 list in one place rather than a delta against an invisible baseline.
 
@@ -109,13 +109,13 @@ for their environment by setting the opt-in.
 
 - **Bare-metal / VM:** leave the default. Reverse-proxy via a local
   Caddy/Nginx that binds the Internet-facing port.
-- **Tailscale:** set `MIPLOYEES_BIND` to the node's Tailscale IP; no
+- **Tailscale:** set `CREWDAY_BIND` to the node's Tailscale IP; no
   opt-in needed, because the default `tailscale*` glob matches. If
   the mesh interface has a different name, override
-  `MIPLOYEES_TRUSTED_INTERFACES` with the full list you want trusted
+  `CREWDAY_TRUSTED_INTERFACES` with the full list you want trusted
   (remember the default is replaced, not extended).
-- **Single-container (§16 recipe A):** set `MIPLOYEES_BIND=0.0.0.0:8000`
-  inside the container and `MIPLOYEES_ALLOW_PUBLIC_BIND=1`. External
+- **Single-container (§16 recipe A):** set `CREWDAY_BIND=0.0.0.0:8000`
+  inside the container and `CREWDAY_ALLOW_PUBLIC_BIND=1`. External
   reachability is then gated by the host-side Docker port map
   (`ports: ["127.0.0.1:8000:8000"]`), which the operator inspects
   directly.
@@ -147,11 +147,11 @@ See §16 for deployment details.
 
 ## Cookies
 
-Session cookie `__Host-miployees_session`:
+Session cookie `__Host-crewday_session`:
 - `Secure; HttpOnly; SameSite=Lax; Path=/`.
 - Value opaque (192-bit random) → DB lookup.
 
-CSRF cookie `miployees_csrf` + `X-CSRF` header on non-GET (double-
+CSRF cookie `crewday_csrf` + `X-CSRF` header on non-GET (double-
 submit).
 
 ## Secrets management
@@ -159,7 +159,7 @@ submit).
 ### Secret envelope
 
 A per-workspace AES-256-GCM key, itself encrypted by the host's
-**root key** (`MIPLOYEES_ROOT_KEY`, 32 bytes base64). The root key is:
+**root key** (`CREWDAY_ROOT_KEY`, 32 bytes base64). The root key is:
 
 - **Single-container:** read from env on start-up, never written to
   disk.
@@ -199,7 +199,7 @@ secret_envelope
 
 ### Key rotation
 
-`miployees admin rotate-root-key` decrypts every envelope with the
+`crewday admin rotate-root-key` decrypts every envelope with the
 old key and re-encrypts with the new. Bounded progress reporter.
 **Host-CLI only** — there is no HTTP endpoint for this operation,
 and therefore no agent path (see §11 "Host-CLI-only administrative
@@ -230,7 +230,7 @@ got through an outer wrapper).
 On success the command zero-fills the in-memory copy of the new key
 before exiting. It does **not** write the key anywhere on disk; the
 operator is responsible for storing it in their secret manager and,
-on the next service start, supplying it via `MIPLOYEES_ROOT_KEY`
+on the next service start, supplying it via `CREWDAY_ROOT_KEY`
 (single-container) or the Docker secret at `/run/secrets/...`
 (compose) — the same mechanisms used for the initial key (§16).
 
@@ -239,12 +239,12 @@ Example safe invocations:
 ```
 # Key file produced by a secret manager, never on a shell line:
 install -m 0600 /dev/null /tmp/newkey        # create the file with correct mode first
-<your secret manager writes to /tmp/newkey>  # e.g., op read "op://prod/miployees/root"
-miployees admin rotate-root-key --new-key-file /tmp/newkey
+<your secret manager writes to /tmp/newkey>  # e.g., op read "op://prod/crewday/root"
+crewday admin rotate-root-key --new-key-file /tmp/newkey
 shred -u /tmp/newkey
 
 # Piped from a secret manager, no shell history:
-op read "op://prod/miployees/root" | miployees admin rotate-root-key --new-key-stdin
+op read "op://prod/crewday/root" | crewday admin rotate-root-key --new-key-stdin
 ```
 
 ### Token hashing
@@ -322,7 +322,7 @@ much of the data is personal.
   delivery when ready.
 - **Right to rectification**: users can update their own profile
   fields (§05).
-- **Right to erasure**: owner/manager-triggered; `miployees admin
+- **Right to erasure**: owner/manager-triggered; `crewday admin
   purge --person <id>` anonymizes the user row (name/email/phone
   nulled) and scrubs free-text fields in their tasks, comments,
   shifts, expenses. Financial rows retain amounts and dates (legal

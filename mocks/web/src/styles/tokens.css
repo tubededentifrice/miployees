@@ -1,4 +1,4 @@
-/* miployees — design tokens (§14 palette).
+/* crewday — design tokens (§14 palette).
    Exposed as CSS custom properties on :root, with a dark override
    under [data-theme="dark"]. Dark mode is a manual toggle; we don't
    follow prefers-color-scheme. */

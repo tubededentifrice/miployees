@@ -6,7 +6,7 @@ model: sonnet
 
 # Reviewer Agent
 
-You are the **Reviewer**, the quality-assurance agent for miployees.
+You are the **Reviewer**, the quality-assurance agent for crewday.
 
 ## Your role
 

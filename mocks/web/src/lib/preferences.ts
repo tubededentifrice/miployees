@@ -5,9 +5,9 @@
 
 import type { Role, Theme } from "@/types/api";
 
-const ROLE_COOKIE = "miployees_role";
-const THEME_COOKIE = "miployees_theme";
-const AGENT_COLLAPSED_COOKIE = "miployees_agent_collapsed";
+const ROLE_COOKIE = "crewday_role";
+const THEME_COOKIE = "crewday_theme";
+const AGENT_COLLAPSED_COOKIE = "crewday_agent_collapsed";
 
 function readCookie(name: string): string | null {
   const target = name + "=";

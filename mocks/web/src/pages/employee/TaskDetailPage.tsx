@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { Chip, Loading } from "@/components/common";
-import type { Instruction, Property, Task } from "@/types/api";
+import ChatLog from "@/components/chat/ChatLog";
+import ChatComposer from "@/components/chat/ChatComposer";
+import type { AgentMessage, Instruction, Property, Task } from "@/types/api";
 
 interface TaskPayload {
   task: Task;
@@ -32,11 +34,45 @@ export default function TaskDetailPage() {
   const qc = useQueryClient();
   const modalRef = useRef<HTMLDialogElement>(null);
   const [skipReason, setSkipReason] = useState("");
+  const [chatDraft, setChatDraft] = useState("");
 
   const q = useQuery({
     queryKey: qk.task(tid),
     queryFn: () => fetchJson<TaskPayload>("/api/v1/tasks/" + tid),
     enabled: Boolean(tid),
+  });
+
+  const chatQ = useQuery({
+    queryKey: qk.agentTaskChat(tid),
+    queryFn: () => fetchJson<AgentMessage[]>("/api/v1/tasks/" + tid + "/chat/log"),
+    enabled: Boolean(tid),
+  });
+
+  const chatSend = useMutation({
+    mutationFn: (body: string) =>
+      fetchJson<AgentMessage>("/api/v1/tasks/" + tid + "/chat/message", {
+        method: "POST", body: { body },
+      }),
+    onMutate: async (body) => {
+      await qc.cancelQueries({ queryKey: qk.agentTaskChat(tid) });
+      const prev = qc.getQueryData<AgentMessage[]>(qk.agentTaskChat(tid)) ?? [];
+      const optimistic: AgentMessage = { at: new Date().toISOString(), kind: "user", body };
+      qc.setQueryData<AgentMessage[]>(qk.agentTaskChat(tid), [...prev, optimistic]);
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(qk.agentTaskChat(tid), ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.agentTaskChat(tid) }),
+  });
+
+  const chatDecide = useMutation({
+    mutationFn: ({ idx, decision }: { idx: number; decision: "approve" | "details" }) =>
+      fetchJson<AgentMessage[]>(
+        "/api/v1/tasks/" + tid + "/chat/action/" + idx + "/" + decision,
+        { method: "POST" },
+      ),
+    onSuccess: (log) => qc.setQueryData(qk.agentTaskChat(tid), log),
   });
 
   const checkMutation = useMutation({
@@ -102,27 +138,30 @@ export default function TaskDetailPage() {
 
   return (
     <section className="phone__section phone__section--detail">
-      <Link to="/today" className="back-link">← Back</Link>
-
-      {!terminal && (
-        <div className="task-detail__sticky">
-          <form
-            className="task-detail__sticky-form"
-            onSubmit={(e) => { e.preventDefault(); complete.mutate(); }}
-          >
-            <button className="btn btn--moss btn--lg" type="submit">
-              {task.photo_evidence === "required" ? "📷 Complete with photo" : "Mark done"}
+      <div className="task-detail__sticky">
+        <Link to="/today" className="back-link" aria-label="Back to today">
+          ← Back
+        </Link>
+        {!terminal && (
+          <>
+            <form
+              className="task-detail__sticky-form"
+              onSubmit={(e) => { e.preventDefault(); complete.mutate(); }}
+            >
+              <button className="btn btn--moss btn--lg" type="submit">
+                {task.photo_evidence === "required" ? "📷 Complete with photo" : "Mark done"}
+              </button>
+            </form>
+            <button
+              className="btn btn--ghost btn--lg"
+              type="button"
+              onClick={() => modalRef.current?.showModal()}
+            >
+              Skip
             </button>
-          </form>
-          <button
-            className="btn btn--ghost btn--lg"
-            type="button"
-            onClick={() => modalRef.current?.showModal()}
-          >
-            Skip
-          </button>
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       <header className="task-detail__head">
         <div className="task-detail__chips">
@@ -193,26 +232,35 @@ export default function TaskDetailPage() {
             <span className="evidence__picker-cta">📷 Take photo</span>
             <span className="evidence__picker-sub">or choose from your gallery</span>
           </label>
-          <label className="field">
-            <span>Note (optional)</span>
-            <textarea rows={2} placeholder="Anything the manager should know about what you saw…" />
-          </label>
+          <p className="evidence__note-hint muted">
+            Anything the manager should know? Tell the assistant below — it'll
+            log a note on this task when it matters.
+          </p>
         </section>
       )}
 
-      <section className="comments">
+      <section className="comments task-chat">
         <h3 className="section-title section-title--sm">Notes (chat)</h3>
-        <p className="muted">Messages to and from your workspace assistant — scoped to this task.</p>
-        <div className="chat-log chat-log--inline">
-          <div className="chat-msg chat-msg--agent">
-            <span>Fresh sheets are on shelf 2 of cupboard A — the lavender-scented ones. Want me to log the finish photo as evidence when you're done?</span>
-            <span className="chat-msg__time">08:32</span>
-          </div>
-        </div>
-        <form className="comment__compose" onSubmit={(e) => e.preventDefault()}>
-          <textarea placeholder="Ask about this task…" rows={2} />
-          <button className="btn btn--moss" type="button">Send</button>
-        </form>
+        <p className="muted">
+          Messages to and from your workspace assistant — scoped to this task.
+        </p>
+        <ChatLog
+          messages={chatQ.data}
+          onDecideAction={(idx, decision) => chatDecide.mutate({ idx, decision })}
+          variant="inline"
+          ariaLabel="Task conversation with assistant"
+        />
+        <ChatComposer
+          value={chatDraft}
+          onChange={setChatDraft}
+          onSubmit={(trimmed) => {
+            chatSend.mutate(trimmed);
+            setChatDraft("");
+          }}
+          placeholder="Ask about this task or share what you saw…"
+          ariaLabel="Message the assistant about this task"
+          variant="inline"
+        />
       </section>
 
       {task.status === "completed" && <div className="done-banner">✓ Completed</div>}

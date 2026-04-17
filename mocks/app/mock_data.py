@@ -1,4 +1,4 @@
-"""Static mock data for the miployees UI preview.
+"""Static mock data for the crewday UI preview.
 
 Shapes and vocabulary follow the specs in docs/specs/. The point is to
 make the eventual product feel real — not to simulate it.
@@ -1972,8 +1972,8 @@ AUDIT: list[AuditEntry] = [
 
 
 WEBHOOKS: list[Webhook] = [
-    Webhook("wh-1", "https://hooks.example.com/miployees/digest", ["digest.manager", "digest.employee"], True, 200, datetime(2026, 4, 15, 9, 12, 22)),
-    Webhook("wh-2", "https://n8n.local/webhook/miployees-payroll", ["payroll.period_locked", "payroll.period_paid"], True, 200, datetime(2026, 3, 31, 22, 1, 0)),
+    Webhook("wh-1", "https://hooks.example.com/crewday/digest", ["digest.manager", "digest.employee"], True, 200, datetime(2026, 4, 15, 9, 12, 22)),
+    Webhook("wh-2", "https://n8n.local/webhook/crewday-payroll", ["payroll.period_locked", "payroll.period_paid"], True, 200, datetime(2026, 3, 31, 22, 1, 0)),
     Webhook("wh-3", "https://slack.internal/hooks/T042/.../B08/...", ["approval.pending", "approval.decided"], True, 200, datetime(2026, 4, 15, 9, 47, 3)),
     Webhook("wh-4", "https://legacy.host/webhooks/tasks", ["task.completed"], False, 502, datetime(2026, 3, 20, 14, 55, 0)),
 ]
@@ -2678,7 +2678,7 @@ AGENT_PREFERENCE_REVISIONS: dict[tuple[str, str], list[dict[str, Any]]] = {
 AGENT_PREFERENCE_SECRET_PATTERNS: list[tuple[str, str]] = [
     (r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", "IBAN-shaped token"),
     (r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "card-number-shaped token"),
-    (r"\bmip_[a-zA-Z0-9_]{10,}\b", "miployees API token"),
+    (r"\bmip_[a-zA-Z0-9_]{10,}\b", "crewday API token"),
     (r"(?i)\b(wifi|wi-fi|password|passcode|door\s*code|alarm)\s*[:=]\s*\S{4,}", "password / access-code pattern"),
 ]
 
@@ -2893,6 +2893,23 @@ EMPLOYEE_CHAT_LOG: list[AgentMessage] = [
     AgentMessage(datetime(2026, 4, 15, 9, 48), "agent",
         "Sam couvre — c'est déjà acté ce matin. Rien à faire de ton côté."),
 ]
+
+
+# ── Task-scoped agent chat ──────────────────────────────────────────
+#
+# §06 "Task notes are the agent inbox": every task carries its own
+# thread with the workspace agent. The PWA task detail page
+# (§14 /task/<id>) renders the same message components and composer
+# as the global /chat tab, pointed at this store.
+TASK_CHAT_LOGS: dict[str, list[AgentMessage]] = {
+    "t-2": [
+        AgentMessage(
+            datetime(2026, 4, 15, 8, 32), "agent",
+            "Fresh sheets are on shelf 2 of cupboard A — the lavender-scented "
+            "ones. Want me to log the finish photo as evidence when you're done?",
+        ),
+    ],
+}
 
 
 # ── Chat gateway (§23) ───────────────────────────────────────────────

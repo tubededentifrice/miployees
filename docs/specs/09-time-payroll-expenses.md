@@ -427,7 +427,7 @@ pre-funded account in the worker's name for operational expenses
 so they don't have to front cash; reimbursements land there while
 their main paycheque lands in their personal account.
 
-**Payout execution is out of scope for v1** — miployees does not move
+**Payout execution is out of scope for v1** — crewday does not move
 money. Destinations are metadata rendered on the payslip PDF and
 returned in API responses so the operator knows where to push funds
 from their bank or treasury tool. Even so, routing is
@@ -625,7 +625,7 @@ where.
 
 The operator needs the full account numbers only at the moment they
 actually push funds from their bank/treasury tool. That's a
-one-off read, not a stored artifact. miployees exposes it as:
+one-off read, not a stored artifact. crewday exposes it as:
 
 ```
 POST /payslips/{id}/payout_manifest
@@ -830,7 +830,7 @@ A claim becomes `reimbursed` when the containing payslip moves to
   aggregate quote and invoice totals.
 
 Exports: `GET /api/v1/exports/...csv` (streamed) or via CLI
-`miployees export ...`.
+`crewday export ...`.
 
 ## Out of scope (v1)
 

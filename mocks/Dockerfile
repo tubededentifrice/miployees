@@ -1,4 +1,4 @@
-# miployees mocks — multi-stage build.
+# crewday mocks — multi-stage build.
 #
 # Stage 1 (node:22-alpine) builds the Vite/React SPA under mocks/web.
 # Stage 2 (python:3.12-slim) runs FastAPI and serves the built dist/.
@@ -22,8 +22,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 # Non-root user pinned at the image level per docs/specs/16.
 # uid/gid mirror the spec's 10001 convention so this mock matches the
 # real deployment shape.
-RUN groupadd --system --gid 10001 miployees \
- && useradd  --system --uid 10001 --gid miployees --home-dir /app --shell /usr/sbin/nologin miployees
+RUN groupadd --system --gid 10001 crewday \
+ && useradd  --system --uid 10001 --gid crewday --home-dir /app --shell /usr/sbin/nologin crewday
 
 WORKDIR /app
 
@@ -32,10 +32,10 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]>=0.30" \
     "python-multipart>=0.0.9"
 
-COPY --chown=miployees:miployees app /app/app
-COPY --from=web-build --chown=miployees:miployees /web/dist /app/web/dist
+COPY --chown=crewday:crewday app /app/app
+COPY --from=web-build --chown=crewday:crewday /web/dist /app/web/dist
 
-USER miployees:miployees
+USER crewday:crewday
 
 EXPOSE 8000
 

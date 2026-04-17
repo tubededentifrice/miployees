@@ -1,4 +1,4 @@
-# 13 — CLI (`miployees`)
+# 13 — CLI (`crewday`)
 
 Per the user's direction: **the CLI is the most important agent
 interface**. It is a thin client over the REST API (§12) — no
@@ -20,33 +20,33 @@ See §11 "The agent-first invariant" for the broader principle and
 
 ## Distribution
 
-- Python 3.12+; installable via `pipx install miployees` (preferred)
-  or `uvx miployees`.
+- Python 3.12+; installable via `pipx install crewday` (preferred)
+  or `uvx crewday`.
 - Single wheel, no native deps.
 - Static binary via `pyapp` for macOS/Linux/Windows (optional, v1.1).
 
 ## Config
 
-Profiles live in `~/.config/miployees/config.toml`:
+Profiles live in `~/.config/crewday/config.toml`:
 
 ```toml
 default_profile = "prod"
 
 [profile.prod]
 base_url = "https://ops.example.com/api/v1"
-token = "env:MIPLOYEES_TOKEN_PROD"
+token = "env:CREWDAY_TOKEN_PROD"
 timezone = "Europe/Paris"              # used to resolve ambiguous local times
 
 [profile.dev]
 base_url = "http://127.0.0.1:8000/api/v1"
-token = "env:MIPLOYEES_TOKEN_DEV"
+token = "env:CREWDAY_TOKEN_DEV"
 ```
 
 - `token` values prefixed with `env:` resolve to environment variables
   (avoids storing secrets in the config file).
-- Profile selection: `--profile <name>` or `MIPLOYEES_PROFILE` env
+- Profile selection: `--profile <name>` or `CREWDAY_PROFILE` env
   var.
-- `miployees login` writes a new profile: walks through base URL,
+- `crewday login` writes a new profile: walks through base URL,
   pastes token, pings `/healthz`.
 
 ## CLI generation from OpenAPI
@@ -64,7 +64,7 @@ standard CRUD.
 
 A build step (`python -m cli.codegen`) imports the FastAPI app, calls
 `app.openapi()`, walks every operation, merges `x-cli` metadata with
-inferred OpenAPI params, and writes `cli/miployees/_surface.json`.
+inferred OpenAPI params, and writes `cli/crewday/_surface.json`.
 This file is committed and CI-verified (same pattern as
 `docs/api/openapi.json`). If the committed copy diverges from a fresh
 generation, the `cli-parity` gate (§17) fails the build.
@@ -81,7 +81,7 @@ click groups and commands. Each generated command:
 
 No per-endpoint Python code is needed for standard CRUD.
 
-### Overrides (`cli/miployees/_overrides/`)
+### Overrides (`cli/crewday/_overrides/`)
 
 Hand-written click commands for cases the generic path cannot handle:
 
@@ -98,7 +98,7 @@ Each override uses
 register which `operationId`s it handles, so the parity gate still
 sees them as covered.
 
-### Exclusions (`cli/miployees/_exclusions.yaml`)
+### Exclusions (`cli/crewday/_exclusions.yaml`)
 
 Endpoints intentionally omitted from CLI generation, each with a
 mandatory reason. Canonical list:
@@ -109,7 +109,7 @@ mandatory reason. Canonical list:
 - `files.blob` — returns a 302 redirect or binary stream, not JSON;
   file metadata is available via the generated `files show` command.
 - `healthz`, `readyz`, `version.get` — no-auth infrastructure probes;
-  `miployees admin version` covers the operational use case.
+  `crewday admin version` covers the operational use case.
 
 Adding an exclusion without a reason fails CI lint.
 
@@ -118,17 +118,17 @@ Adding an exclusion without a reason fails CI lint.
 Help text is assembled from the OpenAPI `summary` (one-line) +
 parameter descriptions. The `x-cli.summary` field overrides when the
 OpenAPI summary is too API-centric. Budget: each command's `--help`
-fits in ~200 lines. Global flags are on `miployees --help` only, not
+fits in ~200 lines. Global flags are on `crewday --help` only, not
 repeated per command.
 
 ### Discoverability for agents
 
 An agent can explore the full CLI surface with:
 
-- `miployees --help` — lists all groups.
-- `miployees <group> --help` — lists all verbs in a group.
-- `miployees <group> <verb> --help` — full param list and examples.
-- `miployees surface --json` — dumps the entire `_surface.json` for
+- `crewday --help` — lists all groups.
+- `crewday <group> --help` — lists all verbs in a group.
+- `crewday <group> <verb> --help` — full param list and examples.
+- `crewday surface --json` — dumps the entire `_surface.json` for
   programmatic discovery (one command to learn everything).
 
 ### Confirmation cards (`x-agent-confirm`)
@@ -143,7 +143,7 @@ middleware, which reads the same annotation. Re-declaring
 per-command confirmation copy in the CLI is explicitly avoided:
 authors maintain one template per route, used everywhere.
 
-Non-delegated callers (human running `miployees` with a scoped
+Non-delegated callers (human running `crewday` with a scoped
 token or a passkey session) never see these cards; they are not
 the subject of the per-user gate.
 
@@ -183,7 +183,7 @@ human line otherwise; `--verbose` adds the request id.
 
 ## Command tree
 
-Grouped by resource. Every command is `miployees <group> <verb> [args]`.
+Grouped by resource. Every command is `crewday <group> <verb> [args]`.
 
 > **Note:** The listing below is the expected output of the generation
 > pipeline, kept here for human readers of the spec. The authoritative
@@ -191,7 +191,7 @@ Grouped by resource. Every command is `miployees <group> <verb> [args]`.
 > listing drifts, regenerate `_surface.json` and update this section.
 
 ```
-miployees auth
+crewday auth
   login                       # writes/updates a profile
   whoami
   tokens list
@@ -199,33 +199,33 @@ miployees auth
   tokens revoke <id>
   tokens rotate <id>
 
-miployees properties
+crewday properties
   list [--kind] [--q]
   add "<name>" --tz <iana> --kind <str|residence|vacation>
   show <id>
   update <id> [--name] [--tz] [--currency] [--welcome-wifi-ssid ...]
   archive <id>
 
-miployees areas
+crewday areas
   list --property <id>
   add --property <id> "<name>" --kind <kitchen|bath|...>
   update <id> ...
   archive <id>
 
-miployees stays
+crewday stays
   list [--property] [--source] [--from] [--to] [--upcoming 14d]
   add --property <id> --check-in <local> --check-out <local> [--name]
   update <id> ...
   welcome-link <id>           # prints URL
   cancel <id>
 
-miployees ical
+crewday ical
   list
   add --property <id> --source airbnb --url <url>
   poll <id>                   # manual trigger
   disable <id>
 
-miployees users
+crewday users
   list [--grant-role] [--property] [--state]
   invite "<name>" --email <email> --grant-role <owner|manager|worker|client|guest> [--property <id>...]
   update <id> ...
@@ -235,12 +235,12 @@ miployees users
   approval-mode show          # your own agent approval mode (bypass|auto|strict)
   approval-mode set <mode>    # bypass | auto | strict — self only (see §11)
 
-miployees work-roles
+crewday work-roles
   list
   add --key maid --name "Maid"
   update <id> ...
 
-miployees tasks
+crewday tasks
   list [--property] [--work-role] [--assignee] [--state] [--on <date>] [--q]
   show <id>
   create "<title>" --property <id> --work-role <slug> --when '<local-datetime>' [--duration 60]
@@ -252,7 +252,7 @@ miployees tasks
   cancel <id> --reason "..."
   add-comment <id> "<markdown>"
 
-miployees schedules
+crewday schedules
   list [--property] [--template]
   add --template <id> --property <id> --rrule '<rfc5545>' --at HH:MM [--area <id>]
   preview --template <id> --rrule '...' --for 30d
@@ -260,12 +260,12 @@ miployees schedules
   resume <id>
   apply-edits <id>            # apply changes to existing pending tasks
 
-miployees templates
+crewday templates
   list
   add "<name>" --work-role <slug> [--duration] [--photo optional|required] [--checklist @file]
   update <id> ...
 
-miployees instructions
+crewday instructions
   list [--scope global|property|area] [--q]
   add --scope global|property|area --property <id?> --area <id?> \
       --title "<t>" --body @file.md
@@ -274,19 +274,19 @@ miployees instructions
   unlink <link-id>
   archive <id>
 
-miployees inventory
+crewday inventory
   list [--property] [--low-stock]
   add --property <id> "<name>" --unit each --reorder-point 2 --reorder-target 10
   restock <item-id> --qty 12 [--unit-cost 250]
   adjust <item-id> --to 7 --reason "counted"
   burn-rate --days 30
 
-miployees shifts
+crewday shifts
   clock-in [--property <id>]
   clock-out <id?>
   list [--user] [--from] [--to]
 
-miployees pay
+crewday pay
   rules list [--employee]
   rules set --work-engagement <id> --hourly 1500 --currency EUR --overtime-after 40
   periods list
@@ -296,14 +296,14 @@ miployees pay
   payslips issue <id>
   payslips mark-paid <id>
 
-miployees expenses
+crewday expenses
   submit --user <id?> --photo <path> [--vendor "..."] [--amount 1234 --currency EUR]
                                       # autofill from receipt if photo only
   list [--user] [--state]
   approve <id>
   reject <id> --reason "..."
 
-miployees issues
+crewday issues
   report --property <id> [--area <id>] "<title>" --body @issue.md \
          [--severity low|normal|high|urgent] \
          [--category damage|broken|supplies|safety|other]
@@ -311,14 +311,14 @@ miployees issues
   resolve <id> --note "..."
   convert-to-task <id> --work-role handyman
 
-miployees asset-types
+crewday asset-types
   list [--workspace <id>]
   add "<name>" [--icon <slug>] [--default-condition <enum>] \
       [--default-action-interval <days>]
   update <id> ...
   archive <id>
 
-miployees assets
+crewday assets
   list [--property] [--type] [--status] [--condition] [--custodian]
   add "<label>" --type <id> --property <id> \
       [--unit <id>] [--area <id>] [--serial <s>] [--purchased-on <date>] \
@@ -333,7 +333,7 @@ miployees assets
   status <id> --set <active|in_repair|decommissioned|disposed> [--note "..."]
   qr-print <id> [--size <label>]
 
-miployees asset-actions
+crewday asset-actions
   list --asset <id>
   add --asset <id> --kind <maintenance|inspection|replacement> \
       "<label>" [--interval-days <int>] [--template <tpl-id>]
@@ -341,7 +341,7 @@ miployees asset-actions
   perform <action-id> [--note "..."] [--photo <path>]
   schedule-link <action-id> --schedule <sched-id>
 
-miployees documents
+crewday documents
   list [--asset] [--property] [--kind] [--expiring-within 30d]
   add --kind <manual|warranty|receipt|insurance|certificate|other> \
       --file <path> [--asset <id>] [--property <id>] \
@@ -350,17 +350,17 @@ miployees documents
   download <id> [-o <path>]
   archive <id>
 
-miployees webhooks
+crewday webhooks
   list
   add --name <n> --url <u> --events task.completed,stay.upcoming
   replay <id> --since 2026-04-10
 
-miployees llm
+crewday llm
   assignments list
   assignments set <capability> --model google/gemma-4-31b-it [--provider openrouter]
   calls list [--capability] [--from] [--to]
 
-miployees agent-prefs
+crewday agent-prefs
   show workspace                                 # dump workspace blob (any grant may read)
   show property <id>                             # dump property blob
   show me                                        # dump your own user blob
@@ -371,23 +371,23 @@ miployees agent-prefs
   revisions workspace | property <id> | me       # list history
   revisions diff <pref-id> <rev-a> <rev-b>
 
-miployees approvals
+crewday approvals
   list [--state pending]
   show <id>
   approve <id> [--note]
   reject <id> --note "..."
 
-miployees export
+crewday export
   timesheets --from 2026-04-01 --to 2026-04-30 [-o csv]
   payroll --period <id>
   expenses --from ... --to ...
   tasks --from ... --to ...
 
-miployees audit
+crewday audit
   tail [--actor-kind] [--action] [--follow]
   export --from --to
 
-miployees admin
+crewday admin
   init --email <owner-email>                  # bootstrap (§16)
   recover --email <owner-email>               # emit magic link to stdout
   rotate-root-key --new-key-file <path> | --new-key-stdin
@@ -396,7 +396,7 @@ miployees admin
   purge --dry-run                             # GDPR hard-delete flow
   version
 
-miployees surface
+crewday surface
   --json                            # dump _surface.json for programmatic discovery
 ```
 
@@ -407,16 +407,16 @@ important to keep separate:
 
 1. **Host-CLI-only admin commands.** No HTTP surface at all, agent
    or human. The verbs below are only callable from
-   `miployees admin …` on the deployment host, with shell access to
+   `crewday admin …` on the deployment host, with shell access to
    the running service's environment. The approval pipeline (§11)
    does not apply because there is no request to intercept. v1
    members:
 
-   - `miployees admin rotate-root-key` — envelope-key rotation
+   - `crewday admin rotate-root-key` — envelope-key rotation
      (§15).
-   - `miployees admin recover` — offline lockout magic-link
+   - `crewday admin recover` — offline lockout magic-link
      issuance (§03).
-   - `miployees admin purge` — hard-delete per-person payload
+   - `crewday admin purge` — hard-delete per-person payload
      (§02, §15).
 
 2. **Interactive-session-only endpoints.** These **do** have an HTTP
@@ -443,11 +443,11 @@ by agents via delegated tokens, subject to the approval gates in
 
 `audit tail --follow` and `calls list --follow` hold long polls
 returning ndjson; any `list` verb accepts `-o ndjson` for `jq`
-piping. Example: `miployees audit tail --follow -o ndjson | jq .action`.
+piping. Example: `crewday audit tail --follow -o ndjson | jq .action`.
 
 ## Completion
 
-Click-generated `bash | zsh | fish` completions; `miployees
+Click-generated `bash | zsh | fish` completions; `crewday
 completion install --shell zsh` writes the file. Remote lookups
 use a short-TTL local cache.
 

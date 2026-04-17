@@ -14,7 +14,7 @@ sprints. A phase ships when its goals are met and its quality gates
   routes at parity; SPA served by FastAPI at `127.0.0.1:8100`.
 - Docker images; single + compose recipes baseline.
 
-**Exit:** CI green on empty build; `miployees admin init` creates a
+**Exit:** CI green on empty build; `crewday admin init` creates a
 workspace row and prints a magic link in the dev profile.
 
 ## Phase 1 — Identity

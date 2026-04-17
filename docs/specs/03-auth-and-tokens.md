@@ -55,7 +55,7 @@ acceptance (see "Break-glass codes" below).
 ### First owner (first boot)
 
 1. First-boot wizard runs once when the DB has no `users` rows. The
-   CLI `miployees admin init --email owner@example.com` creates the
+   CLI `crewday admin init --email owner@example.com` creates the
    workspace and emails that user a **bootstrap magic link** valid
    for 15 minutes. The wizard atomically inserts a `users` row, a
    single `role_grants` row with
@@ -148,7 +148,7 @@ All three events land in the audit log under `auth.reenroll`.
 
 ## Sessions
 
-- Session cookie: `__Host-miployees_session`.
+- Session cookie: `__Host-crewday_session`.
 - Flags: `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, no `Domain`.
 - Value: opaque random 192-bit token → hashed row in `sessions` table.
 - Lifetime: 7 days for users who hold a `manager` surface grant
@@ -159,7 +159,7 @@ All three events land in the audit log under `auth.reenroll`.
   their next login. Refreshed on each request after half its
   lifetime has elapsed.
 - CSRF: Authenticated SPA requests carry a double-submit token
-  (`miployees_csrf` cookie + `X-CSRF` header) for every non-GET. Same
+  (`crewday_csrf` cookie + `X-CSRF` header) for every non-GET. Same
   origin is enforced by `SameSite=Lax` for initial navigation.
 
 ## API tokens
@@ -310,7 +310,7 @@ narrow escape hatch.
 | Worker/client lost phone                   | Any user who passes `users.reissue_magic_link` on a shared scope (owners and managers by default) clicks "re-issue magic link" on the user's profile; current passkeys are revoked on registration. |
 | Manager or owners-member lost only device, has backup code | Enter recovery code → magic link emailed → register passkey; one backup code is burnt. |
 | Manager or owners-member lost device + all backup codes, another owners-group member exists on a shared scope | That peer re-issues a magic link to their email. |
-| Last owners-group member locked out completely | **Host-CLI recovery only in v1.** Stop service, run `miployees admin recover --email ...` on the host, which emits a one-time magic link to stdout. Operator must have shell access to the deployment host. Hosted / SaaS recovery flows (support escalation, out-of-band identity verification) are **out of scope for v1** — see §19. |
+| Last owners-group member locked out completely | **Host-CLI recovery only in v1.** Stop service, run `crewday admin recover --email ...` on the host, which emits a one-time magic link to stdout. Operator must have shell access to the deployment host. Hosted / SaaS recovery flows (support escalation, out-of-band identity verification) are **out of scope for v1** — see §19. |
 | Email address wrong / changed              | A user who passes `users.edit_profile_other` on a shared scope updates email on the user's profile; next magic link goes to the new one. Since email is globally unique (§02), the change fails if another `users` row already holds that address. |
 
 ## Break-glass codes

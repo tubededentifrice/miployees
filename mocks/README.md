@@ -1,8 +1,8 @@
-# miployees — UI preview mocks
+# crewday — UI preview mocks
 
 Disposable, hard-coded preview of the manager and employee UIs while
 the real application hasn't been built. No DB, no auth, no real
-business logic. The container runs as a non-root user (`miployees:10001`,
+business logic. The container runs as a non-root user (`crewday:10001`,
 per `docs/specs/16`). Every mutation (tick a checklist item, approve an
 expense, etc.) is an in-memory toggle that lives until restart.
 
@@ -17,7 +17,7 @@ docker compose -f mocks/docker-compose.yml up -d --build
 ```
 
 - Local: http://127.0.0.1:8100
-- Public: https://dev.miployees.com (via Pangolin / Traefik with
+- Public: https://dev.crewday.app (via Pangolin / Traefik with
   badger auth; same wiring as `../fj2`)
 
 ## Audience toggle
@@ -79,8 +79,8 @@ no utility frameworks). Tokens follow §14:
 
 The container joins the existing `traefik-proxy` network and
 registers Traefik labels — same pattern as `../fj2`. For badger to
-gate the domain, `dev.miployees.com` needs to exist as a **resource**
-in the Pangolin dashboard (target `miployees-mocks:8000`). DNS is
+gate the domain, `dev.crewday.app` needs to exist as a **resource**
+in the Pangolin dashboard (target `crewday-mocks:8000`). DNS is
 already CNAMEd to this host.
 
 ## Files
@@ -92,7 +92,7 @@ already CNAMEd to this host.
 - `app/templates/` — Jinja2, three base layouts (`base`,
   `employee_base`, `manager_base`) sharing one design system
 - `app/static/styles.css` — hand-written, ~900 lines, both themes
-- `Dockerfile` — Python 3.12-slim, `USER miployees:miployees`
+- `Dockerfile` — Python 3.12-slim, `USER crewday:crewday`
 - `docker-compose.yml` — Traefik labels + `user: "10001:10001"`
 
 ## Removing

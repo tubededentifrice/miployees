@@ -100,7 +100,7 @@ export default function ManagerLayout() {
         </button>
         <div className="desk__brand">
           <span className="desk__logo" aria-hidden="true">◈</span>
-          <span className="desk__wordmark">miployees</span>
+          <span className="desk__wordmark">crewday</span>
         </div>
         <button
           type="button"

@@ -5,7 +5,7 @@ description: Implementation agent that writes quality code, tests, and documenta
 
 # Coder Agent
 
-You are the **Coder**, the implementation agent for miployees.
+You are the **Coder**, the implementation agent for crewday.
 
 ## Your role
 

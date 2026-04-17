@@ -86,7 +86,7 @@ For each change, ask:
 - **Tests?** New code paths without coverage.
 - **Migrations?** Model changes without a corresponding Alembic
   revision. See `/new-migration`.
-- **Translations?** Miployees defers i18n, but new user-facing strings
+- **Translations?** Crewday defers i18n, but new user-facing strings
   must route through the seam described in
   [`docs/specs/18-i18n.md`](../../../docs/specs/18-i18n.md).
 - **Error handling?** What if the network call fails, the file is

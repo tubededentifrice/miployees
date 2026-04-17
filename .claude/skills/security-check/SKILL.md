@@ -9,7 +9,7 @@ Act as a **red-team penetration tester**. Thoroughly investigate the
 current feature or area — code or spec — for security problems,
 permission gaps, and data-protection issues.
 
-> For miployees, security overlaps heavily with **privacy**. The threat
+> For crewday, security overlaps heavily with **privacy**. The threat
 > model is a small household deployment holding highly-personal data:
 > staff identities, pay, schedules, photos, LLM conversations. The
 > attacker of most concern is usually not a stranger on the public

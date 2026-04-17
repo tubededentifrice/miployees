@@ -41,7 +41,7 @@
 
 Agents (OpenClaw, Hermes, Claude Code, ad-hoc scripts) connect as **HTTPS
 clients** to `api.v1.*` using a long-lived API token (§03). The CLI
-(`miployees`) is a thin local client to the same HTTP surface.
+(`crewday`) is a thin local client to the same HTTP surface.
 
 ## Component responsibilities
 
@@ -93,7 +93,7 @@ clients** to `api.v1.*` using a long-lived API token (§03). The CLI
 - **db**: SQLAlchemy 2.x + Alembic. SQLite and Postgres dialects are
   both supported. No dialect-specific SQL outside `app/adapters/db/`.
 - **storage**: `Storage` protocol with a `LocalFsStorage` implementation
-  writing to `$MIPLOYEES_DATA_DIR/uploads/<first-2-of-hash>/<hash>`,
+  writing to `$CREWDAY_DATA_DIR/uploads/<first-2-of-hash>/<hash>`,
   content-addressed. An `S3Storage` implementation is specified but
   not required for v1.
 - **mail**: `Mailer` protocol with SMTP implementation (envelope sender
@@ -107,7 +107,7 @@ clients** to `api.v1.*` using a long-lived API token (§03). The CLI
 - Single-process `APScheduler` running inside the web process by
   default (simplest deploy), switchable to a separate process (same
   image, different entrypoint) when the manager sets
-  `MIPLOYEES_WORKER=external`.
+  `CREWDAY_WORKER=external`.
 - Jobs: `generate_task_occurrences`, `poll_ical`, `send_daily_digest`,
   `detect_anomalies`, `retry_failed_webhooks`, `prune_sessions`,
   `rotate_audit_log`.
@@ -115,7 +115,7 @@ clients** to `api.v1.*` using a long-lived API token (§03). The CLI
 ## Repo layout
 
 ```
-miployees/
+crewday/
 ├── README.md
 ├── AGENTS.md
 ├── CLAUDE.md              -> AGENTS.md (symlink)
@@ -167,7 +167,7 @@ miployees/
 │       ├── vite.config.ts
 │       └── tsconfig.json
 ├── cli/
-│   └── miployees/
+│   └── crewday/
 │       ├── __main__.py        # entry point
 │       ├── _surface.json      # generated CLI descriptor (committed, CI-verified)
 │       ├── _codegen.py        # build-time: openapi.json -> _surface.json
@@ -196,7 +196,7 @@ miployees/
 Rationale:
 
 - **`app/` vs `cli/` separation.** The CLI is shipped as an independent
-  wheel (`miployees-cli`). Its command tree is **generated from the
+  wheel (`crewday-cli`). Its command tree is **generated from the
   API's OpenAPI schema** at build time — the committed `_surface.json`
   descriptor is the join between the two packages. A CI parity gate
   (§17) prevents drift.
@@ -257,10 +257,10 @@ FastAPI container.
 4. **Bind guard on public interfaces.** Default bind is
    `127.0.0.1:8000`. Loopback always passes; a non-loopback address
    passes only when it lives on an interface whose name matches a
-   glob in `MIPLOYEES_TRUSTED_INTERFACES` (default `tailscale*`,
+   glob in `CREWDAY_TRUSTED_INTERFACES` (default `tailscale*`,
    replaced wholesale when overridden). `0.0.0.0` / `::` never pass
    on their own. Anything else requires
-   `MIPLOYEES_ALLOW_PUBLIC_BIND=1`. The guard does not trust CIDR
+   `CREWDAY_ALLOW_PUBLIC_BIND=1`. The guard does not trust CIDR
    ranges or detect containers — it reads the live interface table.
    §16 recipes set the opt-in explicitly and gate reachability via
    the Docker port map or the internal compose network. See §15 and

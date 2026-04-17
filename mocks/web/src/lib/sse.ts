@@ -52,8 +52,17 @@ function dispatch(client: QueryClient, evt: TypedEvent): void {
       // heartbeat; nothing to do
       return;
     case "agent.message.appended": {
-      const payload = data as { scope: "employee" | "manager"; message: AgentMessage };
-      const key = payload.scope === "employee" ? qk.agentEmployeeLog() : qk.agentManagerLog();
+      const payload = data as {
+        scope: "employee" | "manager" | "task";
+        task_id?: string;
+        message: AgentMessage;
+      };
+      const key =
+        payload.scope === "task" && payload.task_id
+          ? qk.agentTaskChat(payload.task_id)
+          : payload.scope === "employee"
+          ? qk.agentEmployeeLog()
+          : qk.agentManagerLog();
       client.setQueryData<AgentMessage[]>(key, (prev) =>
         prev ? [...prev, payload.message] : [payload.message],
       );
@@ -63,7 +72,12 @@ function dispatch(client: QueryClient, evt: TypedEvent): void {
     case "task.completed":
     case "task.skipped": {
       const payload = data as { task: Task };
-      client.setQueryData(qk.task(payload.task.id), payload.task);
+      // The task-detail query caches a wrapper `{ task, property, instructions }`,
+      // so merge into the existing envelope; don't clobber it with a bare Task.
+      client.setQueryData<{ task: Task } & Record<string, unknown>>(
+        qk.task(payload.task.id),
+        (prev) => (prev ? { ...prev, task: payload.task } : prev),
+      );
       client.invalidateQueries({ queryKey: qk.tasks() });
       client.invalidateQueries({ queryKey: qk.today() });
       client.invalidateQueries({ queryKey: qk.dashboard() });

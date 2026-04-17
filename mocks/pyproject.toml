@@ -1,7 +1,7 @@
 [project]
-name = "miployees-mocks"
+name = "crewday-mocks"
 version = "0.0.1"
-description = "Disposable UI mocks for miployees — not production code."
+description = "Disposable UI mocks for crewday — not production code."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

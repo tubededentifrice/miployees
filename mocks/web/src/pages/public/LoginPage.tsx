@@ -9,7 +9,7 @@ export default function LoginPage() {
         <div className="login__card">
           <div className="login__brand">
             <span className="desk__logo" aria-hidden="true">◈</span>
-            <span className="desk__wordmark">miployees</span>
+            <span className="desk__wordmark">crewday</span>
           </div>
           <h1 className="login__headline">Sign in with your passkey</h1>
           <p className="login__sub">No passwords, ever. Tap once to unlock the house.</p>

@@ -137,10 +137,10 @@ In addition to PR gates:
   with the stock entrypoint (no `--user` override), execs
   `id -u` inside it, and fails the build unless the result is
   non-zero. A second step runs `docker run --rm --user 0 <image>
-  miployees-server serve` and asserts the process exits non-zero
+  crewday-server serve` and asserts the process exits non-zero
   with the "refuses to run as root" error from §16. Both checks
   guard against regressions where a Dockerfile change drops the
-  `USER miployees` directive or an orchestrator forces uid 0.
+  `USER crewday` directive or an orchestrator forces uid 0.
 
 ## Reproducibility
 
@@ -151,7 +151,7 @@ In addition to PR gates:
 
 ## Test data
 
-- `miployees admin demo` seeds a realistic household for dev and e2e:
+- `crewday admin demo` seeds a realistic household for dev and e2e:
   - Main residence (Villa Sud, FR), vacation home (Chalet Alpe),
     one STR (Apt 3B Barcelona).
   - 5 employees across roles.

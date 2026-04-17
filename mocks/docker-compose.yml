@@ -1,6 +1,6 @@
-# miployees — UI preview mocks.
+# crewday — UI preview mocks.
 #
-# Exposed at https://dev.miployees.com via the shared Pangolin/Traefik
+# Exposed at https://dev.crewday.app via the shared Pangolin/Traefik
 # stack (same pattern as fj2). Both the public URL and the local
 # 127.0.0.1:8100 forward hit the same `web-dev` (Vite) container, so
 # SPA edits hot-reload everywhere — no rebuild, no baked-dist drift.
@@ -8,18 +8,18 @@
 # /readyz, /metrics to the `mocks` FastAPI container on :8000, which
 # gets .py HMR via `uvicorn --reload`.
 #
-# Pangolin needs a corresponding "resource" entry for dev.miployees.com
+# Pangolin needs a corresponding "resource" entry for dev.crewday.app
 # (add via the Pangolin dashboard once) — until that's set, requests
 # hit badger's forward-auth and land on the login flow.
 
-name: "miployees-mocks"
+name: "crewday-mocks"
 
 services:
   mocks:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: miployees-mocks
+    container_name: crewday-mocks
     restart: unless-stopped
     user: "10001:10001"
     volumes:
@@ -45,14 +45,14 @@ services:
   #
   # Vite's dev server on :5173 is published as 127.0.0.1:8100 for
   # direct host access, and also joined to the traefik-proxy network
-  # so https://dev.miployees.com routes here too (HMR ws upgrade is
+  # so https://dev.crewday.app routes here too (HMR ws upgrade is
   # handled by Traefik). Vite proxies /api, /events, /switch, /theme,
   # /agent, /healthz, /readyz, /metrics to the `mocks` service via
   # VITE_BACKEND_URL. That way code edits appear on both URLs without
   # rebuilding any image.
   web-dev:
     image: node:22-alpine
-    container_name: miployees-web-dev
+    container_name: crewday-web-dev
     restart: unless-stopped
     working_dir: /web
     command: sh -lc "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
@@ -70,15 +70,15 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik-proxy"
-      - "traefik.http.routers.miployees-dev.rule=Host(`dev.miployees.com`)"
-      - "traefik.http.routers.miployees-dev.entrypoints=websecure"
-      - "traefik.http.routers.miployees-dev.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.miployees-dev.middlewares=badger@file"
-      - "traefik.http.routers.miployees-dev.service=miployees-dev"
-      - "traefik.http.services.miployees-dev.loadbalancer.server.port=5173"
-      - "traefik.http.services.miployees-dev.loadbalancer.healthcheck.path=/"
-      - "traefik.http.services.miployees-dev.loadbalancer.healthcheck.interval=10s"
-      - "traefik.http.services.miployees-dev.loadbalancer.healthcheck.hostname=dev.miployees.com"
+      - "traefik.http.routers.crewday-dev.rule=Host(`dev.crewday.app`)"
+      - "traefik.http.routers.crewday-dev.entrypoints=websecure"
+      - "traefik.http.routers.crewday-dev.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.crewday-dev.middlewares=badger@file"
+      - "traefik.http.routers.crewday-dev.service=crewday-dev"
+      - "traefik.http.services.crewday-dev.loadbalancer.server.port=5173"
+      - "traefik.http.services.crewday-dev.loadbalancer.healthcheck.path=/"
+      - "traefik.http.services.crewday-dev.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.crewday-dev.loadbalancer.healthcheck.hostname=dev.crewday.app"
 
 networks:
   traefik-proxy:

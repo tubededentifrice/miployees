@@ -1,9 +1,9 @@
 {
-  "name": "miployees-web",
+  "name": "crewday-web",
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "miployees mocks — React SPA (served by FastAPI).",
+  "description": "crewday mocks — React SPA (served by FastAPI).",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

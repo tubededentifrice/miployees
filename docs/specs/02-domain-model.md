@@ -34,7 +34,7 @@
   only ever soft-deletes. See skill `/new-fk-relationship`.
 - `PUT /.../{id}/restore` (manager scope) reverses a soft delete.
 - Hard delete is **admin-only** and available through a single dedicated
-  CLI command (`miployees admin purge`) with a mandatory confirmation;
+  CLI command (`crewday admin purge`) with a mandatory confirmation;
   it runs a trigger-based integrity check first.
 
 ### Naming

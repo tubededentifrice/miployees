@@ -14,7 +14,7 @@ import path from "node:path";
 function cacheBustHtml(): PluginOption {
   const nonce = Date.now().toString(36);
   return {
-    name: "miployees:cache-bust-html",
+    name: "crewday:cache-bust-html",
     transformIndexHtml(html) {
       return html
         .replace(
@@ -72,8 +72,8 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: "miployees",
-        short_name: "miployees",
+        name: "crewday",
+        short_name: "crewday",
         theme_color: "#3F6E3B",
         background_color: "#FAF7F2",
         display: "standalone",
@@ -87,7 +87,7 @@ export default defineConfig({
   // The dev server binds inside the Docker `web-dev` container on
   // 0.0.0.0 and is reached two ways:
   //   - locally: 127.0.0.1:8100 → container :5173 (port forward)
-  //   - publicly: https://dev.miployees.com → Traefik → web-dev:5173
+  //   - publicly: https://dev.crewday.app → Traefik → web-dev:5173
   // Letting Vite pick HMR host/port from the page origin makes both
   // work without per-URL config: ws:// for 127.0.0.1:8100, wss://
   // for the public host (Traefik upgrades the websocket).
@@ -96,7 +96,7 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     strictPort: true,
-    allowedHosts: ["dev.miployees.com", "localhost", "127.0.0.1"],
+    allowedHosts: ["dev.crewday.app", "localhost", "127.0.0.1"],
     proxy: Object.fromEntries(
       API_PATHS.map((p) => [p, { target: BACKEND, changeOrigin: true, ws: true }]),
     ),

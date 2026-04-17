@@ -1,4 +1,4 @@
-"""miployees — UI preview mocks (JSON API + SPA fallback).
+"""crewday — UI preview mocks (JSON API + SPA fallback).
 
 Presentational only. Mutations are in-memory. A `role` cookie picks
 employee vs manager; `/switch/<role>` toggles. `theme` cookie picks
@@ -47,12 +47,12 @@ BASE_DIR = Path(__file__).resolve().parent
 # unknown paths here; in prod the Dockerfile copies dist/ to this path.
 WEB_DIST = BASE_DIR.parent / "web" / "dist"
 
-app = FastAPI(title="miployees mocks", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="crewday mocks", docs_url=None, redoc_url=None, openapi_url=None)
 
 
-ROLE_COOKIE = "miployees_role"
-THEME_COOKIE = "miployees_theme"
-AGENT_COLLAPSED_COOKIE = "miployees_agent_collapsed"
+ROLE_COOKIE = "crewday_role"
+THEME_COOKIE = "crewday_theme"
+AGENT_COLLAPSED_COOKIE = "crewday_agent_collapsed"
 VALID_ROLES = {"employee", "manager"}
 VALID_THEMES = {"light", "dark"}
 
@@ -169,11 +169,11 @@ def readyz() -> dict[str, Any]:
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics() -> str:
     return (
-        "# HELP miployees_tasks_completed_total Total tasks completed\n"
-        "# TYPE miployees_tasks_completed_total counter\n"
-        'miployees_tasks_completed_total{property="Villa Sud"} 1\n'
-        'miployees_tasks_pending{property="Villa Sud"} 4\n'
-        "miployees_shift_active 1\n"
+        "# HELP crewday_tasks_completed_total Total tasks completed\n"
+        "# TYPE crewday_tasks_completed_total counter\n"
+        'crewday_tasks_completed_total{property="Villa Sud"} 1\n'
+        'crewday_tasks_pending{property="Villa Sud"} 4\n'
+        "crewday_shift_active 1\n"
     )
 
 
@@ -1329,6 +1329,54 @@ def api_asset_action_complete(aid: str, action_id: str) -> Response:
 @app.get("/api/v1/agent/employee/log")
 def api_agent_employee_log() -> Response:
     return ok(md.EMPLOYEE_CHAT_LOG)
+
+
+@app.get("/api/v1/tasks/{tid}/chat/log")
+def api_task_chat_log(tid: str) -> Response:
+    """§06 task-scoped agent thread; same `AgentMessage[]` shape as /chat."""
+    task = md.task_by_id(tid)
+    if task is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    return ok(md.TASK_CHAT_LOGS.setdefault(tid, []))
+
+
+@app.post("/api/v1/tasks/{tid}/chat/message")
+def api_task_chat_message(tid: str, payload: dict[str, Any] = Body(...)) -> Response:
+    task = md.task_by_id(tid)
+    if task is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    body = str(payload.get("body") or "").strip()[:500]
+    if not body:
+        return JSONResponse({"detail": "empty"}, status_code=400)
+    log = md.TASK_CHAT_LOGS.setdefault(tid, [])
+    msg = md.AgentMessage(at=datetime.now(), kind="user", body=body)
+    log.append(msg)
+    hub.publish(
+        "agent.message.appended",
+        {"scope": "task", "task_id": tid, "message": msg},
+    )
+    return ok(msg)
+
+
+@app.post("/api/v1/tasks/{tid}/chat/action/{idx}/{decision}")
+def api_task_chat_action(tid: str, idx: int, decision: str) -> Response:
+    task = md.task_by_id(tid)
+    if task is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    log = md.TASK_CHAT_LOGS.setdefault(tid, [])
+    if idx < 0 or idx >= len(log) or decision not in {"approve", "details"}:
+        return JSONResponse({"detail": "bad request"}, status_code=400)
+    msg = log[idx]
+    if msg.kind != "action":
+        return JSONResponse({"detail": "not an action"}, status_code=400)
+    if decision == "approve":
+        log[idx] = md.AgentMessage(at=msg.at, kind="agent", body=f"{msg.body} — approved.")
+    else:
+        log.append(md.AgentMessage(
+            at=datetime.now(), kind="agent",
+            body="Here are the details — nothing else to add from my side.",
+        ))
+    return ok(log)
 
 
 @app.get("/api/v1/agent/manager/log")

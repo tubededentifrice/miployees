@@ -224,7 +224,7 @@ An agent or external system subscribes to events.
 ```json
 {
   "name": "hermes-prod",
-  "url": "https://hermes.example.com/miployees",
+  "url": "https://hermes.example.com/crewday",
   "secret": "optional; system generates if omitted",
   "events": ["task.completed", "stay.upcoming"],
   "active": true
@@ -299,9 +299,9 @@ and `work_engagement.*` covers employment/pay-pipeline lifecycle.
 ```
 
 Headers:
-- `X-Miployees-Signature: t=<unix>,v1=<hex HMAC-SHA256>`
+- `X-Crewday-Signature: t=<unix>,v1=<hex HMAC-SHA256>`
   over `t.raw_body`; secret is the subscription's secret.
-- `X-Miployees-Event`, `X-Miployees-Delivery`.
+- `X-Crewday-Event`, `X-Crewday-Delivery`.
 
 ### Retries
 
@@ -330,9 +330,9 @@ but every delivery carries a stable `delivery_id`.
 ## CLI (examples)
 
 ```
-miployees webhooks add --name hermes --url https://… \
+crewday webhooks add --name hermes --url https://… \
                        --events task.completed,stay.upcoming
-miployees notifications test --to owner@example.com --template daily_digest
-miployees issues list --property prop_… --state open
-miployees comments post <task-id> "ping @maria re: linens"
+crewday notifications test --to owner@example.com --template daily_digest
+crewday issues list --property prop_… --state open
+crewday comments post <task-id> "ping @maria re: linens"
 ```

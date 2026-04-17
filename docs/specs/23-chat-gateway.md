@@ -233,7 +233,7 @@ matches the unified gateway.
      `chat.gateway.ignored_unbound` and dropped. The sender
      receives nothing. Optional per-workspace policy:
      auto-reply once per unique address per 24h with
-     "This number isn't linked to a miployees account. Visit your
+     "This number isn't linked to a crewday account. Visit your
      profile → Chat channels to link it." Default **off** (prevents
      becoming a reply bot for wrong numbers).
    - Active binding but `state = 'pending'` and body parses as a
