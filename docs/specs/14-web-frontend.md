@@ -135,14 +135,14 @@ Everything above plus:
                             override summary, policy & danger zone)
 ```
 
-### Manager desktop shell
+### Owner/Manager desktop shell
 
-The desktop manager UI is framed by three layout regions:
+The desktop owner/manager UI is framed by three layout regions:
 
 - `.desk__nav` — left-hand primary navigation (the list above).
 - `.desk__main` — central content pane.
 - `.desk__agent` — right-hand sidebar hosting the **workspace agent**
-  conversation (§11 "Manager-side agent"). Components:
+  conversation (§11 "Owner/manager-side agent"). Components:
     - A compact header with the agent title and an **online
       indicator**. The active model assignment for capability
       `chat.manager` (default `google/gemma-4-31b-it`) is *not*
@@ -159,23 +159,23 @@ The desktop manager UI is framed by three layout regions:
       composer, sized to its content, so approvals are always
       visible without scrolling the sidebar.
     - A **composer** fixed at the bottom of the sidebar — the
-      manager can always ask the agent something without scrolling
-      or hunting.
+      owner/manager can always ask the agent something without
+      scrolling or hunting.
     - A **collapse toggle** so the sidebar can be hidden on narrow
       laptops; collapsed state renders as a thin vertical rail and
       is persisted per user.
 
 The sidebar is load-bearing for the agent-first invariant (§11):
-any verb the manager can click in `.desk__nav` or `.desk__main` can
-also be requested of the agent in `.desk__agent`.
+any verb the owner/manager can click in `.desk__nav` or
+`.desk__main` can also be requested of the agent in `.desk__agent`.
 
 ### Calendar surfaces
 
 - The `/stays` calendar overlays five layers: stays (coloured by
   source, grouped by unit for multi-unit properties), stay task
   bundles (neutral pattern, with trigger-type indicator), property
-  closures (greyed, unit-specific or property-wide), employee leave
-  (narrow strip per employee, toggle-able), and public holidays
+  closures (greyed, unit-specific or property-wide), user leave
+  (narrow strip per user, toggle-able), and public holidays
   (full-width marker with scheduling effect badge). The same
   component is reused on `/property/<id>/closures` with the
   stay/bundle layers hidden.
