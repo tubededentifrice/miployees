@@ -47,6 +47,7 @@ export default function ManagerLayout() {
           <NavItem to="/audit">Audit log</NavItem>
           <NavItem to="/webhooks">Webhooks</NavItem>
           <NavItem to="/llm">LLM &amp; agents</NavItem>
+          <NavItem to="/chat-channels">Chat channels</NavItem>
           <NavItem to="/settings">Settings</NavItem>
         </nav>
         <div className="desk__me">

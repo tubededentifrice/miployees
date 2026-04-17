@@ -57,4 +57,10 @@ export const qk = {
   actionCatalog: () => ["action_catalog"] as const,
   permissionResolved: (userId: string, actionKey: string, scopeKind: string, scopeId: string) =>
     ["permissions", "resolved", userId, actionKey, scopeKind, scopeId] as const,
+  chatChannels: () => ["chat", "channels"] as const,
+  chatChannelProviders: () => ["chat", "channels", "providers"] as const,
+  agentPrefs: (scope: "workspace" | "property" | "me", id?: string) =>
+    ["agent_preferences", scope, id ?? ""] as const,
+  agentPrefsRevisions: (scopeKind: string, scopeId: string) =>
+    ["agent_preferences", "revisions", scopeKind, scopeId] as const,
 } as const;

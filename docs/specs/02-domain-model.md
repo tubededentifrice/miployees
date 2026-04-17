@@ -269,7 +269,8 @@ catalog pair (see `permission_rule` below and the catalog in
 - **Assets** (§21): `asset_type`, `asset`, `asset_action`,
   `asset_document`.
 - **LLM** (§11): `model_assignment`, `llm_call`, `agent_action`,
-  `anomaly_suppression`.
+  `anomaly_suppression`, `agent_preference`,
+  `agent_preference_revision`.
 - **Files** (§02 "Shared tables", storage backend in §15): `file` —
   shared blob-reference table used by `task_evidence`,
   `expense_attachment`, `issue.attachment_file_ids`,
@@ -824,6 +825,60 @@ Per-workspace AES-GCM-encrypted blobs for secret values we must store
 (OpenRouter API key, SMTP password, iCal feed URLs that carry tokens).
 See §15.
 
+### `agent_preference`
+
+Free-form Markdown guidance stacked into the system prompt of the
+capabilities listed in §11 "Agent preferences". One row per scope;
+`(scope_kind, scope_id)` uniquely identifies the layer. Distinct
+from the structured settings cascade (`workspaces.settings_json`,
+`*.settings_override_json`) — those are hard rules enforced by
+code, these are soft rules the model must read.
+
+| column         | type      | notes                                                             |
+|----------------|-----------|-------------------------------------------------------------------|
+| id             | ULID PK   |                                                                   |
+| workspace_id   | ULID FK   | the workspace the preference belongs to; for user-scope rows this is the engagement workspace |
+| scope_kind     | text      | `workspace \| property \| user`                                   |
+| scope_id       | ULID      | `workspaces.id` / `properties.id` / `users.id` — references depend on `scope_kind` |
+| body_md        | text      | Markdown; soft cap 4 000 model-tokens, hard cap 16 000            |
+| token_count    | int       | measured with the workspace default model's tokenizer at save time; surfaced in the UI counter |
+| updated_by_user_id | ULID FK | acting user on the latest save                                  |
+| created_at     | tstz      |                                                                   |
+| updated_at     | tstz      |                                                                   |
+
+Primary key on `id`; unique `(workspace_id, scope_kind, scope_id)`.
+A row may exist with an empty `body_md` — an empty layer still
+costs one labelled section in the injected prompt (with the body
+"(none)") so the model knows the scope was considered.
+
+**Visibility.** Reads are authorized by "user has any active
+`role_grants` on the scope" for workspace and property rows; user
+rows are readable only by the row's own `users.id`. Writes are
+gated by the action keys `agent_prefs.edit_workspace` /
+`agent_prefs.edit_property` (see §05 catalog) and, for user rows,
+self-only.
+
+### `agent_preference_revision`
+
+One row per save. Full history for audit and rollback.
+
+| column             | type      | notes                                                   |
+|--------------------|-----------|---------------------------------------------------------|
+| id                 | ULID PK   |                                                         |
+| preference_id      | ULID FK   | `agent_preference.id`                                   |
+| revision_number    | int       | monotonic per preference_id; first save is 1            |
+| body_md            | text      | snapshot at save time                                   |
+| token_count        | int       | snapshot                                                |
+| saved_by_user_id   | ULID FK   | acting user                                             |
+| save_note          | text?     | free-form reason, optional                              |
+| created_at         | tstz      |                                                         |
+
+Primary key on `id`; unique `(preference_id, revision_number)`.
+Retention: follows `retention.audit_days`; revisions older than
+that are pruned in the same worker job that rotates the audit
+log. The **latest** revision is never pruned, regardless of age —
+`agent_preference.body_md` always has a history of at least one.
+
 ## Schema evolution rules
 
 - Every change ships as an **Alembic migration** in `migrations/`, with
@@ -1055,6 +1110,7 @@ Defined once per document where the enum lives; summarized here.
 - `quote_status`: `draft | submitted | accepted | rejected | superseded | expired` (§22)
 - `vendor_invoice_status`: `draft | submitted | approved | rejected | paid | voided` (§22)
 - `billing_rate_source`: `client_user_rate | client_rate | unpriced` (§22)
+- `agent_preference.scope_kind`: `workspace | property | user` (§11)
 
 ## Full-text search ranking
 

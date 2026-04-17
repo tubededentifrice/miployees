@@ -18,19 +18,6 @@ approval gates in §11.
 See §11 "The agent-first invariant" for the broader principle and
 §14 for how each UI surface maps back to a command.
 
-## Why CLI-first for agents
-
-Agents driving HTTP directly end up spending hundreds of tokens on
-URL construction, headers, error parsing, retry logic. A good CLI
-collapses a multi-step HTTP dance into a single string with:
-
-- Named subcommands that map to REST resources.
-- `--help` that fits in a ~200-line context window.
-- `--json` output (default) and `--yaml` / `--table` alternatives.
-- Sensible exit codes.
-- Streaming `stdout` suitable for pipes.
-- `--dry-run` and `--explain` on mutating commands.
-
 ## Distribution
 
 - Python 3.12+; installable via `pipx install miployees` (preferred)
@@ -377,6 +364,17 @@ miployees llm
   assignments set <capability> --model google/gemma-4-31b-it [--provider openrouter]
   calls list [--capability] [--from] [--to]
 
+miployees agent-prefs
+  show workspace                                 # dump workspace blob (any grant may read)
+  show property <id>                             # dump property blob
+  show me                                        # dump your own user blob
+  set workspace --body @prefs.md [--note "..."]  # gated by agent_prefs.edit_workspace
+  set property <id> --body @prefs.md [--note "..."]
+  set me --body @prefs.md [--note "..."]         # self-only
+  clear workspace | property <id> | me           # empties the blob (still counts as a save / revision)
+  revisions workspace | property <id> | me       # list history
+  revisions diff <pref-id> <rev-a> <rev-b>
+
 miployees approvals
   list [--state pending]
   show <id>
@@ -447,61 +445,28 @@ by agents via delegated tokens, subject to the approval gates in
 
 ## Streaming and piping
 
-`audit tail --follow` and `calls list --follow` keep an HTTP/1.1 long
-poll open (server returns ndjson). `stays list --output ndjson` pipes
-well into `jq`.
-
-Examples:
-
-```
-miployees stays list --upcoming 14d -o ndjson | jq 'select(.source=="airbnb")'
-miployees audit tail --actor-kind user -o ndjson --follow | jq .action
-miployees tasks list --state overdue -o json | jq '.data[].id' |
-    xargs -I{} miployees tasks show {}
-```
+`audit tail --follow` and `calls list --follow` hold long polls
+returning ndjson; any `list` verb accepts `-o ndjson` for `jq`
+piping. Example: `miployees audit tail --follow -o ndjson | jq .action`.
 
 ## Completion
 
-Bash / zsh / fish completions generated via `click`'s
-`_<CMD>_COMPLETE` mechanism. `miployees completion install --shell
-zsh` writes the relevant file. Remote lookups (property id
-autocomplete) use a local short-TTL cache to avoid slow tabs.
+Click-generated `bash | zsh | fish` completions; `miployees
+completion install --shell zsh` writes the file. Remote lookups
+use a short-TTL local cache.
 
 ## Agent UX conventions
 
-- **Every command prints only the data structure by default; errors to
-  stderr.** Agents can parse stdout without filtering.
-- **`--dry-run` returns the *resolved* request**, including the
-  assignee the server would pick, so agents can plan multi-step
-  workflows without touching state.
-- **`--explain`** dumps the underlying HTTP call (method, URL,
-  headers with token redacted, body) to stderr. Useful for debugging
-  and for teaching an agent the mapping to REST.
-- **`--agent-reason`** is surfaced in the audit log. Agents should
-  set it on every mutating command.
-- **`--conversation-ref`** sets `X-Agent-Conversation-Ref`, linking the
-  audit entry back to the conversation or prompt that triggered the
-  action (opaque, up to 500 chars).
-
-## Error UX
-
-Agent-friendly error:
-
-```json
-{
-  "ok": false,
-  "status": 409,
-  "type": "approval_required",
-  "detail": "This action requires a manager approval",
-  "approval_id": "appr_01J…",
-  "retry_after_seconds": null
-}
-```
-
-Human-friendly error (with `-o table`): a single red line plus a
-"rerun with --verbose for details" nudge.
+- Data to stdout (JSON by default); errors to stderr as RFC 7807 so
+  agents can parse stdout without filtering.
+- `--dry-run` returns the resolved request the server would execute,
+  so agents can plan multi-step flows without touching state.
+- `--explain` dumps the underlying HTTP call (method, URL,
+  redacted headers, body) to stderr.
+- `--agent-reason` / `--conversation-ref` populate audit headers on
+  mutating commands; agents should set them.
 
 ## Man pages
 
-`make man` generates roff pages via `click-man`; shipped in the
-wheel and installed by `pipx` into the standard location.
+`make man` generates roff pages via `click-man`; installed by
+`pipx` into the standard location.

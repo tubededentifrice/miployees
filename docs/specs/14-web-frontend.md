@@ -1,481 +1,242 @@
 # 14 — Web frontend
 
-Two audiences, one codebase, same patterns: React SPA with a
-client-side router, hand-rolled semantic CSS, progressive enhancement.
-Workers get a mobile-first PWA; owners and managers get the same
-components with a wider information architecture.
+Two audiences, one codebase, same patterns: a React SPA that ships a
+mobile-first PWA for workers and a desktop shell for owners and
+managers.
 
-## Design pillars
+**The mocks under `mocks/web/` are the living spec.** Page anatomy,
+component composition, interaction copy, and visual detail live in
+the React code — go there first. This file captures only the
+**enduring constraints** every future implementation must satisfy:
+principles, the route contract, the design language, and the
+accessibility / performance / PWA gates.
 
-- **Mobile-first by default.** Breakpoints stack up, not down.
-- **React SPA (client-side router).** FastAPI serves `index.html` for
-  any non-API GET; React Router owns client-side navigation. See §01
-  for the `mocks/app/` + `mocks/web/` split.
+## Principles
+
+- **React SPA.** FastAPI serves `index.html` for any non-API GET;
+  React Router owns client-side navigation. See §01 for the
+  `mocks/app/` + `mocks/web/` split.
+- **Mobile-first** for the worker surface; breakpoints stack up.
 - **Hand-rolled semantic CSS design system** (BEM globals + optional
-  per-component CSS modules). Not the default purple-on-white look —
-  see the "Design language" section. No Tailwind, no utility classes,
-  no Alpine, no Vue.
-- **Manual dark-mode toggle** via `[data-theme="dark"]` on `<html>`.
-  Light theme is the primary; dark state is persisted per user.
+  per-component CSS modules). No Tailwind, no utility classes, no
+  Alpine, no Vue. Tokens live in `mocks/web/src/styles/tokens.css`;
+  global rules in `globals.css`; semantic class names only (see
+  AGENTS.md).
+- **Manual dark-mode toggle** via `[data-theme="dark"]` on `<html>`,
+  persisted per user. Light is primary.
 - **Progressive enhancement.** Passkey ceremonies and camera capture
-  require JavaScript; core task reading degrades gracefully without it.
-- **Accessibility.** WCAG 2.2 AA: focus-visible, color contrast,
-  semantic HTML, ARIA where HTML semantics are insufficient.
-- **Offline-first PWA** for workers: today's tasks and a completion
+  require JavaScript; task reading degrades gracefully without it.
+- **Offline-first PWA** for workers — today's tasks and a completion
   queue survive loss of connection.
 
 ## Design language
 
-Palette (CSS custom properties):
+Palette, type, shape, and motion are brand-level decisions that
+outlive any screen, so they're pinned here rather than in the mocks:
 
-- **Paper** — warm neutral base (`#FAF7F2` light, `#151310` dark).
-- **Ink** — high-contrast text (`#1F1A14`).
-- **Moss** — primary action (`#3F6E3B`). Chosen because houses are
-  physical places and green reads as "go"; rare in dashboards so the
-  product feels distinct.
-- **Rust** — destructive/critical (`#B04A27`).
-- **Sand** — warnings (`#D9A441`).
-- **Sky** — informational (`#4F7CA8`).
-- **Night** — dark-mode Ink equivalent (`#F4EFE6`).
+- **Palette.** Warm neutral **Paper** base; high-contrast **Ink**
+  text; **Moss** primary action (houses are physical places and
+  green reads as "go"; rare in dashboards, so the product feels
+  distinct); **Rust** destructive; **Sand** warnings; **Sky**
+  informational. Full token map (light + dark) is the authoritative
+  `mocks/web/src/styles/tokens.css` — reference it, don't re-declare
+  values in spec prose.
+- **Typography.** Display/headings: *Fraunces* variable serif. Body:
+  *Inter Tight* variable. Monospace: *JetBrains Mono* (dev-facing
+  views only).
+- **Shape.** 10px radii for cards; 4px for tags; 999px for pills and
+  FABs. Soft moss-tinted shadows. Subtle SVG-noise page texture at
+  ~2% opacity — not a flat white.
+- **Motion.** Only meaningful motion (page enter, list add, item
+  tick-to-checkmark). No bouncing, no gradient sweeps, no parallax.
+  Respect `prefers-reduced-motion`.
 
-Typography:
+## Route contract
 
-- **Display / headings:** "Fraunces" variable (serif with attitude;
-  open-source). Fallback: `ui-serif`.
-- **Body:** "Inter Tight" variable. Fallback: `ui-sans-serif`.
-- **Monospace:** "JetBrains Mono" (only in dev-facing views).
+Canonical navigation. The authoritative tree is
+`mocks/web/src/App.tsx`; this list exists so an agent can answer
+"what routes should exist" without loading React code.
 
-Shape language:
-
-- Rounded 10px radii for primary cards; 4px for tags; 999px for
-  pills and FABs.
-- Soft shadow (`shadow-md` with a moss-tinted alpha) on elevation-1
-  cards; no heavy drop shadows.
-- Subtle grain texture (SVG noise, 2% opacity) on the page
-  background — not a flat white. Rendered once via an SVG filter,
-  cacheable.
-
-Motion:
-
-- Only meaningful motion: page enter (150ms fade+rise 4px), list add
-  (spring-in), item tick (scale-to-checkmark). No bouncing, no
-  gradient sweeps, no parallax.
-- Respect `prefers-reduced-motion`.
-
-## Route map
-
-### Public (no auth)
+### Public
 
 ```
-/                         → redirect to /login or /today (if session)
-/login                    → passkey sign-in
-/enroll/<token>           → passkey enrollment (magic link lands here)
-/recover                  → enter a break-glass code
-/guest/<token>            → tokenized guest welcome page
-/healthz, /readyz, /metrics  (owner/manager-scoped)
+/                          → role-based redirect (/today or /dashboard)
+/login
+/enroll/<token>
+/recover
+/guest/<token>
+/styleguide                (dev + staging only)
+/healthz, /readyz, /version  (no auth; see §12)
 ```
 
 ### Worker
 
 ```
-/today                    → today's tasks (home)
-/week                     → week list
-/task/<id>                → task detail + complete/skip/comment/evidence
-/chat                     → full agent conversation (inbox for all task
-                            notes, issue reports, expense photos, Q&A)
-/my/expenses              → submit + list own
-/me                       → profile + language + passkeys
-/history                  → Tasks / Chats / Expenses / Leaves tabs
-/issues/new               → fallback issue form (still reachable from
-                            chat attach flow; no footer entry)
-/asset/<id>               → asset detail (read-only; action history,
-                            report issue, log one-off action)
-/asset/scan               → QR scan → redirect to asset detail
-/shifts                   → clock in/out + history (manual mode only;
-                            hidden when `time.clock_mode = auto | disabled`)
+/today           /week            /task/<id>       /chat
+/my/expenses     /me              /history         /issues/new
+/shifts          /asset/<id>      /asset/scan
 ```
 
-**Footer (bottom nav):** exactly five items —
-`Today · Week · Chat · My Expenses · Me`. The `Issues` tab from v0 is
-**removed**; issues are filed through the chat page's attach flow
-(which emits to `/issues/new` under the hood). There is **no
-floating chat FAB**; chat is a first-class footer tab.
+Footer bottom-nav: `Today · Week · Chat · My Expenses · Me`. Chat is
+first-class, **not** a floating action button. The `/shifts` tab is
+hidden when `time.clock_mode` is `auto` or `disabled`.
 
 ### Owner/Manager
 
-Everything above plus:
-
 ```
-/properties               → property list
-/property/<id>            → property hub (units, areas, stays, tasks, inventory, instructions, closures, lifecycle rules, settings)
-/property/<id>/closures   → property closure calendar (incl. iCal unavailable markers)
-/stays                    → stays list & calendar
-/users                    → staff list
-/user/<id>                → profile, role grants, work roles, capabilities, settings, shifts, payslips, leaves, availability overrides
-/permissions              → permissions hub (two tabs: Groups, Rules) — see "Permissions admin surface" below
-/user/<id>/leaves         → leave ledger (approve/reject)
-/user/<id>/availability   → availability override calendar (weekly pattern + date overrides)
-/leaves                   → cross-user leave inbox (pending approvals)
-/availability-overrides   → cross-user availability override inbox (pending approvals)
-/holidays                 → public holiday calendar management (CRUD, scheduling effects, payroll multipliers)
-/templates                → task templates
-/schedules                → schedule list & previews
-/instructions             → knowledge base
-/assets                   → asset list (filter by property, status, type)
-/asset/<id>               → asset hub (details, actions, documents, TCO, QR)
-/asset_types              → asset type catalog (system + workspace-custom)
-/documents                → document list (filter by asset, property, kind, expiry)
-/inventory                → per-property stock
-/pay                      → periods, payslips, rules
-/expenses                 → approvals queue
-/approvals                → agent action approvals
-/audit                    → audit log viewer
-/webhooks                 → subscriptions
-/llm                      → model assignments, call log, budget
-/me                       → your own profile: display name, language, passkeys, agent approval mode (see "Me page (worker)"; identical shape on the owner/manager surface)
-/settings                 → workspace settings (defaults grouped by namespace,
-                            override summary, policy & danger zone)
+/dashboard                      /properties
+/property/<id>                  /property/<id>/closures
+/stays                          /users
+/user/<id>                      /user/<id>/leaves
+/user/<id>/availability         /leaves
+/availability-overrides         /holidays
+/permissions                    /templates
+/schedules                      /instructions
+/instructions/<id>              /assets
+/asset/<id>                     /asset_types
+/documents                      /inventory
+/pay                            /expenses
+/approvals                      /audit
+/webhooks                       /llm
+/chat-channels                  /me
+/settings
 ```
 
-### Owner/Manager desktop shell
+### Desktop shell
 
-The desktop owner/manager UI is framed by three layout regions:
+The owner/manager desktop layout has three regions:
 
-- `.desk__nav` — left-hand primary navigation (the list above).
+- `.desk__nav` — left-hand primary navigation.
 - `.desk__main` — central content pane.
-- `.desk__agent` — right-hand sidebar hosting the **workspace agent**
-  conversation (§11 "Owner/manager-side agent"). Components:
-    - A compact header with the agent title and an **online
-      indicator**. The active model assignment for capability
-      `chat.manager` (default `google/gemma-4-31b-it`) is *not*
-      surfaced here — the model picker lives on `/llm` (§11), not
-      in the chat surface, to keep the conversation UI focused.
-    - The running **chat log** with the workspace agent — markdown
-      bubbles, voice-input button when capability is on. The log
-      lazy-loads older messages when the user scrolls up and pins
-      to the latest message on open.
-    - A **pending-actions tray** listing `agent_action` rows
-      whose `gate_destination = inline_chat` and whose
-      `for_user_id` is the current user (§11). Each row renders as
-      a confirmation card: the server-rendered `card_summary`
-      ("Create expense *Marché Provence* for €22.10?") with
-      `card_fields_json` laid out as a compact key/value table
-      and a `card_risk` tone (`low` / `medium` / `high`). The
-      `[Confirm]` / `[Reject]` buttons call the same
-      `/approvals/{id}/{decision}` endpoints the desk uses. The
-      tray sits between the log and the composer, sized to its
-      content, so approvals are always visible without scrolling
-      the sidebar. New rows are pushed via the SSE event
-      `agent.action.pending` (§12), scoped per-user so other
-      users' agents never leak into this tray.
-    - A **composer** fixed at the bottom of the sidebar — the
-      owner/manager can always ask the agent something without
-      scrolling or hunting.
-    - A **collapse toggle** so the sidebar can be hidden on narrow
-      laptops; collapsed state renders as a thin vertical rail and
-      is persisted per user.
+- `.desk__agent` — right-hand sidebar hosting the workspace agent
+  (§11).
 
-The sidebar is load-bearing for the agent-first invariant (§11):
-any verb the owner/manager can click in `.desk__nav` or
-`.desk__main` can also be requested of the agent in `.desk__agent`.
+The sidebar must be mounted **once** above `<Outlet />` so chat
+state, composer draft, and `EventSource` subscription survive
+client-side navigation. It is load-bearing for the agent-first
+invariant (§11) — any verb reachable in `.desk__nav` or `.desk__main`
+must also be requestable in `.desk__agent`.
 
-### Permissions admin surface
+## Implementation contracts
 
-`/permissions` is the top-level hub for the permission model
-(§02 `permission_group` / `permission_rule`, §05 action
-catalog). Available on the manager surface; writes are gated by
-the `permissions.edit_rules` and `groups.manage_members` action
-checks (with `groups.manage_owners_membership` for the
-`owners` group specifically — root-only, so only
-owners-group members can ever edit it).
+The mocks decide *how* screens look; these constraints decide *what
+the platform must guarantee*.
 
-Two tabs, each a separate page under the shared frame:
+- **Data layer.** TanStack Query (`@tanstack/react-query`) manages
+  all server state through a typed `fetchJson<T>` wrapper that
+  handles auth headers, CSRF, and JSON parsing.
+- **Optimistic mutations.** `onMutate` snapshots cache; `onError`
+  rolls back; `onSettled` invalidates. On concurrent writes (§06
+  last-write-wins) the UI surfaces a "Completed by <name>" toast —
+  never silently drop local state.
+- **SSE-driven invalidation.** One shared `EventSource('/events')`
+  mounted at the root. Events `task.updated`, `approval.resolved`,
+  `expense.decided`, `agent.message.appended`, and
+  `agent.action.pending` drive `queryClient.invalidateQueries(...)`.
+  No polling.
+- **Route-split bundles.** Worker and owner/manager entry points are
+  separate; owner/manager-only modules must not land in the worker
+  bundle. `/permissions` is excluded from the worker bundle split.
+- **Inline approvals.** When `agent.action.pending` arrives for the
+  current user, the chat surface (worker PWA Chat tab or
+  owner/manager agent sidebar) renders a confirmation card whose
+  buttons call `/approvals/{id}/{decision}` — shared with the
+  `/approvals` desk. Full flow and card-copy source in §11.
+- **Agent preferences surface.** The `/settings` page exposes an
+  "Agent preferences" section with the workspace blob (editor if
+  the user passes `agent_prefs.edit_workspace`, otherwise a
+  disabled textarea with a "read via CLI" pointer). Each
+  `/property/<id>` page carries the property blob under the same
+  rules with `agent_prefs.edit_property`. `/me` carries the
+  user's own blob (always editable by self). Each editor shows
+  a live token counter (4 k soft / 16 k hard), a "sent to the
+  model as written" banner (§15), and a "Revisions" link opening
+  the history modal backed by `/agent_preferences/revisions/…`
+  (§12). Full rules in §11 "Agent preferences".
+- **Chat gateway surface.** `/me` carries a "Chat channels" card
+  listing the current user's bindings, a link/unlink control,
+  `preferred_offapp_channel` toggle, and quiet-hours editor (§23).
+  Owners and managers see a workspace-wide `/chat-channels` page
+  listing every binding, provider health, and reach-out policy,
+  plus a `/settings → Chat gateway` section for Meta credentials
+  and template registration. The chat sidebar and worker Chat tab
+  now render `chat_message` rows from §23, so affordances
+  (buttons, list choices, media) come from the same schema that
+  backs WhatsApp.
 
-- **Groups** (`/permissions/groups`) — left column lists the
-  four system groups (`owners`, `managers`, `all_workers`,
-  `all_clients`) plus every user-defined group, with counts.
-  Right column shows the selected group's members. System
-  groups except `owners` render members as **read-only
-  derived** (with a muted explainer like "auto-populated from
-  role_grants"); `owners` and user-defined groups expose
-  add/remove controls. Adding a member to `owners` triggers an
-  inline confirmation reminding the user the target will gain
-  governance authority, then invokes
-  `groups.manage_owners_membership`. Removing the last
-  `owners` member is blocked with the same error code used by
-  the API (`would_orphan_owners_group`).
-- **Rules** (`/permissions/rules`) — grouped by action. Each
-  action row shows: the `action_key`, its catalog
-  `default_allow` (rendered as static group chips), and the
-  active `permission_rule` rows at the workspace scope below.
-  A per-property accordion reveals rules attached to specific
-  properties. Each rule is a subject chip (user or group) + an
-  `allow` / `deny` pill; deleting removes the rule; an "Add
-  rule" menu presents user + group pickers + effect. A
-  persistent "Who can do this?" sidebar lets the admin pick a
-  user and resolves the action through
-  `GET /permissions/resolved` (§12), rendering the
-  decision, source layer, matched rule id, and matched groups
-  so the model is debuggable from the UI.
+## Accessibility (v1 gate)
 
-Root-only actions (e.g. `workspace.archive`, `admin.purge`)
-are listed in the catalog with a **"Owners only"** pill and
-no rule editor — rules written against them are accepted at
-write time for forward-compatibility but produce a warning
-badge ("rule has no effect"). Non-root root-protected-deny
-actions are decorated with a shield icon and the tooltip
-"Cannot be denied to owners".
+WCAG 2.2 AA. Concretely:
 
-Mobile workers never see `/permissions`; the route is excluded
-from the worker bundle split (see §14 "JavaScript inventory").
-
-### Calendar surfaces
-
-- The `/stays` calendar overlays five layers: stays (coloured by
-  source, grouped by unit for multi-unit properties), stay task
-  bundles (neutral pattern, with trigger-type indicator), property
-  closures (greyed, unit-specific or property-wide), user leave
-  (narrow strip per user, toggle-able), and public holidays
-  (full-width marker with scheduling effect badge). The same
-  component is reused on `/property/<id>/closures` with the
-  stay/bundle layers hidden.
-- Closure rows with `reason = ical_unavailable` render read-only
-  (the source is the upstream iCal feed); editing them surfaces an
-  inline "Edit in Airbnb / VRBO" hint linked to the feed.
-
-## Interaction patterns
-
-- **Data layer:** TanStack Query (`@tanstack/react-query`) manages all
-  server state. A typed `fetchJson<T>` wrapper handles auth headers,
-  CSRF token injection, and JSON parsing.
-- **Optimistic mutations:** `onMutate` snapshots the current cache and
-  applies an optimistic update; `onError` rolls back the snapshot;
-  `onSettled` invalidates the affected queries to reconcile with the
-  server. If a second actor completed the same task concurrently (see
-  §06 last-write-wins), the invalidation fetch brings in the winning
-  record and the UI shows a "Completed by <name> · your note was kept
-  in the audit log" toast — no data is silently lost.
-- **SSE-driven cache invalidation:** one shared `EventSource('/events')`
-  lives in `SseContext`, mounted once at the root. On receiving
-  `task.updated`, `approval.resolved`, `expense.decided`, or
-  `agent.message.appended`, the handler calls
-  `queryClient.invalidateQueries(...)` so all affected components
-  re-render without polling.
-- **Client-side navigation:** React Router handles all route changes.
-  FastAPI's SPA catch-all serves `index.html` for every non-API GET,
-  so direct URL access and browser refresh always work.
-- **Inline validation:** debounced mutations post to the validator
-  endpoint (200ms after blur) and update a field-level error state;
-  no full-page reload.
-
-## JavaScript inventory
-
-Bundles are route-split: worker and owner/manager code are separate
-entry points so owner/manager-only modules never land on the worker
-phone. `React.lazy` loads owner/manager-only components out of the
-worker bundle.
-
-Runtime dependencies:
-
-- `react`, `react-dom` — UI rendering.
-- `react-router-dom` — client-side routing.
-- `@tanstack/react-query` — server state, caching, optimistic updates.
-- `camera.ts` — our own, opens `<input type="file" capture>` with a
-  light preview and compresses via `<canvas>` before upload.
-- `offline.ts` — service worker registration + queue UI.
-- `barcode.ts` — `React.lazy` dynamic import, only loaded when the
-  user taps "Scan".
-- `passkeys.ts` — our own, WebAuthn ceremonies only.
-
-No Alpine, no Vue, no utility/atomic CSS classes.
-
-## PWA
-
-The service worker is generated by the **Vite PWA plugin** (Workbox)
-from `mocks/web/vite.config.ts`. Workbox strategies used:
-
-- **Cache-first shell** — app shell (JS chunks, CSS, logo) is
-  pre-cached at install time; updates via Workbox's versioned manifest.
-- **Stale-while-revalidate (SWR)** for today's tasks — the cached
-  response is served immediately while a background fetch updates the
-  cache; the UI reflects the fresh data when it arrives via TanStack
-  Query invalidation.
-- **Background Sync outbox** for write-behind while offline — if
-  `/api/v1/tasks/<id>/complete` fails due to network, the request
-  (with body, idempotency key, captured timestamp) is stored in an
-  IndexedDB outbox. Background Sync API retries; on success the stored
-  entry is purged. The UI shows a small "queued" pip.
-
-### Manifest
-
-Injected by Vite PWA plugin:
-- `display: standalone`, `theme_color: #3F6E3B`, `background_color:
-  #FAF7F2`.
-- Icons: 192, 512, maskable.
-- `shortcuts`: "Today", "Clock in", "New expense".
-
-### Service worker — additional responsibilities
-
-- **Instruction content cache**: any `/instructions/<id>` loaded is
-  cached indefinitely (cache-first), with background revalidation.
-- Queue ordering is FIFO; idempotency keys ensure server-side safety
-  on replays.
-- Evidence photos are uploaded when online only — offline taps can
-  queue a completion that references a photo pending upload (local
-  `blob` id), and the service worker uploads photo first, then
-  replays the completion with the real `file_id`.
-
-### Constraints
-
-- Max queued completions before UI nags the user to reconnect: 50.
-- Max queued photo bytes: 50 MB (configurable). Older entries are
-  evicted with a visible "could not keep queued for longer" warning.
-
-## Today screen (worker)
-
-The most-used screen. Anatomy:
-
-- **Top:** personalized greeting, date, property dropdown if the
-  worker serves multiple, a big "Clock in" pill (if capability on)
-  or "Clocked in @ 08:12 → Clock out".
-- **Now:** the task with the nearest start time; full details inline.
-- **Upcoming today:** list of collapsed cards.
-- **Completed today:** collapsed count + expandable list.
-- **Bottom nav** (PWA): Today · Week · Chat · Expenses · Me. No
-  floating chat FAB; chat is the third footer tab. The Issues tab
-  from v0 is removed — attach an issue from the chat page.
-
-Each task card shows:
-
-- Title, property, area, priority indicator.
-- Checklist progress (if any).
-- Estimated duration.
-- A single primary action: "Start", "Mark done", or "Complete with
-  photo" depending on state and requirements.
-- Attached instructions collapsed under an info icon; tap to expand.
-
-## Task detail (worker)
-
-- Header with status pill.
-- Big primary CTA sticky to the top on scroll.
-- Checklist as tappable rows; each tap fires an optimistic mutation.
-- Instructions accordion (area → property → global).
-- Task-scoped chat (§06 "Task notes are the agent inbox") embedded
-  inline; the same conversation lives on `/chat` filtered to this
-  task.
-- Evidence: photo picker, note text area.
-- Skip flow opens a modal with reason textarea.
-
-## Chat page (worker)
-
-`/chat` is a full agent conversation — the worker's **universal
-inbox** for task notes, comments, issue reports, expense photos,
-and Q&A grounded in instructions (§07).
-
-- Voice-input mic button (capability-gated on `voice.employee`);
-  audio transcribed via `voice.transcribe` before dispatch.
-- **Auto-language detection** on inbound: the worker writes in
-  their own language; the agent stores both the original and the
-  workspace-language translation per §10. The worker always sees
-  their own original.
-- Issue reporting: the attach flow includes a "Report as issue"
-  button that routes the thread segment into `/issues/new`.
-- Expense uploads: the attach flow includes "Receipt" → camera
-  picker → background `expenses.autofill` (§09).
-- Task notes: when the worker opens a task, a sub-thread filtered
-  to that task is shown; messages written there also appear on the
-  task detail inline chat.
-
-No DMs, no group chats outside a task thread — just the one
-per-user conversation with the workspace agent.
-
-## Me page (worker)
-
-Simplified from v0. Contents:
-
-- **Profile** — display name, avatar, timezone, emergency contact.
-- **Language preference** — BCP-47 picker (§05 `languages[0]`),
-  used as the agent's reply language and the auto-translation
-  source (§10, §18).
-- **Agent approval mode** — three-radio selector
-  (`bypass | auto | strict`, default `strict`; §11 "Per-user
-  agent approval mode"). Plain-language labels explain each
-  choice ("Never pause", "Pause on impactful actions", "Pause on
-  every change"). Writes through `PUT /me/agent_approval_mode`
-  (§12). Owners and managers cannot change this setting for
-  other users — it is each user's personal safety rail.
-- **Passkeys** — list + "add passkey" + revoke.
-
-Explicitly **not** on the Me page:
-
-- No capabilities list (capabilities are owner/manager-configured;
-  the worker sees them implicitly through the features that work).
-- No "switch to owner/manager preview" link.
-
-## History (worker)
-
-`/history` is a new worker route with four tabs:
-
-- **Tasks** — completed + skipped + cancelled tasks with filters.
-- **Chats** — archived chat topics (post-compaction; full-text
-  searchable, see §11 "Conversation compaction").
-- **Expenses** — all submitted claims, with states.
-- **Leaves** — one-off `user_leave` rows, availability overrides,
-  and upcoming weekly-availability exceptions.
-
-History is read-only.
-
-## Manager screens
-
-- Lists default to table mode on desktop, card mode on mobile.
-- Filter bar is a controlled React form; changes trigger a debounced
-  TanStack Query refetch.
-- Bulk actions on tables: select rows + action menu → optimistic
-  mutations with a confirmation dialog for destructive ones.
-- Stay calendar uses a compact month/week view rendered client-side;
-  no FullCalendar dependency.
-
-## Internationalization readiness
-
-- All user-facing strings are keyed through an i18n helper backed by
-  a JSON message catalog, even though v1 ships English only. See §18.
-
-## Accessibility checklist (v1 gate)
-
-- Logical tab order.
-- Focus ring visible on Moss at AA contrast.
-- Forms labeled (no `placeholder`-only labels).
-- Images from users get an optional `alt` prompt at upload.
+- Logical tab order; focus ring visible at AA contrast on Moss.
+- Forms labeled (no placeholder-only labels).
 - Color never the sole indicator of state (icons + text too).
+- **Click targets ≥ 44×44 CSS pixels** on every interactive element
+  (back-links, footer tabs, task-card CTAs, checklist ticks, chat
+  mic, icon-only buttons). Icons inside smaller graphic boundaries
+  get transparent padding to reach the floor.
 - No layout jumps > 100ms; loading states use `aria-busy`.
 - Buttons are buttons; links are links; no `div` onclick.
-- **Click targets are at least 44x44 CSS pixels** on any interactive
-  element — back-links, footer tabs, task-card CTAs, checklist
-  ticks, chat mic, icon-only buttons. Icons inside smaller graphic
-  boundaries get transparent padding to reach the 44x44 minimum.
-  This is the floor; many primary CTAs are larger.
-- Test with NVDA on Windows, VoiceOver on iOS, TalkBack on Android
-  in the release playbook.
+- Release playbook tests with NVDA / VoiceOver / TalkBack.
 
 ## Browser support
 
 - Latest 2 versions of Chromium, Safari, Firefox.
-- iOS 16+ and Android 10+ (covers ~97% of domestic-staff phones in
-  target markets).
-- IE and legacy Edge: not supported; `/unsupported.html` if detected.
+- iOS 16+ and Android 10+.
+- Legacy / unsupported: `/unsupported.html`.
 
 ## Performance targets
 
 - Today screen LCP < 1.5s on a 2019 mid-range Android over 4G from a
   nearby region.
-- JS bundle on `/today`: < 170 KB gzipped (employee bundle).
-- JS bundle on `/dashboard`: < 220 KB gzipped (manager bundle).
-- Employee and manager code are route-split; `React.lazy` ensures
-  manager-only modules never load on the employee route.
+- Worker bundle on `/today`: < 170 KB gzipped.
+- Owner/manager bundle on `/dashboard`: < 220 KB gzipped.
 - Service worker install: < 1s on first visit.
 - Offline → online reconciliation: < 60s for 50 queued actions.
 
-## Styleguide page
+## PWA constraints
 
-`/styleguide` (dev + staging only) renders every component with every
-state for visual QA and design review.
+- Generated by **Vite PWA plugin** (Workbox) in
+  `mocks/web/vite.config.ts`.
+- **Cache-first shell** for JS/CSS/logo.
+- **Stale-while-revalidate** for today's tasks; the cached response
+  is served immediately and TanStack Query refreshes via
+  invalidation when the background fetch lands.
+- **Background Sync outbox** for write-behind completions — body +
+  idempotency key stored in IndexedDB, FIFO, replayed on reconnect.
+  Offline taps that reference a pending photo use a local `blob` id;
+  the service worker uploads the photo first, then replays the
+  completion with the real `file_id`.
+- **Caps.** 50 queued completions; 50 MB queued photo bytes (both
+  configurable). Older entries are evicted with a visible "could not
+  keep queued for longer" warning.
+- **Manifest.** `display: standalone`, `theme_color: #3F6E3B`,
+  `background_color: #FAF7F2`. Shortcuts: Today, Clock in, New
+  expense. Icons at 192, 512, maskable.
+
+## Internationalization readiness
+
+All user-facing strings go through an i18n helper backed by a JSON
+message catalog, even though v1 ships English only. See §18.
+
+## Gaps vs. mocks
+
+The mocks are the living spec, but several contracts named above
+are not yet implemented there. Track new gaps via `bd create` rather
+than adding to this list:
+
+- **User / manager terminology.** `mocks/web/src/App.tsx` still
+  routes `/employees`, `/employee/:eid`, `/employee/:eid/leaves`;
+  the spec (§05) canonicalises these to `/users`, `/user/<id>`,
+  `/user/<id>/leaves`. Mocks will rename during the
+  `user_work_roles` / `work_engagement` migration.
+- **Availability & holidays.** No mock pages yet for
+  `/availability-overrides`, `/user/<id>/availability`, or
+  `/holidays`.
+- **Agent sidebar (`.desk__agent`).** Stub exists at
+  `mocks/web/src/components/AgentSidebar.tsx`; full wiring — SSE
+  `agent.action.pending`, inline confirmation cards, voice input,
+  compaction-aware lazy load — is still to come.
+- **PWA service worker.** Vite PWA plugin is not yet wired in
+  `mocks/web/vite.config.ts`; offline outbox and background sync
+  are specified but unimplemented.

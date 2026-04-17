@@ -107,6 +107,15 @@ export default function ChatPage() {
             return (
               <div key={idx} className={"chat-msg chat-msg--" + m.kind}>
                 <span className="chat-msg__body">{m.body}</span>
+                {m.channel_kind === "offapp_whatsapp" && (
+                  <span
+                    className="chat-msg__channel chat-msg__channel--wa"
+                    aria-label="via WhatsApp"
+                    title="Arrived via WhatsApp"
+                  >
+                    WA
+                  </span>
+                )}
                 <span className="chat-msg__time">{hhmm(m.at)}</span>
               </div>
             );

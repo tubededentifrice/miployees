@@ -355,6 +355,30 @@ if the resulting magic link expires unused.
 - Algorithms: ES256 (`-7`), RS256 (`-257`) for broader iOS/Android
   support.
 
+## Chat-channel bindings
+
+Bindings created via the chat gateway (§23) are **not credentials**.
+A `chat_channel_binding` authenticates the transport a user picked
+to talk to their own agent; every write still flows through a
+**delegated token** that was minted from the user's session. A
+valid inbound WhatsApp message from a bound address does **not**
+grant the sender any authority beyond that user's `role_grants`
+and never creates a session.
+
+- The binding's link ceremony (§23 "Link ceremony") stores a one-
+  time 6-digit code as argon2id hash alongside passkey credentials
+  and API tokens; hash parameters are the same family as
+  `break_glass_code` (§03).
+- An inbound message whose sender address does not match any
+  `state = 'active'` binding is silently dropped (§23 "Routing").
+- `PAUSE` and `STOP` keywords revoke or suspend a binding without
+  any session — they are transport-level opt-outs and do not
+  affect the underlying `users` row.
+- Re-enrollment (§03 "Re-enrollment side-effects") does **not**
+  automatically revoke chat-channel bindings: the phone is
+  commonly unchanged when a passkey is lost. Revoking a binding on
+  a stolen phone is an explicit action (§23 "Security").
+
 ## Privacy
 
 - We store only: credential ID, public key, sign count, AAGUID,

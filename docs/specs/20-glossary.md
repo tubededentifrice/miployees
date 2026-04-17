@@ -16,6 +16,18 @@ fix the offender.
   agent described in §11. Default model `google/gemma-4-31b-it`;
   tool surface is the full CLI + REST surface of the delegating user
   (no filtered catalog). Voice input is capability-gated.
+- **Agent preferences.** Free-form Markdown guidance that shapes
+  how the composition/conversation LLM capabilities in §11 talk
+  back. Three layers stacked broadest-first: workspace →
+  property → user. Soft rules only; does not override the
+  structured settings cascade (§02). Stored in
+  `agent_preference` (§02) with full history in
+  `agent_preference_revision`. Editing is gated by
+  `agent_prefs.edit_workspace` / `agent_prefs.edit_property`
+  (§05) at workspace and property scopes; user-layer prefs are
+  self-writable only. Reads are open to anyone with a grant on
+  the scope (CLI/API); the UI restricts the editor to users
+  with write access. See §11 "Agent preferences".
 - **Agent approval mode.** Per-user enum on `users.agent_approval_mode`
   — `bypass | auto | strict`, default `strict`. Decides when the
   user's own embedded chat agent pauses for an inline confirmation
@@ -171,7 +183,8 @@ fix the offender.
 - **Model assignment.** The capability → model mapping (§11).
 - **Off-app reach-out.** Agent-initiated WhatsApp or SMS message to
   a user for low-stakes checks. Requires the user's
-  `preferred_offapp_channel` to be set. See §10.
+  `preferred_offapp_channel` to be set **and** (for WhatsApp) an
+  active `chat_channel_binding` (§23). See §10.
 - **Owner / owners group.** **v0** had an `owner` grant_role
   with "exactly one per scope". **v1** replaces this with the
   `owners` **permission group**: a system group seeded per
@@ -388,6 +401,42 @@ fix the offender.
   and `mark_paid` are unconditionally approval-gated. States:
   `draft | submitted | approved | rejected | paid | voided`. See
   §22.
+- **Chat gateway.** Single transport layer through which the
+  user's embedded agent (§11) exchanges messages, regardless of
+  channel (web sidebar, worker PWA Chat tab, WhatsApp, and future
+  Telegram). Channels plug in through a `ChannelAdapter` protocol;
+  the agent runtime, tool surface, delegated token, and approval
+  pipeline are identical across channels. See §23.
+- **Channel adapter.** Per-transport implementation of the
+  gateway's `ChannelAdapter` protocol — parses inbound envelopes,
+  sends text / buttons / media / templates, and verifies webhook
+  signatures. v1 ships `offapp_whatsapp` (Meta Cloud API);
+  `offapp_sms` is outbound-only; `offapp_telegram` is a reserved
+  slug with implementation deferred. See §23.
+- **Chat channel binding.** Row in `chat_channel_binding` tying a
+  `(channel_kind, address)` pair to exactly one `users` row.
+  Created `pending`, promoted to `active` via the link-challenge
+  ceremony, revoked by user action or `STOP` keyword. One binding
+  per `(user, channel_kind)` and one per `(channel_kind, address)`
+  at a time. See §23.
+- **Link challenge.** 6-digit code sent during the chat-channel
+  binding ceremony (§23) over the channel being linked. Stored as
+  argon2id hash, 15-minute TTL, five-attempt cap. Accepting the
+  code either by inbound reply or UI POST promotes the binding to
+  `active`.
+- **Chat thread / chat message.** `chat_thread` + `chat_message`
+  replace the v0 `offapp_delivery` + task-comment agent
+  participation. One live thread per user carries every turn with
+  that user's agent across all channels; messages carry
+  `channel_kind`, `direction`, affordance metadata, and media
+  references. Compaction (§11) applies uniformly. See §23.
+- **Session window (WhatsApp).** Meta's 24-hour rule: outside the
+  window since the user's last inbound, outbound from the gateway
+  must be a pre-approved template message. Tracked on
+  `chat_channel_binding.last_message_at`; the WhatsApp adapter
+  auto-wraps free-form bodies into the `chat_agent_nudge` template
+  past the window. Non-WhatsApp channels have no equivalent
+  constraint. See §23.
 - **Client rate / billable rate.** Per-client hourly rate keyed to
   a work_role (`client_rate`) with optional per-user override
   (`client_user_rate`). Resolved at shift close and snapshotted

@@ -41,6 +41,13 @@ Two chat agents are embedded in the product. Each operates with a
 inheriting that user's full permissions. They share plumbing (client,
 redaction, audit, approval) but differ in whose authority they carry.
 
+Both agents are reached through the **chat gateway** (§23), which is
+the transport layer: the web sidebar, the worker PWA Chat tab, and
+WhatsApp are three channels into the same runtime per user. The
+agent code path does not branch on channel — the gateway normalises
+envelopes and renders affordances, and this document still describes
+what the agent does with a turn once it has one.
+
 ### Owner/manager-side agent
 
 Lives in the right sidebar (`.desk__agent`) of the owner/manager
@@ -125,6 +132,201 @@ answer quality. Every thread is therefore subject to **compaction**:
 
 Compaction windows default to "30 days or 200 turns, whichever
 first," overridable per workspace.
+
+## Agent preferences
+
+A seam for free-form, human-authored guidance that shapes how
+agents talk back — the miployees analogue of stacked `CLAUDE.md`
+files. Preferences are **soft** directives: they live alongside
+the structured §02 settings cascade (hard rules) and feed into
+the same LLM turns that the settings cascade already constrains.
+
+Examples an owner, manager, or worker might write:
+
+- Workspace: "We bill in euros. Always show amounts as `€1 234,56`
+  even when a property's currency is different."
+- Property (Villa Sud): "Gardener comes Tuesdays; never propose
+  outdoor tasks that day."
+- Self: "Don't request a photo on my tasks unless I ask. Keep
+  replies to one paragraph."
+
+### Layers
+
+Three layers, in the order the model sees them (broadest first):
+
+1. **Workspace** — one blob per workspace. Applies to every
+   delegated-token turn in the workspace plus workspace-scoped
+   composition capabilities (digests, anomaly phrasing,
+   NL-intake drafts).
+2. **Property** — one blob per property. Injected per the
+   **context resolution** rule below.
+3. **User** — one blob per (user, workspace). Applies to every
+   delegated-token turn where the delegating user is this user,
+   across every channel of the chat gateway (§23). Self-writable
+   only; no one else — not even an owner — may edit another
+   user's preference blob (mirrors the "self-writable" rule on
+   `agent_approval_mode`).
+
+Each layer is a Markdown document. The model receives the three
+layers as three clearly labelled sections of the system prompt:
+
+```
+## Workspace preferences — Bernard workspace
+<workspace blob, verbatim>
+
+## Property preferences — Villa Sud
+<property blob, verbatim>
+
+## Your preferences — Jean B.
+<user blob, verbatim>
+```
+
+The label includes the scope's display name so the model can
+attribute and reconcile conflicts the same way a human would —
+"later/more-specific wins" is the convention, not a hard rule
+carved into tool code.
+
+### Which capabilities receive preferences
+
+Composition and conversation capabilities only. The resolver
+injects the stack into system prompts for:
+
+- `chat.manager`, `chat.employee`, `chat.compact`
+- `digest.manager`, `digest.employee`
+- `tasks.nl_intake`, `tasks.assist`
+- `instructions.draft`, `stay.summarize`, `issue.triage`
+
+Classification, OCR, and detection capabilities do **not** receive
+preferences — they would be noise at best and harmful at worst:
+`expenses.autofill`, `voice.transcribe`, `anomaly.detect`,
+`chat.detect_language`, `chat.translate`. The capability catalog
+flag `receives_agent_preferences: true` on `model_assignment`
+makes this explicit and lets a workspace toggle the default for a
+given capability.
+
+### Property context resolution
+
+A manager may hold grants on many properties in the same turn; a
+worker typically touches one or two per shift. The resolver picks
+which property blob(s) to inject per turn by walking the
+following rules, stopping at the first that yields an answer:
+
+1. **Explicit context.** The chat gateway's current thread (§23
+   `chat_thread.primary_property_id` when set by an
+   `X-Agent-Channel`-bound UI) names one property — inject
+   only that one's blob.
+2. **Single reachable property.** The delegating user holds
+   grants on exactly one property in the workspace — inject
+   that one.
+3. **Multiple reachable properties.** Inject every property
+   blob the user can reach as labelled sections ("## Property
+   preferences — Villa Sud", "## Property preferences — Mas
+   des Oliviers"), followed by a one-line resolver note:
+   "Multiple properties in scope; confirm with the user if the
+   answer depends on which property they mean." The model
+   picks or asks.
+4. **No property reachable.** No property blob is injected;
+   workspace + user blobs still flow normally.
+
+Rule 3 is capped by the size budget below. If the concatenated
+property blobs would exceed the cap, the resolver drops all
+property blobs and emits a system note: "Multiple properties in
+scope; call `get_agent_preferences(property_id)` to pull a
+specific property's preferences." The tool is registered on
+every capability in the receive-list above with the same
+delegated-token scope as the rest of the agent's surface.
+
+### Authoring and visibility
+
+Authoring is gated by three new keys in the §05 action catalog:
+
+- `agent_prefs.edit_workspace` — `default_allow: owners,
+  managers`; valid on `workspace`.
+- `agent_prefs.edit_property` — `default_allow: owners,
+  managers`; valid on `workspace, property`.
+- `agent_prefs.edit_self` — identity-scoped; self-writable only,
+  not in the action catalog.
+
+There is no separate read action key. **Anyone with a grant on
+the scope may read that scope's workspace or property
+preferences via REST or CLI**, because the blob is what shapes
+the agent they are talking to and transparency builds trust in
+agent behaviour. The UI, however, only surfaces the editor
+**and the full body** to users who pass the corresponding edit
+key — viewers without write access see a short notice
+("preferences are set by your manager; read the full text via
+`miployees agent-prefs show workspace`") rather than the raw
+Markdown, to keep the settings page from doubling as a leak
+surface for casual observers. User-layer preferences are
+private to their author; no one else may read another user's
+self blob.
+
+### PII posture
+
+Preferences are **pass-through**. The §11 redaction layer that
+scrubs names, phones, emails, and addresses from other free-text
+inputs is **skipped** for preference text — the whole point is
+to reference real people and real places ("don't pair Maria
+with the night shift at Villa Sud"), and scrubbing would turn
+the blob into nonsense.
+
+To keep the carve-out narrow, the save endpoint refuses
+preference bodies that match hard-drop secret patterns already
+called out in §11 and §15:
+
+- IBAN-shaped tokens, bank-account-shaped numbers
+- Access codes, door codes, alarm codes (regex + heuristic)
+- Wi-Fi passwords (heuristic; keyword-triggered)
+- API tokens (`mip_…`), envelope keys, OAuth bearers
+
+A save that matches returns `422` with
+`error = "preference_contains_secret"` and a pointer to the
+offending span. The UI surfaces a banner above the editor:
+"Preferences are sent to the model as written. Do not paste
+passwords, codes, or account numbers." This sits next to the
+existing §15 PII notice, not in place of it.
+
+### Size budget
+
+Each layer carries a soft cap of **4 000 tokens** (measured with
+the default model's tokenizer at save time) and a hard cap of
+**16 000 tokens**. The editor shows a live counter computed
+client-side with a BPE approximation (`gpt-tokenizer`'s
+`o200k_base`, which agrees with Gemma's SentencePiece to within
+a few percent on typical prose) — it is **advisory only**. The
+server's save-time count is authoritative; if the two disagree
+on a value near the cap, the server's 422 wins. Save past the
+hard cap returns `422 preference_too_large`. Combined
+injection budget per turn is capped at **8 000 tokens**; when
+the concatenated stack exceeds this, the resolver drops property
+blobs first (per "Property context resolution" rule 3), then
+truncates the workspace blob from the end with a "[truncated]"
+marker. User blobs are never truncated — they are the smallest
+layer in practice and the most personal, so the UX is worse when
+they disappear silently.
+
+### Storage, versioning, audit
+
+One row per (scope_kind, scope_id) in `agent_preference` (§02
+"Shared tables"). Every save writes a new `agent_preference_revision`
+row, keeping full history; the resolver always reads the latest
+non-archived row. Edits emit `audit_log` entries
+(`agent_preference.updated`) and the webhook family
+`agent_preference.*` (§10). Retention follows the workspace's
+`retention.audit_days` setting; revision bodies older than 2
+years are pruned with the corresponding audit row.
+
+### Not a substitute for structured rules
+
+Preferences are advice, not enforcement. "Don't request a photo
+on my tasks" expressed here will bias the agent's prose but does
+**not** override `evidence.policy = require` from the §02
+settings cascade — an agent that tries to complete a task
+without a photo still fails the server-side check. For hard
+rules, use the settings cascade; for soft rules the agent
+should carry into its phrasing and its proposals, use
+preferences. The §14 editor explains this directly above the
+textarea.
 
 ## Provider
 
@@ -614,13 +816,24 @@ buttons wired to the same `/approvals/{id}/{decision}` endpoints
 that the desk uses. The same row remains visible on `/approvals`
 so owners and managers can oversee agent activity across users.
 
-The off-app channel values are named here for schema stability —
-`agent_action.inline_channel` accepts them and audit surfaces flag
-them — but the v1 implementation delivers inline approvals only
-through the two web channels and the `/approvals` desk. The
-WhatsApp / SMS reply-based flow (send a one-tap confirmation
-message, parse `YES` / `NO` from the reply, defeat replay of the
-same message id) is tracked under §19 "Beyond v1".
+`offapp_whatsapp` is **live in v1**: the gateway (§23
+"Interactive affordances" and "Approval cards on WhatsApp") sends
+the card as a WhatsApp interactive-button message whose body is
+the resolved `card_summary` + `card_fields`, with `Approve` /
+`Reject` buttons wired to the same `/approvals/{id}/{decision}`
+endpoints the desk uses. The button reply's
+`provider_message_id` defeats replay on `chat_message`.
+`card_risk = 'high'` approvals do **not** resolve on WhatsApp —
+the gateway returns a short "open the app to confirm" message and
+the pending row stays on `/approvals`. Outside Meta's 24-hour
+session window the card is wrapped in a registered template
+message (§23 "Session window").
+
+`offapp_sms` remains deferred (no interactive primitive; parsing
+free-text `YES` across concurrent pending approvals is ambiguous),
+so `agent_action.inline_channel = 'offapp_sms'` continues to mean
+"the user is opted into SMS reach-out, but decisions land on
+`/approvals` only". See §23 "Channel catalog".
 
 ### TTL
 

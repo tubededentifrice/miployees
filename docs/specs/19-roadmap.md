@@ -149,8 +149,17 @@ the billable CSV reconciles against the payroll register.
   staff chat assistant, agent approval workflow.
 - Embedded **owner/manager-side** and **worker-side** chat agents
   (§11) with conversation compaction.
-- **WhatsApp (agent-mediated) + SMS fallback** for agent-originated
-  outbound reach-out (§10). Moved from "Beyond v1" into v1.
+- **Chat gateway (§23)** — unified runtime per user with pluggable
+  channel adapters. v1 ships the Meta Cloud API adapter for
+  **bidirectional WhatsApp**: users link a number from their profile
+  via a challenge-response ceremony, then chat with their own agent
+  exactly as in the web surface. Inbound media (receipts, task
+  evidence photos, voice notes when opted in) flow through the same
+  `file` adapter as the web. Inline approval cards render as WhatsApp
+  interactive buttons; `card_risk = 'high'` approvals still require
+  the web surface.
+- **SMS fallback** for agent-originated outbound reach-out (§10) —
+  shipping, outbound only (no inline approvals).
 - **Chat auto-translation** between worker-preferred and workspace-
   default languages on the worker agent (§10, §18). Moved from
   "deferred" into v1.
@@ -159,9 +168,12 @@ the billable CSV reconciles against the payroll register.
 bounded budget and audit; an agent driving the CLI experiences
 approval-gated actions correctly; a worker writing in their own
 language gets the agent replying in kind and the owner/manager seeing
-the workspace-default translation with a toggle for the original;
-agent-originated WhatsApp reach-out respects quiet hours and per-user
-daily caps.
+the workspace-default translation with a toggle for the original; a
+worker who linked WhatsApp can upload a receipt photo, mark a task
+complete, and report an issue entirely from WhatsApp, with approval
+cards resolved inline and every write attributed to their delegated
+token in the audit log; agent-originated WhatsApp reach-out respects
+quiet hours, per-user daily caps, and Meta's 24-hour session window.
 
 ## Phase 9 — PWA and offline
 
@@ -217,5 +229,11 @@ Items explicitly deferred, in rough priority order:
 10. Realtime chat (presence, typing indicators) — v1 uses SSE for
     task-state freshness; true realtime is separate.
 11. Integrated guest messaging (Airbnb-style threads).
-12. Additional outbound channels beyond email / WhatsApp / SMS
-    (push, Slack, Matrix).
+12. Additional chat-gateway adapters beyond email / WhatsApp / SMS
+    — **Telegram** first (adapter interface already landed in
+    §23, implementation deferred), then push, Slack, Matrix.
+13. **SMS inline approvals.** v1 SMS is outbound-only because free-
+    text reply parsing across concurrent pending approvals is
+    ambiguous. Revisit when an SMS adapter gains interactive-
+    primitive support or when a disambiguation scheme (e.g.
+    short-code per approval) proves reliable enough.

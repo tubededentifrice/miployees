@@ -234,6 +234,39 @@ def api_me(request: Request) -> Response:
         "now": md.NOW,
         "user_id": me_user.id if me_user else None,
         "agent_approval_mode": me_user.agent_approval_mode if me_user else "strict",
+        "preferred_offapp_channel": me_user.preferred_offapp_channel if me_user else "none",
+        "quiet_hours_start": me_user.quiet_hours_start if me_user else "21:00",
+        "quiet_hours_end": me_user.quiet_hours_end if me_user else "08:00",
+    })
+
+
+@app.put("/api/v1/me/offapp_preferences")
+async def api_me_offapp_preferences_set(request: Request) -> Response:
+    """§10/§23 — self-writable reach-out preferences."""
+    user = md.user_by_id(current_user_id(request))
+    if user is None:
+        return ok({"error": "not_found"}, status_code=404)
+    body = await request.json() or {}
+    channel = body.get("preferred_offapp_channel")
+    if channel is not None:
+        if channel not in {"whatsapp", "sms", "none"}:
+            return ok({"error": "invalid_channel",
+                       "allowed": ["whatsapp", "sms", "none"]}, status_code=400)
+        user.preferred_offapp_channel = channel
+    qh_start = body.get("quiet_hours_start")
+    qh_end = body.get("quiet_hours_end")
+    if qh_start is not None:
+        if not isinstance(qh_start, str) or not _re.fullmatch(r"\d{2}:\d{2}", qh_start):
+            return ok({"error": "invalid_quiet_hours_start"}, status_code=400)
+        user.quiet_hours_start = qh_start
+    if qh_end is not None:
+        if not isinstance(qh_end, str) or not _re.fullmatch(r"\d{2}:\d{2}", qh_end):
+            return ok({"error": "invalid_quiet_hours_end"}, status_code=400)
+        user.quiet_hours_end = qh_end
+    return ok({
+        "preferred_offapp_channel": user.preferred_offapp_channel,
+        "quiet_hours_start": user.quiet_hours_start,
+        "quiet_hours_end": user.quiet_hours_end,
     })
 
 
@@ -261,6 +294,161 @@ async def api_me_agent_approval_mode_set(request: Request) -> Response:
         {"user_id": user.id, "old_mode": old_mode, "new_mode": new_mode},
     )
     return ok({"mode": user.agent_approval_mode})
+
+
+# ── Agent preferences (§11) ──────────────────────────────────────────
+
+import re as _re  # noqa: E402  -- local to the feature
+
+AGENT_PREF_SOFT_CAP_TOKENS = 4000
+AGENT_PREF_HARD_CAP_TOKENS = 16000
+_PREF_SECRET_REGEXES = [(_re.compile(p), label) for p, label in md.AGENT_PREFERENCE_SECRET_PATTERNS]
+
+
+def _count_tokens(body: str) -> int:
+    """Mock tokeniser: ~= 1 token per 3 chars (close enough for UI counter)."""
+    return (len(body) + 2) // 3
+
+
+def _scan_pref_for_secrets(body: str) -> dict[str, Any] | None:
+    for regex, label in _PREF_SECRET_REGEXES:
+        m = regex.search(body)
+        if m:
+            return {
+                "error": "preference_contains_secret",
+                "pattern": label,
+                "span": [m.start(), m.end()],
+                "excerpt": body[max(0, m.start() - 12):m.end() + 12],
+            }
+    return None
+
+
+def _pref_writable(request: Request, scope_kind: str, scope_id: str) -> bool:
+    """Mock action-catalog resolver for `agent_prefs.edit_*`.
+
+    The real API consults `permission_rule` + the §05 catalog; here we
+    fake it: managers pass workspace/property edit; any user may edit
+    their own row.
+    """
+    role = current_role(request)
+    uid = current_user_id(request)
+    if scope_kind == "user":
+        return scope_id == uid
+    if scope_kind in ("workspace", "property"):
+        return role == "manager"
+    return False
+
+
+def _pref_envelope(scope_kind: str, scope_id: str, request: Request) -> dict[str, Any]:
+    row = md.AGENT_PREFERENCES.get((scope_kind, scope_id))
+    writable = _pref_writable(request, scope_kind, scope_id)
+    if row is None:
+        return {
+            "scope_kind": scope_kind,
+            "scope_id": scope_id,
+            "body_md": "",
+            "token_count": 0,
+            "updated_by_user_id": None,
+            "updated_at": None,
+            "writable": writable,
+            "soft_cap": AGENT_PREF_SOFT_CAP_TOKENS,
+            "hard_cap": AGENT_PREF_HARD_CAP_TOKENS,
+        }
+    return {
+        "scope_kind": scope_kind,
+        "scope_id": scope_id,
+        "body_md": row["body_md"],
+        "token_count": row["token_count"],
+        "updated_by_user_id": row["updated_by_user_id"],
+        "updated_at": row["updated_at"],
+        "writable": writable,
+        "soft_cap": AGENT_PREF_SOFT_CAP_TOKENS,
+        "hard_cap": AGENT_PREF_HARD_CAP_TOKENS,
+    }
+
+
+@app.get("/api/v1/agent_preferences/workspace")
+def api_agent_prefs_workspace(request: Request) -> Response:
+    return ok(_pref_envelope("workspace", md.DEFAULT_WORKSPACE_ID, request))
+
+
+@app.put("/api/v1/agent_preferences/workspace")
+async def api_agent_prefs_workspace_set(request: Request) -> Response:
+    return await _save_pref(request, "workspace", md.DEFAULT_WORKSPACE_ID)
+
+
+@app.get("/api/v1/agent_preferences/property/{pid}")
+def api_agent_prefs_property(pid: str, request: Request) -> Response:
+    md.property_by_id(pid)  # 404s via StopIteration if missing
+    return ok(_pref_envelope("property", pid, request))
+
+
+@app.put("/api/v1/agent_preferences/property/{pid}")
+async def api_agent_prefs_property_set(pid: str, request: Request) -> Response:
+    md.property_by_id(pid)
+    return await _save_pref(request, "property", pid)
+
+
+@app.get("/api/v1/agent_preferences/me")
+def api_agent_prefs_me(request: Request) -> Response:
+    uid = current_user_id(request)
+    return ok(_pref_envelope("user", uid, request))
+
+
+@app.put("/api/v1/agent_preferences/me")
+async def api_agent_prefs_me_set(request: Request) -> Response:
+    uid = current_user_id(request)
+    return await _save_pref(request, "user", uid)
+
+
+@app.get("/api/v1/agent_preferences/revisions/{scope_kind}/{scope_id}")
+def api_agent_prefs_revisions(scope_kind: str, scope_id: str, request: Request) -> Response:
+    if scope_kind == "user" and scope_id != current_user_id(request):
+        return ok({"error": "not_found"}, status_code=404)
+    revs = md.AGENT_PREFERENCE_REVISIONS.get((scope_kind, scope_id), [])
+    return ok({"scope_kind": scope_kind, "scope_id": scope_id, "revisions": revs})
+
+
+async def _save_pref(request: Request, scope_kind: str, scope_id: str) -> Response:
+    if not _pref_writable(request, scope_kind, scope_id):
+        return ok({"error": "forbidden", "required_action": f"agent_prefs.edit_{scope_kind}"}, status_code=403)
+    body = await request.json()
+    new_body = (body or {}).get("body_md", "")
+    if not isinstance(new_body, str):
+        return ok({"error": "invalid_body"}, status_code=400)
+    tokens = _count_tokens(new_body)
+    if tokens > AGENT_PREF_HARD_CAP_TOKENS:
+        return ok({"error": "preference_too_large", "token_count": tokens,
+                   "hard_cap": AGENT_PREF_HARD_CAP_TOKENS}, status_code=422)
+    secret = _scan_pref_for_secrets(new_body)
+    if secret:
+        return ok(secret, status_code=422)
+    note = (body or {}).get("save_note")
+    uid = current_user_id(request)
+    now_iso = md.NOW.isoformat() + "Z"
+    existing = md.AGENT_PREFERENCES.get((scope_kind, scope_id))
+    md.AGENT_PREFERENCES[(scope_kind, scope_id)] = {
+        "body_md": new_body,
+        "token_count": tokens,
+        "updated_by_user_id": uid,
+        "updated_at": now_iso,
+    }
+    revs = md.AGENT_PREFERENCE_REVISIONS.setdefault((scope_kind, scope_id), [])
+    next_rev = (revs[-1]["revision_number"] + 1) if revs else 1
+    revs.append({
+        "revision_number": next_rev,
+        "body_md": new_body,
+        "saved_by_user_id": uid,
+        "saved_at": now_iso,
+        "save_note": note,
+    })
+    hub.publish(
+        "agent_preference.updated",
+        {"scope_kind": scope_kind, "scope_id": scope_id,
+         "revision_number": next_rev, "token_count": tokens,
+         "was_empty": existing is None or not existing.get("body_md")},
+    )
+    return ok(_pref_envelope(scope_kind, scope_id, request))
 
 
 @app.get("/api/v1/properties")
@@ -1396,6 +1584,137 @@ def api_agent_manager_action(aid: str, decision: str) -> Response:
         md.MANAGER_AGENT_LOG.append(agent_msg)
         hub.publish("agent.message.appended", {"scope": "manager", "message": agent_msg})
     return ok({"ok": True, "id": aid, "decision": decision})
+
+
+@app.get("/api/v1/chat/channels")
+def api_chat_channels() -> Response:
+    """§23 — every binding the current mock user can see.
+
+    In the preview both roles see every binding for simplicity; the
+    production split (self on /me, workspace-wide on /chat-channels)
+    lives in §14.
+    """
+    return ok([
+        {
+            "id": b.id,
+            "user_id": b.user_id,
+            "user_display_name": (
+                md.user_by_id(b.user_id).display_name
+                if md.user_by_id(b.user_id) else b.user_id
+            ),
+            "channel_kind": b.channel_kind,
+            "address": b.address,
+            "display_label": b.display_label,
+            "state": b.state,
+            "verified_at": b.verified_at,
+            "last_message_at": b.last_message_at,
+            "revoked_at": b.revoked_at,
+            "revoke_reason": b.revoke_reason,
+        }
+        for b in md.CHAT_CHANNEL_BINDINGS
+    ])
+
+
+@app.get("/api/v1/chat/channels/providers")
+def api_chat_channels_providers() -> Response:
+    """§23 — provider config display stubs for /settings."""
+    return ok(md.CHAT_GATEWAY_PROVIDERS)
+
+
+@app.post("/api/v1/chat/channels/link/start")
+def api_chat_channels_link_start(payload: dict[str, Any] = Body(...)) -> Response:
+    """§23 link ceremony, step 1: send the code.
+
+    Mock implementation — accepts the request, flips (or inserts) a
+    `pending` binding, pretends to send a WhatsApp template message.
+    """
+    channel_kind = str(payload.get("channel_kind") or "").strip()
+    address = str(payload.get("address") or "").strip()
+    user_id = str(payload.get("user_id") or md.DEFAULT_EMPLOYEE_ID).strip()
+    if channel_kind not in {"offapp_whatsapp", "offapp_sms", "offapp_telegram"}:
+        return JSONResponse({"detail": "bad channel_kind"}, status_code=400)
+    if not address:
+        return JSONResponse({"detail": "address required"}, status_code=400)
+    existing = next(
+        (
+            b for b in md.CHAT_CHANNEL_BINDINGS
+            if b.user_id == user_id
+            and b.channel_kind == channel_kind
+            and b.state != "revoked"
+        ),
+        None,
+    )
+    if existing and existing.state == "active":
+        return JSONResponse(
+            {"detail": "already linked", "binding_id": existing.id},
+            status_code=409,
+        )
+    if existing:
+        existing.address = address
+    else:
+        existing = md.ChatChannelBinding(
+            id=f"ccb-{user_id}-{channel_kind[-2:]}",
+            user_id=user_id,
+            channel_kind=channel_kind,  # type: ignore[arg-type]
+            address=address,
+            display_label="Personal phone",
+            state="pending",
+        )
+        md.CHAT_CHANNEL_BINDINGS.append(existing)
+    hub.publish(
+        "chat_channel_binding.created",
+        {"binding_id": existing.id, "channel_kind": channel_kind},
+    )
+    return ok({
+        "binding_id": existing.id,
+        "state": existing.state,
+        "hint": "code sent over the target channel — enter it below",
+    })
+
+
+@app.post("/api/v1/chat/channels/link/verify")
+def api_chat_channels_link_verify(payload: dict[str, Any] = Body(...)) -> Response:
+    """§23 link ceremony, step 2: verify the 6-digit code."""
+    binding_id = str(payload.get("binding_id") or "").strip()
+    code = str(payload.get("code") or "").strip()
+    binding = next(
+        (b for b in md.CHAT_CHANNEL_BINDINGS if b.id == binding_id),
+        None,
+    )
+    if binding is None:
+        return JSONResponse({"detail": "unknown binding"}, status_code=404)
+    if binding.state != "pending":
+        return JSONResponse(
+            {"detail": f"binding is {binding.state}"},
+            status_code=409,
+        )
+    if code != "424242":  # mock code — every pending binding accepts this
+        return JSONResponse({"detail": "wrong code"}, status_code=400)
+    binding.state = "active"
+    binding.verified_at = datetime.now()
+    hub.publish(
+        "chat_channel_binding.verified",
+        {"binding_id": binding.id, "channel_kind": binding.channel_kind},
+    )
+    return ok({"binding_id": binding.id, "state": binding.state})
+
+
+@app.post("/api/v1/chat/channels/{bid}/unlink")
+def api_chat_channels_unlink(bid: str) -> Response:
+    """§23 — user-initiated revocation."""
+    binding = next((b for b in md.CHAT_CHANNEL_BINDINGS if b.id == bid), None)
+    if binding is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    if binding.state == "revoked":
+        return ok({"binding_id": binding.id, "state": binding.state})
+    binding.state = "revoked"
+    binding.revoked_at = datetime.now()
+    binding.revoke_reason = "user"
+    hub.publish(
+        "chat_channel_binding.revoked",
+        {"binding_id": binding.id, "channel_kind": binding.channel_kind},
+    )
+    return ok({"binding_id": binding.id, "state": binding.state})
 
 
 @app.post("/api/v1/chat/action/{idx}/{decision}")

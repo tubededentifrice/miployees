@@ -107,6 +107,14 @@ class User:
     # an inline confirmation card before executing a delegated-token
     # mutation. Self-writable only; default `strict`.
     agent_approval_mode: Literal["bypass", "auto", "strict"] = "strict"
+    # §10 / §23 — off-app reach-out preference. `none` is a hard opt-out
+    # (overrides workspace policy). The transport address lives on
+    # `chat_channel_binding`, not on the user.
+    preferred_offapp_channel: Literal["whatsapp", "sms", "none"] = "none"
+    # §10 / §23 — local-time quiet-hours window for agent-initiated
+    # outbound. Stored as "HH:MM" strings; default 21:00–08:00.
+    quiet_hours_start: str = "21:00"
+    quiet_hours_end: str = "08:00"
     archived_at: datetime | None = None
 
 
@@ -1140,7 +1148,8 @@ USERS: list[User] = [
     User("u-maria",   "maria@example.com",           "Maria Alvarez",   languages=["fr"],
          preferred_locale="fr-FR", primary_workspace_id="ws-bernard",
          phone_e164="+33 6 12 34 56 78",
-         agent_approval_mode="strict"),
+         agent_approval_mode="strict",
+         preferred_offapp_channel="whatsapp"),
     User("u-arun",    "arun@example.com",            "Arun Patel",      languages=["en", "hi"],
          preferred_locale="en-GB", primary_workspace_id="ws-bernard",
          phone_e164="+33 6 22 45 67 89",
@@ -2531,6 +2540,148 @@ WORKSPACE_META: dict[str, str] = {
     "default_locale": "fr-FR",
 }
 
+
+# ── Agent preferences (§11) ──────────────────────────────────────────
+# CLAUDE.md-style free-form guidance stacked into the LLM system prompt.
+# Keyed as (scope_kind, scope_id). Empty strings are legal — an empty
+# layer still carries its labelled section with body "(none)".
+
+AGENT_PREFERENCES: dict[tuple[str, str], dict[str, Any]] = {
+    ("workspace", "ws-bernard"): {
+        "body_md": (
+            "# Voice\n"
+            "- Reply in French unless the user writes in English.\n"
+            "- Keep answers under two paragraphs unless asked to expand.\n"
+            "- Prices as `€1 234,56`, even when a property's currency differs.\n"
+            "\n"
+            "# Habits\n"
+            "- Summarise long task lists — never dump more than 8 rows in chat.\n"
+            "- On Sundays, do not propose schedule changes without prompting.\n"
+        ),
+        "token_count": 74,
+        "updated_by_user_id": "u-elodie",
+        "updated_at": "2026-04-11T09:32:00Z",
+    },
+    ("property", "p-villa-sud"): {
+        "body_md": (
+            "- Gardener comes Tuesday mornings. Don't propose outdoor tasks that day.\n"
+            "- Photo evidence is required here; if I ask to skip it, remind me gently.\n"
+            "- Maria knows the pool routine best — prefer her for pool-related work.\n"
+        ),
+        "token_count": 46,
+        "updated_by_user_id": "u-elodie",
+        "updated_at": "2026-04-08T16:05:00Z",
+    },
+    ("property", "p-apt-3b"): {
+        "body_md": "",
+        "token_count": 0,
+        "updated_by_user_id": "u-elodie",
+        "updated_at": "2026-03-22T10:11:00Z",
+    },
+    ("property", "p-chalet"): {
+        "body_md": (
+            "- Winter only: check heating before every check-in task.\n"
+            "- No flash photography inside (artwork). Camera evidence disabled already.\n"
+        ),
+        "token_count": 28,
+        "updated_by_user_id": "u-elodie",
+        "updated_at": "2026-02-18T14:20:00Z",
+    },
+    ("user", "u-elodie"): {
+        "body_md": (
+            "- Don't request a photo on my tasks unless I ask.\n"
+            "- When I'm chatting in the evening, keep it to one paragraph.\n"
+            "- I prefer concrete numbers over vague trends in the daily digest.\n"
+        ),
+        "token_count": 42,
+        "updated_by_user_id": "u-elodie",
+        "updated_at": "2026-04-14T21:03:00Z",
+    },
+    ("user", "u-maria"): {
+        "body_md": (
+            "- Je préfère le français.\n"
+            "- Dis-moi seulement ce qui est en retard, pas la liste complète.\n"
+        ),
+        "token_count": 22,
+        "updated_by_user_id": "u-maria",
+        "updated_at": "2026-04-10T07:45:00Z",
+    },
+    ("user", "u-arun"): {
+        "body_md": "",
+        "token_count": 0,
+        "updated_by_user_id": "u-arun",
+        "updated_at": "2026-03-30T12:00:00Z",
+    },
+}
+
+AGENT_PREFERENCE_REVISIONS: dict[tuple[str, str], list[dict[str, Any]]] = {
+    ("workspace", "ws-bernard"): [
+        {
+            "revision_number": 1,
+            "body_md": "# Voice\n- Reply in French unless the user writes in English.\n",
+            "saved_by_user_id": "u-elodie",
+            "saved_at": "2026-03-01T10:00:00Z",
+            "save_note": "initial",
+        },
+        {
+            "revision_number": 2,
+            "body_md": (
+                "# Voice\n- Reply in French unless the user writes in English.\n"
+                "- Keep answers under two paragraphs unless asked to expand.\n"
+            ),
+            "saved_by_user_id": "u-elodie",
+            "saved_at": "2026-03-24T15:12:00Z",
+            "save_note": "tighten chat length",
+        },
+        {
+            "revision_number": 3,
+            "body_md": (
+                "# Voice\n- Reply in French unless the user writes in English.\n"
+                "- Keep answers under two paragraphs unless asked to expand.\n"
+                "- Prices as `€1 234,56`, even when a property's currency differs.\n"
+                "\n"
+                "# Habits\n"
+                "- Summarise long task lists — never dump more than 8 rows in chat.\n"
+                "- On Sundays, do not propose schedule changes without prompting.\n"
+            ),
+            "saved_by_user_id": "u-elodie",
+            "saved_at": "2026-04-11T09:32:00Z",
+            "save_note": "add habits block",
+        },
+    ],
+    ("user", "u-elodie"): [
+        {
+            "revision_number": 1,
+            "body_md": "- Don't request a photo on my tasks unless I ask.\n",
+            "saved_by_user_id": "u-elodie",
+            "saved_at": "2026-04-02T18:30:00Z",
+            "save_note": None,
+        },
+        {
+            "revision_number": 2,
+            "body_md": (
+                "- Don't request a photo on my tasks unless I ask.\n"
+                "- When I'm chatting in the evening, keep it to one paragraph.\n"
+                "- I prefer concrete numbers over vague trends in the daily digest.\n"
+            ),
+            "saved_by_user_id": "u-elodie",
+            "saved_at": "2026-04-14T21:03:00Z",
+            "save_note": None,
+        },
+    ],
+}
+
+
+# Simple heuristic secret pattern set used by the mock save endpoint.
+# Matches the §11 "PII posture" spec list — not a real scrubber, just
+# enough to show the guard in the UI.
+AGENT_PREFERENCE_SECRET_PATTERNS: list[tuple[str, str]] = [
+    (r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", "IBAN-shaped token"),
+    (r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "card-number-shaped token"),
+    (r"\bmip_[a-zA-Z0-9_]{10,}\b", "miployees API token"),
+    (r"(?i)\b(wifi|wi-fi|password|passcode|door\s*code|alarm)\s*[:=]\s*\S{4,}", "password / access-code pattern"),
+]
+
 SETTINGS_CATALOG: list[SettingDefinition] = [
     SettingDefinition("evidence.policy", "Evidence policy", "enum", "optional",
                       enum_values=["require", "optional", "forbid"],
@@ -2638,6 +2789,11 @@ class AgentMessage:
     at: datetime
     kind: Literal["agent", "user", "action"]
     body: str
+    # §23 — the chat gateway tags each inbound/outbound turn with the
+    # channel it arrived on. Null means "web" (sidebar or PWA Chat tab).
+    channel_kind: Literal[
+        "offapp_whatsapp", "offapp_sms", "offapp_telegram"
+    ] | None = None
 
 
 @dataclass
@@ -2722,9 +2878,11 @@ EMPLOYEE_CHAT_LOG: list[AgentMessage] = [
         "Bonjour Maria ! Tu as 4 tâches aujourd'hui. La première : changer le linge "
         "de la chambre principale à 10:30. Les draps lavande sont sur l'étagère 2."),
     AgentMessage(datetime(2026, 4, 15, 8, 11), "user",
-        "Ok merci. I bought cleaning supplies yesterday — Carrefour, 12.40 EUR."),
+        "Ok merci. I bought cleaning supplies yesterday — Carrefour, 12.40 EUR.",
+        channel_kind="offapp_whatsapp"),
     AgentMessage(datetime(2026, 4, 15, 8, 12), "action",
-        "J'ai enregistré ton reçu Carrefour de 12,40 €. À approuver ?"),
+        "J'ai enregistré ton reçu Carrefour de 12,40 €. À approuver ?",
+        channel_kind="offapp_whatsapp"),
     AgentMessage(datetime(2026, 4, 15, 9, 2), "user",
         "Le vacuum de Villa Sud fait un bruit bizarre, je pense qu'il va lâcher."),
     AgentMessage(datetime(2026, 4, 15, 9, 3), "agent",
@@ -2734,6 +2892,108 @@ EMPLOYEE_CHAT_LOG: list[AgentMessage] = [
         "Ben est en congé le 18, qui prend la piscine ?"),
     AgentMessage(datetime(2026, 4, 15, 9, 48), "agent",
         "Sam couvre — c'est déjà acté ce matin. Rien à faire de ton côté."),
+]
+
+
+# ── Chat gateway (§23) ───────────────────────────────────────────────
+
+@dataclass
+class ChatChannelBinding:
+    """§23 — a `(channel_kind, address)` pair tied to one user."""
+
+    id: str
+    user_id: str
+    channel_kind: Literal[
+        "offapp_whatsapp", "offapp_sms", "offapp_telegram"
+    ]
+    address: str
+    display_label: str
+    state: Literal["pending", "active", "revoked"]
+    verified_at: datetime | None = None
+    last_message_at: datetime | None = None
+    revoked_at: datetime | None = None
+    revoke_reason: Literal[
+        "user", "stop_keyword", "user_archived", "admin", "provider_error"
+    ] | None = None
+
+
+@dataclass
+class ChatGatewayProvider:
+    """Stub of the per-workspace Meta Cloud config card on /settings."""
+
+    channel_kind: str
+    provider: str
+    status: Literal["connected", "pending", "error", "not_configured"]
+    display_stub: str
+    last_webhook_at: datetime | None
+    templates: list[str]
+
+
+CHAT_CHANNEL_BINDINGS: list[ChatChannelBinding] = [
+    # Maria (default worker) has WhatsApp linked and actively used —
+    # her worker chat log shows an inbound receipt from WhatsApp.
+    ChatChannelBinding(
+        id="ccb-maria-wa",
+        user_id="u-maria",
+        channel_kind="offapp_whatsapp",
+        address="+33 6 12 34 56 78",
+        display_label="Personal phone",
+        state="active",
+        verified_at=datetime(2026, 3, 4, 9, 21),
+        last_message_at=datetime(2026, 4, 15, 8, 11),
+    ),
+    # Élodie (owner-manager) started a link ceremony this morning; the
+    # 6-digit code was sent via WhatsApp template and has not been
+    # redeemed yet — state `pending`, 12 minutes left on the TTL.
+    ChatChannelBinding(
+        id="ccb-elodie-wa",
+        user_id="u-elodie",
+        channel_kind="offapp_whatsapp",
+        address="+33 6 11 22 33 44",
+        display_label="Personal phone",
+        state="pending",
+    ),
+    # Arun revoked his binding last month via STOP on WhatsApp.
+    # Kept as a historical row to exercise the revoked state in the
+    # admin view.
+    ChatChannelBinding(
+        id="ccb-arun-wa",
+        user_id="u-arun",
+        channel_kind="offapp_whatsapp",
+        address="+33 6 22 45 67 89",
+        display_label="Personal phone",
+        state="revoked",
+        revoked_at=datetime(2026, 3, 22, 18, 40),
+        revoke_reason="stop_keyword",
+    ),
+]
+
+
+CHAT_GATEWAY_PROVIDERS: list[ChatGatewayProvider] = [
+    ChatGatewayProvider(
+        channel_kind="offapp_whatsapp",
+        provider="Meta Cloud API",
+        status="connected",
+        display_stub="+33 1 86 65 xx xx · phone_number_id … 4921",
+        last_webhook_at=datetime(2026, 4, 15, 8, 11),
+        templates=["chat_channel_link_code", "chat_agent_nudge"],
+    ),
+    ChatGatewayProvider(
+        channel_kind="offapp_sms",
+        provider="Twilio",
+        status="connected",
+        display_stub="+33 7 55 xx xx xx",
+        last_webhook_at=None,
+        templates=[],
+    ),
+    ChatGatewayProvider(
+        channel_kind="offapp_telegram",
+        provider="Telegram Bot API",
+        status="not_configured",
+        display_stub="—",
+        last_webhook_at=None,
+        templates=[],
+    ),
 ]
 
 
@@ -2860,6 +3120,7 @@ DEFAULT_EMPLOYEE_ID = "e-maria"
 DEFAULT_EMPLOYEE_USER_ID = "u-maria"
 DEFAULT_MANAGER_NAME = "Élodie Bernard"
 DEFAULT_MANAGER_USER_ID = "u-elodie"
+DEFAULT_WORKSPACE_ID = "ws-bernard"
 
 
 # ── v1 helpers ──────────────────────────────────────────────────────

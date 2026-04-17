@@ -4,6 +4,8 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { Loading } from "@/components/common";
 import AgentApprovalModePanel from "@/components/AgentApprovalModePanel";
+import AgentPreferencesPanel from "@/components/AgentPreferencesPanel";
+import ChatChannelsMeCard from "@/components/ChatChannelsMeCard";
 import type { Leave, Me } from "@/types/api";
 
 interface LeavesPayload {
@@ -172,6 +174,16 @@ export default function MePage() {
       </section>
 
       <AgentApprovalModePanel variant="phone" />
+
+      <ChatChannelsMeCard me={me.data} />
+
+      <section className="phone__section">
+        <AgentPreferencesPanel
+          scope="user"
+          title="My agent preferences"
+          subtitle="Private to you. Written in plain language; sent to your chat agent on every turn."
+        />
+      </section>
 
       <section className="phone__section">
         <h2 className="section-title">Clock mode</h2>

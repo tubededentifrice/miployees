@@ -485,10 +485,37 @@ export interface Webhook {
   last_delivery_at: string;
 }
 
+export type ChatChannelKind = "offapp_whatsapp" | "offapp_sms" | "offapp_telegram";
+
 export interface AgentMessage {
   at: string;
   kind: "agent" | "user" | "action";
   body: string;
+  /** §23 chat gateway — channel the turn traversed; null/undefined = web. */
+  channel_kind?: ChatChannelKind | null;
+}
+
+export interface ChatChannelBinding {
+  id: string;
+  user_id: string;
+  user_display_name: string;
+  channel_kind: ChatChannelKind;
+  address: string;
+  display_label: string;
+  state: "pending" | "active" | "revoked";
+  verified_at: string | null;
+  last_message_at: string | null;
+  revoked_at: string | null;
+  revoke_reason: "user" | "stop_keyword" | "user_archived" | "admin" | "provider_error" | null;
+}
+
+export interface ChatGatewayProvider {
+  channel_kind: ChatChannelKind;
+  provider: string;
+  status: "connected" | "pending" | "error" | "not_configured";
+  display_stub: string;
+  last_webhook_at: string | null;
+  templates: string[];
 }
 
 export interface AgentAction {
@@ -549,6 +576,36 @@ export interface EntitySettingsPayload {
 // agent pauses for an inline confirmation card before executing.
 export type AgentApprovalMode = "bypass" | "auto" | "strict";
 
+// §11 — Agent preferences. Free-form Markdown stacked into the LLM
+// system prompt; three layers (workspace / property / user).
+export type AgentPreferenceScope = "workspace" | "property" | "user";
+
+export interface AgentPreference {
+  scope_kind: AgentPreferenceScope;
+  scope_id: string;
+  body_md: string;
+  token_count: number;
+  updated_by_user_id: string | null;
+  updated_at: string | null;
+  writable: boolean;
+  soft_cap: number;
+  hard_cap: number;
+}
+
+export interface AgentPreferenceRevision {
+  revision_number: number;
+  body_md: string;
+  saved_by_user_id: string;
+  saved_at: string;
+  save_note: string | null;
+}
+
+export interface AgentPreferenceRevisionsPayload {
+  scope_kind: AgentPreferenceScope;
+  scope_id: string;
+  revisions: AgentPreferenceRevision[];
+}
+
 export interface Me {
   role: Role;
   theme: Theme;
@@ -559,6 +616,10 @@ export interface Me {
   now: string;
   user_id: string | null;
   agent_approval_mode: AgentApprovalMode;
+  // §10 / §23 — off-app reach-out preferences (self-writable).
+  preferred_offapp_channel: "whatsapp" | "sms" | "none";
+  quiet_hours_start: string; // "HH:MM"
+  quiet_hours_end: string;   // "HH:MM"
 }
 
 export interface HistoryPayload {

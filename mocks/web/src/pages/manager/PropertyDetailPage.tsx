@@ -4,6 +4,7 @@ import { useParams } from "react-router-dom";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
+import AgentPreferencesPanel from "@/components/AgentPreferencesPanel";
 import { Avatar, Chip, Loading } from "@/components/common";
 import type {
   Asset,
@@ -288,6 +289,13 @@ export default function PropertyDetailPage() {
           )}
         </div>
       )}
+
+      <AgentPreferencesPanel
+        scope="property"
+        scopeId={property.id}
+        title={"Agent preferences — " + property.name}
+        subtitle="Sits between workspace and user preferences when the agent discusses this property. Soft guidance only — hard rules belong in the settings cascade above."
+      />
     </DeskPage>
   );
 }

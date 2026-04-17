@@ -43,6 +43,7 @@ import PermissionsPage from "@/pages/manager/PermissionsPage";
 import WebhooksPage from "@/pages/manager/WebhooksPage";
 import LlmPage from "@/pages/manager/LlmPage";
 import SettingsPage from "@/pages/manager/SettingsPage";
+import ChatChannelsPage from "@/pages/manager/ChatChannelsPage";
 
 import LoginPage from "@/pages/public/LoginPage";
 import RecoverPage from "@/pages/public/RecoverPage";
@@ -116,6 +117,7 @@ export default function App() {
           <Route path="/permissions" element={<PermissionsPage />} />
           <Route path="/webhooks" element={<WebhooksPage />} />
           <Route path="/llm" element={<LlmPage />} />
+          <Route path="/chat-channels" element={<ChatChannelsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 

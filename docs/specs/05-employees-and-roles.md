@@ -492,6 +492,8 @@ configuration.
 | `vendor_invoices.approve_as_client`     | `workspace`, `property`        | `all_clients`                 | —  | §22 |
 | `messaging.comments.author_global`      | `workspace`, `property`        | `owners, managers, all_workers` | — | §10 |
 | `messaging.report_issue.triage`         | `workspace`, `property`        | `owners, managers`            | —  | §10 |
+| `agent_prefs.edit_workspace`            | `workspace`                    | `owners, managers`            | —  | §11 |
+| `agent_prefs.edit_property`             | `workspace`, `property`        | `owners, managers`            | —  | §11 |
 
 Notes:
 
@@ -557,7 +559,8 @@ UI, each becoming one or more `permission_rule` rows:
 
 ### Rule administration UX (anchor)
 
-Spec'd in §14. Minimum shape:
+Rendered at `/permissions` (§14). Mocks are the living UI spec;
+minimum behavioural shape the implementation must satisfy:
 
 - **Groups** page: list workspace groups; for each, show members
   (or "auto-populated from grant_role=X" for derived ones),

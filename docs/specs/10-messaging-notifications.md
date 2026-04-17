@@ -2,24 +2,32 @@
 
 ## Channels
 
-v1 ships three outbound messaging channels to humans:
+v1 ships three messaging channels to humans:
 
 1. **Email** — every out-message originated by a **human** (owner/
    manager-authored mention, notification, digest) goes here, and
    here only.
-2. **WhatsApp** — **agent-originated** out-messages only. The
-   workspace agent (§11) may reach a worker on WhatsApp for
-   self-solvable, low-stakes checks ("did you finish the kitchen?",
-   "please confirm the chlorine level", "your leave is approved").
-3. **SMS** — fallback for WhatsApp when the user's number is
-   unreachable on WhatsApp or their capability flag disables it.
-   Also agent-only.
+2. **WhatsApp** — **bidirectional** agent conversation channel. A
+   user with a verified binding (§23 chat gateway) talks to their
+   own embedded agent (§11) over WhatsApp exactly as they would in
+   the web chat surface, and the agent may initiate low-stakes
+   reach-out ("did you finish the kitchen?", "please confirm the
+   chlorine level", "your leave is approved"). Cross-user messaging
+   over WhatsApp is **not** supported — humans do not DM other
+   humans on WhatsApp inside miployees.
+3. **SMS** — **agent-originated outbound only**. Fallback for
+   WhatsApp when the user's number is unreachable on WhatsApp or
+   their capability flag disables it. Users cannot hold an
+   inbound-capable SMS binding in v1 because SMS has no
+   interactive-button primitive (see §23 channel catalog).
 
-Humans cannot initiate WhatsApp or SMS out-messages — the agent is
-the only channel operator that may use them. This keeps the cost,
-compliance, and privacy surface (§15) tied to a single, well-
-understood sender. Additional channels (push, Slack, Matrix) remain
-deferred; §18 documents the seam.
+Cross-user messaging stays on email (§10) and task threads (§06).
+The transport layer for every agent conversation — web sidebar,
+worker PWA Chat tab, WhatsApp — is the chat gateway in §23; this
+spec now covers email plus the agent-reach-out rules that layer on
+top of the gateway for WhatsApp/SMS. Additional channels (push,
+Slack, Matrix, Telegram) remain deferred; §23 documents the
+adapter seam and §18 the translation seam.
 
 ## Email
 
@@ -144,41 +152,54 @@ other agent write.
 
 ### Off-app agent reach-out
 
-The workspace agent may initiate outbound conversation with a worker
-over **WhatsApp** (and **SMS** fallback) for low-stakes, self-solvable
-checks:
+The workspace agent may initiate outbound conversation with a user
+who has a verified WhatsApp binding (§23) — and fall back to SMS —
+for low-stakes, self-solvable checks:
 
-- "did you finish the kitchen?" with a one-tap confirm link.
+- "did you finish the kitchen?" with an interactive confirm button
+  (§23 interactive affordances).
 - "please confirm the chlorine level at Villa Sud is between 1 and
   3 ppm before you leave."
 - "your leave for April 22 has been approved — reply STOP to these
   messages anytime."
 
-Reach-out is **agent-only**. Humans cannot compose a WhatsApp or SMS
-message from inside miployees; they interact with another user either
-via email (§10 above) or via the in-app task thread, which the agent
-will mirror to WhatsApp if it decides reach-out is useful.
+Humans cannot compose a WhatsApp or SMS message to another human
+from inside miployees; cross-user messaging stays on email (§10
+above) or the in-app task thread, which the agent may mirror to a
+user's WhatsApp if it decides reach-out is useful. User ↔ **agent**
+conversation, on the other hand, is fully bidirectional over
+WhatsApp (§23 "Channel catalog").
 
-Rules:
+Rules (reach-out layer):
 
-- Each user has `preferred_offapp_channel` (`whatsapp | sms | none`)
-  and a `phone_e164_whatsapp` pair of fields on the `users` row.
-  `none` opts out.
+- Each user carries `preferred_offapp_channel`
+  (`whatsapp | sms | none`) on the `users` row. The transport
+  address is held on the `chat_channel_binding` row (§23), not on
+  the user. `none` is a hard opt-out; no reach-out regardless of
+  whether a binding exists.
 - Reach-out respects a per-user quiet-hours window (default
-  21:00-08:00 local) and a per-workspace daily cap on agent-originated
+  21:00-08:00 local), a `PAUSE` keyword override per binding
+  (§23), and a per-workspace daily cap on agent-originated
   messages per user (default 5/day).
-- Inbound replies route back into the task thread they originated from
-  (or into a fresh "ad-hoc" thread if none); the agent is responsible
-  for summarising the reply for the owner/manager.
-- Delivery is tracked in an `offapp_delivery` row mirroring
-  `email_delivery` above (states `queued | sent | delivered |
-  read | failed`).
+- Outbound past the Meta 24-hour session window is wrapped into a
+  registered template message by the adapter (§23 "Session
+  window").
+- Inbound replies flow through the chat gateway's normal routing
+  (§23) and join the user's live chat thread. When the agent
+  originally reached out about a specific task, the turn is also
+  cross-linked into that task's thread (§06) so owners and
+  managers see the response from the task desk.
+- Delivery is tracked on `chat_message` rows (§23) — states
+  `queued | sent | delivered | read | failed`. The v0
+  `offapp_delivery` table is retired by the same migration that
+  introduces §23's schema.
 - WhatsApp provider is configurable (Meta Cloud API by default);
   SMS via any RFC-compliant SMS provider. Credentials live in
   `secret_envelope`.
 
-See §15 for the privacy rules around WhatsApp/SMS numbers — they
-are PII and are redacted from upstream LLM prompts by default.
+See §15 for the privacy rules around WhatsApp/SMS addresses — they
+are PII, redacted from upstream LLM prompts by default, and hashed
+for gateway lookup (§23 `address_hash`).
 
 ### Auto-translation
 
@@ -277,6 +298,9 @@ stay_lifecycle_rule.* created, updated, deleted
 stay_task_bundle.*   created, completed, cancelled
 instruction.*        created, published, archived
 inventory.*          low_stock, movement, stock_drift
+chat_channel_binding.* created, verified, revoked, link_expired
+chat_message.*       received, sent, delivered, failed
+chat_thread.*        opened, archived
 shift.*              opened, closed, adjusted, disputed
 expense.*            submitted, approved, rejected, reimbursed
 payroll.*            period_opened, period_locked, period_paid,
@@ -304,6 +328,7 @@ work_order.*         created, state_changed, accept_quote,
 quote.*              submitted, accepted, rejected, superseded
 vendor_invoice.*     submitted, approved, rejected, paid, voided
 shift_billing.*      resolved
+agent_preference.*   updated, cleared  (§11)
 ```
 
 The `manager.*` and `employee.*` event families from earlier drafts

@@ -69,44 +69,24 @@ enforces each independently.
 
 ### Agent confirmation extension (`x-agent-confirm`)
 
-An optional OpenAPI extension that declares the inline
-confirmation card rendered when the caller is a delegated-token
-embedded agent and the delegating user's mode asks for it (§11
-"Per-user agent approval mode"). Presence is the single signal
-that an action is "impactful enough to pause on" under
-`auto` mode; absence means the route executes silently under
-`auto` (and surfaces a generic card only under `strict`).
-
-Extension schema:
+Optional per-route OpenAPI extension declaring the inline
+confirmation card shown when a delegated-token agent calls the
+route and the delegating user's mode asks for confirmation. Full
+semantics and starter list are in §11; the schema fields are:
 
 | field            | required | description                                                                 |
 |------------------|----------|-----------------------------------------------------------------------------|
-| `summary`        | yes      | One-line template, rendered against the resolved request payload at request time. Placeholder syntax matches §18's i18n seam; the built-in filter `\|money:<currency-key>` renders minor-unit integers as localized amounts. Example: `"Create expense {vendor} for {amount_minor\|money:currency}?"` |
-| `verb`           | no       | Short audit-friendly verb (e.g. `"Create expense"`); defaults to OpenAPI `summary` |
-| `risk`           | no       | `low \| medium \| high`; defaults to `medium` for mutations. `high` forces the "Details" pane open by default in the chat card. |
-| `fields_to_show` | no       | Ordered list of payload keys (with optional `\|<filter>`) rendered as a compact table under the summary. Defaults to all request-body top-level fields. |
+| `summary`        | yes      | One-line template rendered against the resolved request payload. Placeholder syntax matches §18's i18n seam; `\|money:<currency-key>` is the one built-in filter. Example: `"Create expense {vendor} for {amount_minor\|money:currency}?"` |
+| `verb`           | no       | Short audit-friendly verb; defaults to OpenAPI `summary`.                   |
+| `risk`           | no       | `low \| medium \| high`; defaults to `medium`. `high` expands the details pane. |
+| `fields_to_show` | no       | Ordered payload keys (with optional filters) rendered as a compact table.   |
 
-The extension lives alongside `x-cli` on the same route and is
-emitted into both `_surface.json` (§13) and the generated
-OpenAPI. The middleware pre-renders `summary` and
-`fields_to_show` against the resolved payload at the moment the
-`agent_action` row is written, stores the result in
-`agent_action.card_summary` / `card_fields_json`, and never
-re-templates — so the card the user sees at decision time is
-stable even if the underlying rows or templates change later.
-
-**CI lint** (§17): every mutating route is inspected; any
-placeholder in `summary` or `fields_to_show` that cannot be
-resolved against the route's request model is a build failure,
-so cards never render blank values in production. Routes that
-deliberately omit `x-agent-confirm` list their `operationId` in
-`app/agent_confirm/_exclusions.yaml` with a one-line reason,
-mirroring `x-cli` exclusions.
-
-Not every mutating route needs a bespoke card. A starter list of
-v1 routes that carry `x-agent-confirm` is in §11 "Action
-confirmation annotation"; new routes default to "no annotation"
-and opt in surgically as product surfaces need them.
+The middleware pre-renders `summary` / `fields_to_show` when it
+writes the `agent_action` row, stores the result, and never
+re-templates — so the card is stable even if templates or data
+change later. CI lint (§17) fails any placeholder that can't
+resolve against the request model; deliberate omissions go in
+`app/agent_confirm/_exclusions.yaml` with a reason.
 
 ## Common conventions
 
@@ -372,32 +352,12 @@ PATCH  /public_holidays/{id}
 DELETE /public_holidays/{id}
 ```
 
-**`GET /capabilities` response shape** — resolved map per (user,
-property_work_role_assignment). Flat JSON:
-
-```json
-{
-  "data": [
-    {
-      "user_id": "usr_…",
-      "property_work_role_assignment_id": "pwra_…",
-      "resolved": {
-        "time.clock_in": {"value": true, "source": "property_work_role_assignment"},
-        "tasks.photo_evidence_required": {"value": true, "source": "property_work_role_assignment"},
-        "messaging.comments": {"value": true, "source": "work_role_default"}
-      }
-    }
-  ]
-}
-```
-
-`source` is one of `property_work_role_assignment | user_work_role |
-work_role_default | catalog_default`.
-
-**`PATCH /capabilities/{user_id}`** — body is a sparse JSON map of
-`capability_key → (true | false | null)` plus an `assignment_id`
-selector naming which `property_work_role_assignment` to write to.
-`null` deletes the override key (restores inheritance).
+`GET /capabilities` returns a resolved map per
+`(user, property_work_role_assignment)` with `{value, source}` per
+key — see §05 for the cascade and source values.
+`PATCH /capabilities/{user_id}` accepts a sparse
+`capability_key → true | false | null` map plus an `assignment_id`;
+`null` clears the override.
 
 ### Tasks / templates / schedules
 
@@ -502,20 +462,13 @@ POST   /expenses/{id}/reject
 POST   /expenses/autofill          # multipart/form-data; image in → structured JSON out
 ```
 
-**`POST /expenses/autofill` request.** `Content-Type:
-multipart/form-data` with fields:
+`POST /expenses/autofill` accepts `multipart/form-data` with
+`images[]` (1..2, ≤ 5 MB total), optional `hint_currency` /
+`hint_vendor`; response shape is `llm_autofill_json` (§09).
 
-- `images[]` (1..2, total ≤ 5 MB, `image/jpeg | image/png | image/heic | application/pdf`)
-- `hint_currency` (optional ISO-4217, improves accuracy for ambiguous receipts)
-- `hint_vendor` (optional text)
-
-Response is the `llm_autofill_json` shape defined in §09.
-
-**`PATCH /shifts/{id}` adjustment rules.** If the patch touches
-`started_at`, `ended_at`, `break_seconds`, or `expected_started_at`,
-the body must include a non-empty `adjustment_reason`; the server sets
-`adjusted = true`. Otherwise `adjustment_reason` is optional and
-`adjusted` is unchanged. See §09.
+`PATCH /shifts/{id}` requires a non-empty `adjustment_reason` when
+the patch touches `started_at`, `ended_at`, `break_seconds`, or
+`expected_started_at` — see §09 for the adjustment contract.
 
 ### Assets / documents
 
@@ -573,19 +526,12 @@ GET    /tasks/{id}/settings                    # sparse overrides
 PATCH  /tasks/{id}/settings
 ```
 
-`GET /settings` returns the workspace defaults as a flat
-`dotted.key → value` map plus the workspace policy (approvals,
-danger zone). `GET /settings/catalog` returns all registered keys
-with their type, catalog default, override scope, and description.
-
-`GET /settings/resolved?entity_kind=property&entity_id=prop_…`
-walks the cascade and returns `{key: {value, source, source_id}}`
-for every registered key. See §02 "Settings cascade" for
-resolution rules.
-
-Entity-level `GET` returns the sparse override map only (keys the
-entity has explicitly set). `PATCH` accepts a partial map; setting
-a key to `null` deletes the override (restores inheritance).
+`GET /settings` returns the workspace defaults; `/catalog` lists
+registered keys with type/default/description; `/resolved` walks
+the cascade returning `{key: {value, source, source_id}}`.
+Entity-level `GET` returns the sparse override map only; `PATCH`
+accepts a partial map, `null` deletes the override (restores
+inheritance). Cascade rules in §02 "Settings cascade".
 
 ### LLM and approvals
 
@@ -600,29 +546,56 @@ GET    /me/agent_approval_mode     # {mode: bypass|auto|strict}
 PUT    /me/agent_approval_mode     # body: {mode}; self only
 ```
 
-Mode writes for another user are **not exposed** — every user
-controls their own `agent_approval_mode`. Oversight is through
-`audit_log` (the `auth.agent_mode_changed` event) rather than a
-permission-group-gated admin endpoint.
+Mode is self-only; no cross-user write endpoint. Oversight via
+`auth.agent_mode_changed` in `audit_log`.
 
-Delegated-token requests (§03) carry two agent headers in
-addition to the tokens described above (§11 "Agent action
-approval" flow):
+### Agent preferences
 
-- `X-Agent-Channel` — enum
-  `web_owner_sidebar | web_worker_chat | offapp_whatsapp | offapp_sms`;
-  absent means `desk_only`. Written onto
-  `agent_action.inline_channel`.
-- `X-Agent-Reason` / `X-Agent-Conversation-Ref` — free-text and
-  opaque conversation id, as already documented.
+Free-form Markdown guidance stacked into the LLM system prompt
+(see §11 "Agent preferences"). One endpoint per scope.
 
-An SSE event joins the existing catalog:
+```
+GET    /agent_preferences/workspace            # {body_md, token_count, updated_at, updated_by, writable}
+PUT    /agent_preferences/workspace            # body: {body_md, save_note?}
+GET    /agent_preferences/property/{id}
+PUT    /agent_preferences/property/{id}
+GET    /agent_preferences/me                   # self-read
+PUT    /agent_preferences/me                   # self-write
+GET    /agent_preferences/revisions/{pref_id}  # history listing
+GET    /agent_preferences/revisions/{pref_id}/{rev} # single revision
+```
 
-- `agent.action.pending` — fired when the middleware writes an
-  `agent_action` with `gate_destination = inline_chat` and
-  `for_user_id = <uid>`; delivered to that user's open tabs only.
-  Payload includes `approval_id`, `card_summary`, `card_risk`,
-  `card_fields_json`, `inline_channel`, and `requested_at`.
+`writable` is the resolved verdict from the action catalog —
+`true` when the caller passes `agent_prefs.edit_workspace` /
+`agent_prefs.edit_property` on the scope, `true` for
+`/agent_preferences/me` called by the owning user, `false`
+otherwise. On `false`, `GET` still returns `body_md` for
+workspace and property scopes (any grant on the scope may
+read), but `PUT` returns `403`. User-scope `GET` called by
+anyone other than the owning user returns `404` regardless of
+workspace grants.
+
+`PUT` refuses bodies that match the secret patterns listed in
+§11 "PII posture" with `422 preference_contains_secret` and a
+pointer to the offending span. Bodies past the hard token cap
+return `422 preference_too_large`.
+
+Every successful `PUT` emits:
+
+- One `agent_preference.updated` event on the webhook family
+  (§10).
+- One `audit_log` row with `action = agent_preference.updated`
+  and `entity_kind = agent_preference`.
+- One new `agent_preference_revision` row in the same
+  transaction (§02).
+
+Delegated-token requests (§03) may additionally set
+`X-Agent-Channel` — `web_owner_sidebar | web_worker_chat |
+offapp_whatsapp | offapp_sms` (absent = `desk_only`) — stored on
+`agent_action.inline_channel`. On gate, the server emits the SSE
+event `agent.action.pending` (scoped to `for_user_id`) with
+`approval_id`, `card_summary`, `card_risk`, `card_fields_json`,
+`inline_channel`, `requested_at`. Full flow in §11.
 
 ### Messaging
 
@@ -731,59 +704,8 @@ See §10 for the envelope and headers.
 
 ## Examples
 
-### Creating a one-off task
-
-```http
-POST /api/v1/tasks HTTP/1.1
-Authorization: Bearer mip_…
-Idempotency-Key: 01J-nl-intake-042
-Content-Type: application/json
-
-{
-  "title": "Airport pickup — Mr. Chen",
-  "property_id": "prop_01J…",
-  "expected_role_id": "role_driver",
-  "scheduled_for_local": "2026-04-21T06:30:00",
-  "duration_minutes": 90,
-  "priority": "high"
-}
-```
-
-Response `201 Created`, body is the created task resource, with
-`Location: /api/v1/tasks/task_01J…`.
-
-### Completing with evidence
-
-```http
-POST /api/v1/tasks/task_01J…/complete HTTP/1.1
-Authorization: Bearer mip_…
-Content-Type: multipart/form-data; boundary=…
-
---…
-Content-Disposition: form-data; name="payload"
-Content-Type: application/json
-
-{"note_md": "All good, linens restocked"}
---…
-Content-Disposition: form-data; name="photo"; filename="before.jpg"
-Content-Type: image/jpeg
-
-<bytes>
---…
-```
-
-### Error
-
-```http
-HTTP/1.1 409 Conflict
-Content-Type: application/problem+json
-
-{
-  "type": "https://miployees.dev/errors/approval_required",
-  "title": "Approval required",
-  "status": 202,
-  "detail": "This action requires an owner or manager approval",
-  "approval_id": "appr_01J…",
-  "expires_at": "2026-04-18T09:00:00Z"
-}
-```
+Worked request/response examples are served by the generated
+OpenAPI document (`GET /api/openapi.json`) and by the mock
+FastAPI app under `mocks/app/`. A 202 approval_required response
+follows the RFC 7807 envelope with `approval_id` and
+`expires_at` added to the body — see §11 for the pipeline.
