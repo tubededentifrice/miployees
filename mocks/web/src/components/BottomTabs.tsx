@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { User } from "lucide-react";
+import { CalendarDays, Euro, ListTodo, MessageSquareMore, User } from "lucide-react";
 
 // Phone-only bottom navigation, shared by EmployeeLayout and
 // ManagerLayout so both shells get the same row of 5 worker-style
@@ -22,10 +22,10 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { to: "/today", glyph: "◎", label: "Today" },
-  { to: "/week", glyph: "⋮⋮", label: "Week" },
-  { to: "/chat", glyph: "✦", label: "Chat" },
-  { to: "/my/expenses", glyph: "€", label: "Expenses", matchPrefix: "/my/expenses" },
+  { to: "/today", glyph: <ListTodo size={18} strokeWidth={1.8} />, label: "Today" },
+  { to: "/week", glyph: <CalendarDays size={18} strokeWidth={1.8} />, label: "Week" },
+  { to: "/chat", glyph: <MessageSquareMore size={18} strokeWidth={1.8} />, label: "Chat" },
+  { to: "/my/expenses", glyph: <Euro size={18} strokeWidth={1.8} />, label: "Expenses", matchPrefix: "/my/expenses" },
   { to: "/me", glyph: <User size={18} strokeWidth={1.8} />, label: "Me", matchPrefix: "/me" },
 ];
 
