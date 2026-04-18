@@ -173,7 +173,7 @@
     height: calc(100dvh - var(--banner-h, 40px));
     min-height: 0;
     display: grid;
-    grid-template-columns: 232px minmax(0, 1fr);
+    grid-template-columns: 232px minmax(0, 1fr) 340px;
     background: var(--paper);
   }
 
@@ -181,6 +181,17 @@
     display: flex;
     grid-column: 1;
     grid-row: 1 / -1;
+  }
+
+  /* Right rail: shared AgentSidebar mounts here on desktop for both
+     layouts. Mirrors the manager `.desk` grid (col 3 = agent). */
+  .phone > .desk__agent {
+    grid-column: 3;
+    grid-row: 1 / -1;
+  }
+  .phone:has(.desk__agent--collapsed),
+  .phone[data-agent-collapsed="true"] {
+    grid-template-columns: 232px minmax(0, 1fr) 52px;
   }
 
   /* Hide the phone-mode bottom tab bar and dock; the shared SideNav
@@ -1381,6 +1392,12 @@
   to { opacity: 1; }
 }
 
+/* Manager mobile bottom dock — single Chat button that opens the
+   agent drawer. Mirrors the employee shell's bottom Chat tab so the
+   mobile entry point is the same regardless of role. Hidden at desktop
+   widths (the persistent right rail takes over). */
+.desk__bottom-dock { display: none; }
+
 /* ══════════════════════════════════════════════════════════════
    RESPONSIVE MANAGER — tablet down to phone
    ══════════════════════════════════════════════════════════════ */
@@ -1391,6 +1408,9 @@
   .desk { grid-template-columns: 216px 1fr 52px; }
   .desk:has(.desk__agent--collapsed),
   .desk[data-agent-collapsed="true"] { grid-template-columns: 216px 1fr 52px; }
+  .phone { grid-template-columns: 216px minmax(0, 1fr) 52px; }
+  .phone:has(.desk__agent--collapsed),
+  .phone[data-agent-collapsed="true"] { grid-template-columns: 216px minmax(0, 1fr) 52px; }
   .desk__main { padding: 0 28px 80px; }
   .desk__agent:not(.desk__agent--mobile-open) {
     /* Force the rail look at this width. */
@@ -1413,6 +1433,9 @@
   .desk { grid-template-columns: 216px 1fr; }
   .desk:has(.desk__agent--collapsed),
   .desk[data-agent-collapsed="true"] { grid-template-columns: 216px 1fr; }
+  .phone { grid-template-columns: 216px minmax(0, 1fr); }
+  .phone:has(.desk__agent--collapsed),
+  .phone[data-agent-collapsed="true"] { grid-template-columns: 216px minmax(0, 1fr); }
   .desk__agent:not(.desk__agent--mobile-open) { display: none; }
   .desk__main { padding: 0 24px 80px; }
 }
@@ -1464,6 +1487,17 @@
     padding: 0 18px 96px;
     min-height: 0;
     width: 100%;
+  }
+
+  .desk__bottom-dock {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
+    display: grid; grid-template-columns: 1fr;
+    background: var(--card); border-top: 1px solid var(--line);
+    padding: 6px 0 max(6px, env(safe-area-inset-bottom));
+    backdrop-filter: saturate(1.1);
+  }
+  .desk__bottom-dock .tab {
+    background: transparent; border: 0; cursor: pointer; font-family: inherit;
   }
   .desk__topbar {
     padding-top: 16px;

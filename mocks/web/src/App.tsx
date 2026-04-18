@@ -56,6 +56,14 @@ function RoleHome() {
   return <Navigate to={role === "employee" ? "/today" : "/dashboard"} replace />;
 }
 
+// §14 — Shared routes (/today, /week, /my/expenses, etc.) render under
+// the viewer's role-appropriate shell: ManagerLayout for managers,
+// EmployeeLayout for workers. Picked here instead of at every route.
+function Shell() {
+  const { role } = useRole();
+  return role === "manager" ? <ManagerLayout /> : <EmployeeLayout />;
+}
+
 export default function App() {
   const { role } = useRole();
 
@@ -65,20 +73,22 @@ export default function App() {
         <Route path="/" element={<RoleHome />} />
         <Route path="/styleguide" element={<StyleguidePage />} />
 
-        <Route element={<EmployeeLayout />}>
-          {/* If /today is hit as manager, bounce to dashboard (mirrors legacy). */}
-          <Route
-            path="/today"
-            element={role === "manager" ? <Navigate to="/dashboard" replace /> : <TodayPage />}
-          />
+        {/* Shared routes — any role. Shell picks the right layout. */}
+        <Route element={<Shell />}>
+          <Route path="/today" element={<TodayPage />} />
           <Route path="/week" element={<WeekPage />} />
           <Route path="/task/:tid" element={<TaskDetailPage />} />
-          <Route path="/chat" element={<ChatPage />} />
           <Route path="/my/expenses" element={<MyExpensesPage />} />
           <Route path="/me" element={<MePage />} />
           <Route path="/shifts" element={<ShiftsPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/issues/new" element={<IssueNewPage />} />
+        </Route>
+
+        {/* Worker-only surfaces. /chat is the worker mobile full-screen
+            chat entry; on desktop both shells use AgentSidebar instead. */}
+        <Route element={<EmployeeLayout />}>
+          <Route path="/chat" element={<ChatPage />} />
           <Route path="/asset/scan" element={<AssetScanPage />} />
         </Route>
 

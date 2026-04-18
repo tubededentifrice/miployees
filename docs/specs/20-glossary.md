@@ -44,10 +44,12 @@ fix the offender.
   per action, not per surface. See §11 "Action confirmation
   annotation".
 - **Inline confirmation card.** The "[Confirm] [Reject]" card
-  rendered in a user's chat channel (owner/manager sidebar or
-  worker PWA Chat tab) when their own embedded agent proposes a
-  gated action. The same row also appears on `/approvals` for
-  owner/manager oversight. See §11 "Inline approval UX".
+  rendered in a user's chat channel (the right-hand `.desk__agent`
+  sidebar on desktop for either role, or the mobile entry — manager
+  bottom-dock drawer / worker `/chat` page) when their own embedded
+  agent proposes a gated action. The same row also appears on
+  `/approvals` for owner/manager oversight. See §11 "Inline approval
+  UX".
 - **Auto-clock.** The `auto` value of `time.clock_mode` (§05, §09).
   First checklist tick or task action of the day opens a shift;
   `time.auto_clock_idle_minutes` of inactivity closes it. Per-property
@@ -273,6 +275,12 @@ fix the offender.
 - **Pending (task).** A task whose `scheduled_for_utc` is within the
   next hour (or already past for a one-off). Distinct from
   `scheduled`; used to populate the worker "today" list (§06).
+- **Personal task.** A task with `is_personal = true`: visible only to
+  the `created_by` user and workspace owners; hidden from non-owner
+  managers, team dashboards, reports, and audit surfaces. Created via
+  quick-add on `/today` or `/week` where personal is the default; the
+  creator may flip "share to team" before submitting. See §06
+  "Self-created and personal tasks" and §15 "Personal task visibility".
 - **Property.** A managed physical place containing one or more
   units. `kind` (§04) gates stay lifecycle rule seeding: `residence`
   none, `str`/`vacation` default `after_checkout` rule, `mixed` same
@@ -358,6 +366,56 @@ fix the offender.
   already multi-tenant-ready — see §02 "Migration" and §19 "Beyond
   v1" for the path to true multitenancy. Replaces the v0
   "household."
+- **Workspace usage budget.** Per-workspace rolling-30-day dollar
+  envelope over every LLM call charged to the workspace. Stored on
+  `workspace_budget.cap_usd_30d`; prod default $5, demo default $0.10.
+  At cap, all LLM calls refuse with the structured `budget_exceeded`
+  error until older calls age out of the window. Adjusted only by the
+  operator via `crewday admin budget set-cap` — no HTTP surface; see
+  §11 "Workspace usage budget".
+- **Pricing table.** `app/config/llm_pricing.yml`; per-model USD cost
+  per 1k input and output tokens. Loaded at process start; hot-
+  reloadable via `crewday admin budget reload-pricing`. Free-tier
+  models (`:free` suffix on OpenRouter) price at zero. An unknown
+  model_id prices at zero and logs a WARNING every call. See §11.
+- **Free-tier model.** An OpenRouter model whose id ends in `:free`.
+  Priced at zero in the pricing table; still metered for telemetry.
+  Default for every live capability on the demo deployment (§24).
+- **At-cap refusal.** Pre-flight client-side refusal of an LLM call
+  when the workspace's rolling 30-day spend plus the projected call
+  cost would exceed `cap_usd_30d`. Returns the structured
+  `budget_exceeded` shape. Not an `audit_log` event; it is
+  operational telemetry. See §11 "At-cap behaviour".
+- **Demo deployment.** A crewday container running with
+  `CREWDAY_DEMO_MODE=1`, separate DB, separate OpenRouter key, and
+  a separate root key. Unauthenticated visitors land via signed
+  demo cookies bound to ephemeral workspaces with fake data; 24-
+  hour rolling TTL from last activity. iCal, SMTP, webhooks,
+  passkeys, magic links, token creation, OCR, voice, daily digest,
+  and anomaly detection are disabled. Full spec in §24; deployment
+  recipe in §16 "Recipe C".
+- **Demo workspace.** An ephemeral `workspaces` row paired with a
+  `demo_workspace` row on the demo deployment. Garbage-collected
+  by the `demo_gc` worker every 15 minutes when `expires_at` passes.
+  FK `ON DELETE CASCADE` on every `workspace_id` column removes
+  every dependent row. See §24.
+- **Demo scenario.** A seed fixture under `app/fixtures/demo/` that
+  initialises one demo workspace with a cast of personas
+  (owner, manager, worker, client), properties, tasks, stays, and
+  inventory. Selected by the `?scenario=<key>` query param on the
+  first iframe load. v1 scenarios: `villa-owner`, `rental-manager`,
+  `housekeeper`. See §24.
+- **Demo session.** A signed `__Host-crewday_demo` cookie binding a
+  browser to one or more `(scenario, workspace_id, persona_user_id)`
+  tuples. Not a `sessions` row; not a credential. Flags:
+  `Secure; HttpOnly; SameSite=None; Path=/; Partitioned;
+  Max-Age=2592000`. See §03 "Demo sessions" and §24 "Demo cookie".
+- **CHIPS (Cookies Having Independent Partitioned State).** Browser
+  feature that keys cookie storage to the `(top-frame-origin,
+  cookie-origin)` pair when the cookie carries `Partitioned`. The
+  demo cookie opts in so the same demo app embedded on different
+  landing pages gets separate cookie partitions — and therefore
+  separate demo workspaces. See §15 "Demo deployment" and §24.
 - **Organization.** A counterparty of the workspace tracked in a
   single `organization` table, flagged as client (`is_client`),
   supplier (`is_supplier`), or both. Replaces the need for
@@ -401,8 +459,10 @@ fix the offender.
   §22.
 - **Chat gateway.** Transport layer through which the user's
   embedded agent (§11) can exchange messages across web and future
-  external channels. Shipped v1 uses only the web sidebar and worker
-  PWA Chat tab; WhatsApp / SMS / Telegram remain deferred. See §23.
+  external channels. Shipped v1 uses only the shared `.desk__agent`
+  web sidebar (both roles, desktop) and its mobile counterparts
+  (worker `/chat` page, manager bottom-dock drawer); WhatsApp / SMS /
+  Telegram remain deferred. See §23.
 - **Channel adapter.** Per-transport implementation of the
   gateway's `ChannelAdapter` protocol — parses inbound envelopes,
   sends text / buttons / media / templates, and verifies webhook

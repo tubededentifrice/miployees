@@ -69,17 +69,33 @@ Canonical navigation. The authoritative tree is
 /healthz, /readyz, /version  (no auth; see §12)
 ```
 
-### Worker
+### Shared (any authenticated role)
+
+Routes rendered under whichever shell matches the viewer's role
+(`ManagerLayout` for managers, `EmployeeLayout` for workers) — picked
+by a single `<Shell />` wrapper component in `App.tsx`.
 
 ```
-/today           /week            /task/<id>       /chat
+/today           /week            /task/<id>
 /my/expenses     /me              /history         /issues/new
-/shifts          /asset/<id>      /asset/scan
+/shifts          /asset/<id>
+```
+
+### Worker-only
+
+```
+/chat            /asset/scan
 ```
 
 Footer bottom-nav: `Today · Week · Chat · My Expenses · Me`. Chat is
-first-class, **not** a floating action button. The `/shifts` tab is
-hidden when `time.clock_mode` is `auto` or `disabled`.
+first-class, **not** a floating action button. The bottom-nav `Chat`
+tab is the **mobile** entry to the agent — it navigates to the
+full-screen `/chat` page. On desktop (≥720px) the worker shell drops
+the bottom-nav (the shared `<SideNav />` takes over) and the agent
+moves to the right-hand `.desk__agent` rail (§14 "Desktop shell")
+shared with the manager layout, so `Chat` is no longer listed in the
+left-nav. The `/shifts` tab is hidden when `time.clock_mode` is `auto`
+or `disabled`.
 
 ### Owner/Manager
 
@@ -98,24 +114,51 @@ hidden when `time.clock_mode` is `auto` or `disabled`.
 /pay                            /expenses
 /approvals                      /audit
 /webhooks                       /llm
-/me
 /settings
 ```
 
 ### Desktop shell
 
-The owner/manager desktop layout has three regions:
+Both the worker and owner/manager desktop layouts share the same
+three-region grid:
 
 - `.desk__nav` — left-hand primary navigation.
-- `.desk__main` — central content pane.
-- `.desk__agent` — right-hand sidebar hosting the workspace agent
-  (§11).
+- `.desk__main` (manager) / `.phone__body` (worker) — central
+  content pane.
+- `.desk__agent` — right-hand sidebar hosting the role-appropriate
+  agent (§11). Collapsible to a 52px rail; collapse state persists in
+  the `crewday_agent_collapsed` cookie.
 
-The sidebar must be mounted **once** above `<Outlet />` so chat
-state, composer draft, and `EventSource` subscription survive
-client-side navigation. It is load-bearing for the agent-first
-invariant (§11) — any verb reachable in `.desk__nav` or `.desk__main`
-must also be requestable in `.desk__agent`.
+The sidebar mounts **once** as a sibling of `<Outlet />` in each
+layout (`EmployeeLayout`, `ManagerLayout`) so chat state, composer
+draft, and `EventSource` subscription survive client-side navigation.
+The component is shared (`mocks/web/src/components/AgentSidebar.tsx`);
+a `role` prop selects the per-role agent log/message endpoints
+(`/api/v1/agent/{employee|manager}/{log,message}`) and gates the
+manager-only "Pending approvals" block. It is load-bearing for the
+agent-first invariant (§11) — any verb reachable in `.desk__nav` or
+`.desk__main` must also be requestable in `.desk__agent`.
+
+On mobile (`< 720px`) `.desk__agent` collapses out of the grid in
+both layouts. The worker shell exposes the agent through the
+bottom-nav `Chat` tab → full-screen `/chat`; the manager shell
+exposes it through a single bottom dock button (`.desk__bottom-dock`)
+that opens `.desk__agent` as an off-canvas right drawer.
+
+The **MY WORK** group is the first section in the manager left-nav,
+placed before all operational sections:
+
+```
+MY WORK
+  My Day       → /today
+  My Week      → /week
+  My Expenses  → /my/expenses
+  My History   → /history
+```
+
+These routes render under `ManagerLayout` (the shared-route rule
+above), so managers navigate their personal work without leaving the
+desktop shell.
 
 ## Implementation contracts
 
@@ -135,13 +178,17 @@ the platform must guarantee*.
   `agent.action.pending` drive `queryClient.invalidateQueries(...)`.
   No polling.
 - **Route-split bundles.** Worker and owner/manager entry points are
-  separate; owner/manager-only modules must not land in the worker
-  bundle. `/permissions` is excluded from the worker bundle split.
+  separate. Shared routes (see route contract above) land in both
+  bundles. Only manager-only operational surfaces (`/dashboard`,
+  `/properties`, `/approvals`, `/permissions`, etc.) are excluded from
+  the worker bundle.
 - **Inline approvals.** When `agent.action.pending` arrives for the
-  current user, the chat surface (worker PWA Chat tab or
-  owner/manager agent sidebar) renders a confirmation card whose
-  buttons call `/approvals/{id}/{decision}` — shared with the
-  `/approvals` desk. Full flow and card-copy source in §11.
+  current user, the chat surface (the right-hand `.desk__agent` rail
+  on desktop for either role, the off-canvas drawer on manager mobile,
+  or the full-screen `/chat` page on worker mobile) renders a
+  confirmation card whose buttons call `/approvals/{id}/{decision}` —
+  shared with the `/approvals` desk. Full flow and card-copy source in
+  §11.
 - **Agent preferences surface.** The `/settings` page exposes an
   "Agent preferences" section with the workspace blob (editor if
   the user passes `agent_prefs.edit_workspace`, otherwise a
@@ -228,10 +275,12 @@ than adding to this list:
 - **Availability & holidays.** No mock pages yet for
   `/availability-overrides`, `/user/<id>/availability`, or
   `/holidays`.
-- **Agent sidebar (`.desk__agent`).** Stub exists at
-  `mocks/web/src/components/AgentSidebar.tsx`; full wiring — SSE
-  `agent.action.pending`, inline confirmation cards, voice input,
-  compaction-aware lazy load — is still to come.
+- **Agent sidebar (`.desk__agent`).** The shared component
+  `mocks/web/src/components/AgentSidebar.tsx` mounts in both
+  `EmployeeLayout` and `ManagerLayout` (role-scoped via a `role`
+  prop). Full wiring — SSE `agent.action.pending`, inline confirmation
+  cards (currently manager-only), voice input, compaction-aware lazy
+  load — is still to come.
 - **PWA service worker.** Vite PWA plugin is not yet wired in
   `mocks/web/vite.config.ts`; offline outbox and background sync
   are specified but unimplemented.

@@ -1,8 +1,10 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import AgentSidebar from "@/components/AgentSidebar";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { readAgentCollapsedCookie } from "@/lib/preferences";
 import type { Me } from "@/types/api";
 
 function roleLabel(role: string): string {
@@ -10,22 +12,22 @@ function roleLabel(role: string): string {
 }
 
 // Phone-frame layout. Body (<Outlet />) + a bottom dock that hosts the
-// clock-in toggle, plus a fixed bottom tab bar. The chat page opts
-// into a special `.phone--chat` modifier via pathname, so the whole
-// column becomes a flex container and the composer can pin below the
-// tabs (the dock is hidden on chat to give the composer the room).
+// clock-in toggle, plus a fixed bottom tab bar that includes the Chat
+// button (mobile entry to the agent). On the dedicated /chat route the
+// dock is suppressed so the composer can claim the bottom band.
 //
-// At tablet / desktop widths (>=720px) the phone becomes a two-column
-// grid and the shared <SideNav /> takes over from the bottom tab bar,
-// so the chrome matches the manager sidebar exactly. The clock-in
-// button rides in the sidebar's `action` slot at that width; the
-// phone-mode dock + bottom tab bar stay in the DOM and are hidden by
-// CSS.
+// At tablet / desktop widths (>=720px) the phone becomes a three-column
+// grid: shared <SideNav /> on the left (Chat is removed from its items
+// — the agent lives on the right), the page <Outlet /> in the middle,
+// and the shared <AgentSidebar /> on the right (mounted as a SIBLING
+// of <Outlet /> so the chat log/draft survive route changes). The
+// clock-in button rides in the sidebar's `action` slot at this width;
+// the phone-mode dock + bottom tab bar stay in the DOM and are hidden
+// by CSS.
 
 const NAV_ITEMS: SideNavItem[] = [
   { type: "link", to: "/today", label: "Today" },
   { type: "link", to: "/week", label: "Week" },
-  { type: "link", to: "/chat", label: "Chat" },
   { type: "link", to: "/my/expenses", label: "Expenses" },
   { type: "link", to: "/me", matchPrefix: "/me", label: "Me" },
 ];
@@ -40,6 +42,7 @@ export default function EmployeeLayout() {
   const isChat = pathname === "/chat";
   const { data } = useQuery({ queryKey: qk.me(), queryFn: () => fetchJson<Me>("/api/v1/me") });
   const qc = useQueryClient();
+  const collapsed = readAgentCollapsedCookie();
 
   const toggleShift = useMutation({
     mutationFn: () => fetchJson<Me>("/api/v1/shifts/toggle", { method: "POST" }),
@@ -71,7 +74,10 @@ export default function EmployeeLayout() {
   );
 
   return (
-    <main className={"phone" + (isChat ? " phone--chat" : "")}>
+    <main
+      className={"phone" + (isChat ? " phone--chat" : "")}
+      data-agent-collapsed={collapsed ? "true" : "false"}
+    >
       <SideNav
         items={NAV_ITEMS}
         action={clockButton}
@@ -95,6 +101,11 @@ export default function EmployeeLayout() {
         <Tab to="/my/expenses" glyph="€" label="Expenses" />
         <MeTab />
       </nav>
+
+      {/* Sibling of <Outlet />. Do not nest. The CSS hides this rail
+          below the desktop breakpoint; on phones, the bottom Chat tab
+          navigates to /chat full-screen instead. */}
+      <AgentSidebar role="employee" />
     </main>
   );
 }

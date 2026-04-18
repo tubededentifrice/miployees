@@ -2,11 +2,14 @@
 
 The **chat gateway** is the single seam through which a user's embedded
 agent (§11) exchanges messages with that user — no matter which
-channel the user reached for. The web sidebar (`.desk__agent`) and the
-worker PWA Chat tab are the only **live** channels in shipped v1. This
-document keeps the off-app transport design written down so WhatsApp,
-Telegram, push, and future adapters can plug into the same runtime
-later without re-architecting the agent brain.
+channel the user reached for. The right-hand `.desk__agent` sidebar
+(shared by both web shells on desktop) and the worker shell's
+full-screen `/chat` page (mobile) are the only **live** channels in
+shipped v1; on the manager mobile shell the same `.desk__agent`
+component opens as an off-canvas drawer from the bottom dock (§14
+"Desktop shell"). This document keeps the off-app transport design
+written down so WhatsApp, Telegram, push, and future adapters can plug
+into the same runtime later without re-architecting the agent brain.
 
 This spec names the contract the transports must satisfy and the data
 model the runtime persists. §11 remains the authority on what the
@@ -47,8 +50,8 @@ with a code migration and an OpenAPI update.
 
 | `channel_kind`        | transport                    | direction   | v1 status      |
 |-----------------------|------------------------------|-------------|----------------|
-| `web_owner_sidebar`   | FastAPI SSE / `/api/v1/agent/manager/*` | both | shipping (§14) |
-| `web_worker_chat`     | FastAPI SSE / `/api/v1/agent/employee/*` | both | shipping (§14) |
+| `web_owner_sidebar`   | FastAPI SSE / `/api/v1/agent/manager/*` — `.desk__agent` (desktop) or its mobile bottom-dock drawer | both | shipping (§14) |
+| `web_worker_chat`     | FastAPI SSE / `/api/v1/agent/employee/*` — `.desk__agent` (desktop) or `/chat` full-screen (mobile, opened from the bottom-nav `Chat` tab) | both | shipping (§14) |
 | `offapp_whatsapp`     | Meta Cloud API (WhatsApp Business) | both | deferred |
 | `offapp_telegram`     | Telegram Bot API             | both        | deferred — §19 |
 
@@ -535,10 +538,11 @@ Gateway-specific hardening:
 - `/settings → Chat gateway`: provider config (Meta credentials,
   verified templates, webhook URL copy button), workspace
   reach-out policy, rate caps.
-- Inline rendering in the web chat surfaces (§14 sidebar and PWA
-  Chat tab) is unchanged — they now consume `chat_message` rows
-  by thread and render affordances from the same schema WhatsApp
-  receives.
+- Inline rendering in the web chat surfaces (§14: the shared
+  `.desk__agent` sidebar on desktop for both roles, the manager
+  mobile bottom-dock drawer, and the worker mobile `/chat` page) is
+  unchanged — they now consume `chat_message` rows by thread and
+  render affordances from the same schema WhatsApp receives.
 
 ## Out of scope (first off-app release)
 

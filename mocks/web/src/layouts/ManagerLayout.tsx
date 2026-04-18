@@ -15,14 +15,20 @@ import type { Me } from "@/types/api";
 // parent (that would couple them), and do NOT put a `key` prop on the
 // layout route (that would force a full remount).
 //
-// The mobile bar (hamburger + agent toggle) appears below the CSS
-// `720px` breakpoint. Opening either drawer sets a local boolean that
-// toggles the relevant `data-*` attribute / prop; navigating away
-// closes both.
+// On mobile the top bar carries the hamburger nav drawer; the agent
+// drawer is opened from a bottom dock (a single Chat button) so the
+// mobile entry point matches the employee shell's bottom-bar Chat tab.
+// Opening either drawer sets a local boolean that toggles the relevant
+// `data-*` attribute / prop; navigating away closes both.
 
 const NAV_ITEMS: SideNavItem[] = [
-  { type: "link", to: "/dashboard", label: "Dashboard" },
+  { type: "section", label: "MY WORK" },
+  { type: "link", to: "/today", label: "My Day" },
+  { type: "link", to: "/week", label: "My Week" },
+  { type: "link", to: "/my/expenses", matchPrefix: "/my/expenses", label: "My Expenses" },
+  { type: "link", to: "/me", matchPrefix: "/me", label: "Me" },
   { type: "section", label: "OPERATE" },
+  { type: "link", to: "/dashboard", label: "Dashboard" },
   { type: "link", to: "/properties", matchPrefix: "/propert", label: "Properties" },
   { type: "link", to: "/stays", label: "Stays" },
   { type: "link", to: "/employees", matchPrefix: "/employee", label: "Employees" },
@@ -102,19 +108,6 @@ export default function ManagerLayout() {
           <span className="desk__logo" aria-hidden="true">◈</span>
           <span className="desk__wordmark">crewday</span>
         </div>
-        <button
-          type="button"
-          className="desk__icon-btn desk__icon-btn--badge"
-          onClick={() => setAgentOpen((v) => !v)}
-          aria-label={agentOpen ? "Close agent" : "Open agent"}
-          aria-expanded={agentOpen}
-        >
-          <svg viewBox="0 0 24 24" width={20} height={20} fill="none" stroke="currentColor"
-               strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5Z" />
-          </svg>
-          <span className="desk__icon-btn__dot" aria-hidden="true" />
-        </button>
       </header>
 
       {(navOpen || agentOpen) && (
@@ -140,7 +133,20 @@ export default function ManagerLayout() {
       </section>
 
       {/* Sibling of <Outlet />. Do not nest. */}
-      <AgentSidebar mobileOpen={agentOpen} onMobileClose={() => setAgentOpen(false)} />
+      <AgentSidebar role="manager" mobileOpen={agentOpen} onMobileClose={() => setAgentOpen(false)} />
+
+      <nav className="desk__bottom-dock" aria-label="Mobile actions">
+        <button
+          type="button"
+          className={"tab" + (agentOpen ? " tab--active" : "")}
+          onClick={() => setAgentOpen((v) => !v)}
+          aria-label={agentOpen ? "Close agent" : "Open agent"}
+          aria-expanded={agentOpen}
+        >
+          <span className="tab__glyph" aria-hidden="true">✦</span>
+          <span>Chat</span>
+        </button>
+      </nav>
     </div>
   );
 }

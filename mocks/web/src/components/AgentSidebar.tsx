@@ -4,51 +4,62 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { persistAgentCollapsed, readAgentCollapsedCookie } from "@/lib/preferences";
 import AutoGrowTextarea from "@/components/AutoGrowTextarea";
-import type { AgentAction, AgentMessage } from "@/types/api";
+import type { AgentAction, AgentMessage, Role } from "@/types/api";
 
 // CRITICAL: AgentSidebar MUST mount as a SIBLING of <Outlet /> in
-// ManagerLayout, never inside a route's subtree. React Router only
-// remounts the outlet's subtree on navigation; siblings survive.
-// That's what gives us a persistent chat log (scrollTop, composer
-// draft, EventSource-fed cache) across page changes.
+// EmployeeLayout and ManagerLayout, never inside a route's subtree.
+// React Router only remounts the outlet's subtree on navigation;
+// siblings survive. That's what gives us a persistent chat log
+// (scrollTop, composer draft, EventSource-fed cache) across page
+// changes.
 //
 // `mobileOpen` / `onMobileClose` drive the off-canvas drawer used at
 // tablet and phone widths. Desktop ignores them — the sidebar renders
-// inline from ManagerLayout's grid.
+// inline from the layout's grid. `role` selects the per-role agent
+// log/message endpoints and gates the manager-only "Pending approvals"
+// block (employees never see it).
 interface AgentSidebarProps {
+  role: Role;
   mobileOpen?: boolean;
   onMobileClose?: () => void;
 }
 
-export default function AgentSidebar({ mobileOpen = false, onMobileClose }: AgentSidebarProps = {}) {
+export default function AgentSidebar({ role, mobileOpen = false, onMobileClose }: AgentSidebarProps) {
   const [collapsed, setCollapsed] = useState<boolean>(() => readAgentCollapsedCookie());
   const [draft, setDraft] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
   const qc = useQueryClient();
 
+  const isManager = role === "manager";
+  const logKey = isManager ? qk.agentManagerLog() : qk.agentEmployeeLog();
+  const actionsKey = qk.agentManagerActions();
+  const logUrl = isManager ? "/api/v1/agent/manager/log" : "/api/v1/agent/employee/log";
+  const messageUrl = isManager ? "/api/v1/agent/manager/message" : "/api/v1/agent/employee/message";
+
   const log = useQuery({
-    queryKey: qk.agentManagerLog(),
-    queryFn: () => fetchJson<AgentMessage[]>("/api/v1/agent/manager/log"),
+    queryKey: logKey,
+    queryFn: () => fetchJson<AgentMessage[]>(logUrl),
   });
   const actions = useQuery({
-    queryKey: qk.agentManagerActions(),
+    queryKey: actionsKey,
     queryFn: () => fetchJson<AgentAction[]>("/api/v1/agent/manager/actions"),
+    enabled: isManager,
   });
 
   const sendMessage = useMutation({
     mutationFn: (body: string) =>
-      fetchJson<AgentMessage>("/api/v1/agent/manager/message", { method: "POST", body: { body } }),
+      fetchJson<AgentMessage>(messageUrl, { method: "POST", body: { body } }),
     onMutate: async (body) => {
-      await qc.cancelQueries({ queryKey: qk.agentManagerLog() });
-      const prev = qc.getQueryData<AgentMessage[]>(qk.agentManagerLog()) ?? [];
+      await qc.cancelQueries({ queryKey: logKey });
+      const prev = qc.getQueryData<AgentMessage[]>(logKey) ?? [];
       const optimistic: AgentMessage = { at: new Date().toISOString(), kind: "user", body };
-      qc.setQueryData<AgentMessage[]>(qk.agentManagerLog(), [...prev, optimistic]);
+      qc.setQueryData<AgentMessage[]>(logKey, [...prev, optimistic]);
       return { prev };
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(qk.agentManagerLog(), ctx.prev);
+      if (ctx?.prev) qc.setQueryData(logKey, ctx.prev);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: qk.agentManagerLog() }),
+    onSettled: () => qc.invalidateQueries({ queryKey: logKey }),
   });
 
   const decideAction = useMutation({
@@ -57,8 +68,8 @@ export default function AgentSidebar({ mobileOpen = false, onMobileClose }: Agen
         method: "POST",
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.agentManagerActions() });
-      qc.invalidateQueries({ queryKey: qk.agentManagerLog() });
+      qc.invalidateQueries({ queryKey: actionsKey });
+      qc.invalidateQueries({ queryKey: logKey });
     },
   });
 
@@ -73,8 +84,10 @@ export default function AgentSidebar({ mobileOpen = false, onMobileClose }: Agen
     setCollapsed((c) => {
       const next = !c;
       persistAgentCollapsed(next ? "collapsed" : "open");
-      const desk = document.querySelector(".desk");
-      if (desk) desk.setAttribute("data-agent-collapsed", next ? "true" : "false");
+      // Mirror state onto either layout's root for grid recalculation
+      // in browsers without :has() support.
+      const host = document.querySelector(".desk, .phone");
+      if (host) host.setAttribute("data-agent-collapsed", next ? "true" : "false");
       return next;
     });
   }, []);
@@ -129,7 +142,7 @@ export default function AgentSidebar({ mobileOpen = false, onMobileClose }: Agen
           ))}
         </div>
 
-        {actions.data && actions.data.length > 0 && (
+        {isManager && actions.data && actions.data.length > 0 && (
           <div className="agent-actions" aria-label="Pending agent actions">
             <div className="agent-actions__title">
               <span>Pending approvals</span>

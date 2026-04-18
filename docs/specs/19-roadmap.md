@@ -54,6 +54,11 @@ CLI generation pipeline produces commands for all Phase 2 endpoints;
   approval reduce).
 - **Public holidays with scheduling effects** (`block | allow |
   reduced`).
+- **Unified self-service tasks + MY WORK on manager shell** — any role
+  may create personal tasks via quick-add on `/today` / `/week`
+  (`is_personal = true` by default, §06 §15); managers access their
+  own work surfaces inside the desktop shell via a new MY WORK nav
+  group (§14).
 
 **Exit:** a weekly recurring task is created by the owner/manager,
 the scheduler generates occurrences, the assigned worker completes
@@ -162,9 +167,15 @@ bounded budget and audit; an agent driving the CLI experiences
 approval-gated actions correctly; a worker writing in their own
 language gets the agent replying in kind and the owner/manager seeing
 the workspace-default translation with a toggle for the original; the
-web sidebar and worker Chat tab prove enough value that enabling
-external transports can be judged on product evidence instead of
-speculation.
+shared `.desk__agent` web sidebar (both roles, desktop) and its mobile
+counterparts (worker `/chat` page, manager bottom-dock drawer) prove
+enough value that enabling external transports can be judged on
+product evidence instead of speculation; **workspace-level agent usage budget** (§11) ships with a
+rolling-30-day meter, a default $5 cap, hard-refuse at-cap behaviour,
+and a manager-visible percentage-only widget on `/settings` (no
+dollars, no tokens); the cap is adjusted by the operator via
+`crewday admin budget set-cap` — no HTTP surface, consistent with the
+existing host-CLI-only administrative commands class.
 
 ## Phase 9 — PWA and offline
 
@@ -174,6 +185,39 @@ speculation.
 
 **Exit:** the scripted offline scenario (airplane mode, complete 5
 tasks with photos, back online) syncs within 60s with zero loss.
+
+## Phase 9b — Demo deployment
+
+- Separate `demo.crewday.app` container with its own DB, its own
+  OpenRouter key, its own root key, its own demo-cookie signing key.
+- `CREWDAY_DEMO_MODE=1` boot guard; refuses to start outside the
+  demo URL allowlist.
+- Scenario fixtures under `app/fixtures/demo/` (villa-owner,
+  rental-manager, housekeeper) seeded per-visitor on first request.
+- Signed `__Host-crewday_demo` cookie with CHIPS partitioning for
+  cross-origin iframe embedding on the landing page (a separate
+  project; not in this repo).
+- Per-workspace rolling 30-day cap of **$0.10** and deployment-wide
+  daily kill-switch of **$5**; all live capabilities route to
+  OpenRouter `:free` models by default.
+- `demo_gc` worker every 15 minutes; 24-hour rolling TTL from last
+  visitor activity.
+- iCal polling, SMTP, webhooks, passkeys, magic links, token
+  creation, interactive-session-only endpoints, OCR, voice, daily
+  digest, and anomaly detection all disabled on the demo deployment
+  (null adapters or pre-baked fixture responses).
+- Manager-visible "Agent usage — N%" widget on `/settings` already
+  lives in Phase 8; demo exercises it as its hero budget UX.
+- Playwright dogfood suite runs nightly against a throw-away demo
+  container per scenario.
+
+**Exit:** a visitor lands in an iframe, creates a task via chat,
+reassigns it, completes it with photo evidence, and sees the
+persona-switcher work across the scenario's seeded users. After
+24 h of inactivity, the workspace is purged; a returning visitor with
+the same cookie gets a silent reseed. Hitting the workspace cap shows
+the at-cap banner; hitting the deployment cap pauses every demo agent
+until UTC midnight. See §24.
 
 ## Phase 10 — Polish and hardening
 

@@ -9,12 +9,13 @@ v1 ships one human messaging channel plus the in-app agent surfaces:
    here only.
 
 Cross-user messaging stays on email (§10) and task threads (§06).
-The embedded agent conversations in the web sidebar and worker PWA
-Chat tab are the only shipped chat transports in v1. Off-app chat
-adapters (WhatsApp, SMS, Telegram, push) are intentionally **not
-enabled in v1**; §23 is retained as a deferred design reference so
-those transports can be added later without re-architecting the
-runtime.
+The embedded agent conversations in the shared `.desk__agent` web
+sidebar (both roles, desktop) and its mobile counterparts (worker
+`/chat` page, manager bottom-dock drawer) are the only shipped chat
+transports in v1. Off-app chat adapters (WhatsApp, SMS, Telegram,
+push) are intentionally **not enabled in v1**; §23 is retained as a
+deferred design reference so those transports can be added later
+without re-architecting the runtime.
 
 ## Email
 

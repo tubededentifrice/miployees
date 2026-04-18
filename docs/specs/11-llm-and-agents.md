@@ -42,22 +42,29 @@ inheriting that user's full permissions. They share plumbing (client,
 redaction, audit, approval) but differ in whose authority they carry.
 
 Both agents are reached through the in-app chat surfaces that ship in
-v1: the web sidebar and the worker PWA Chat tab. §23 keeps the
-off-app gateway design on the shelf for later, but external channels
-are not enabled in shipped v1. The agent code path is therefore
-channel-agnostic in principle, but the only live transports are the
-two web surfaces above.
+v1: on desktop, the right-hand `.desk__agent` sidebar (shared between
+the worker and owner/manager shells, see §14 "Desktop shell"); on
+mobile, a bottom-bar entry — the worker shell's `Chat` tab navigates
+to the full-screen `/chat` page, and the manager shell's
+`.desk__bottom-dock` opens `.desk__agent` as an off-canvas drawer.
+§23 keeps the off-app gateway design on the shelf for later, but
+external channels are not enabled in shipped v1. The agent code path
+is therefore channel-agnostic in principle, but the only live
+transports are the web surfaces above.
 
 ### Owner/manager-side agent
 
 Lives in the right sidebar (`.desk__agent`) of the owner/manager
-desktop shell (§14). The sidebar is mounted once at the
-`OwnerManagerLayout` level as a sibling of `<Outlet />`, so it
+desktop shell (§14) — the same shared component that the worker
+desktop shell mounts on its right edge. The sidebar is mounted once
+at the `ManagerLayout` level as a sibling of `<Outlet />`, so it
 survives client-side route changes — the chat log scroll position,
 the composer draft, and the `EventSource` subscription all persist
-across navigation. New agent messages are delivered via the SSE event
-`agent.message.appended`, so every connected tab sees them without
-polling. Its tool surface is **the full CLI + REST surface available
+across navigation. On mobile, the manager shell renders a single
+bottom dock button (`.desk__bottom-dock`) that opens the same sidebar
+as an off-canvas right drawer. New agent messages are delivered via
+the SSE event `agent.message.appended`, so every connected tab sees
+them without polling. Its tool surface is **the full CLI + REST surface available
 to the delegating user** — every command the owner or manager can
 execute in the UI or CLI is available to the agent. There is no
 filtered capability catalog; tool descriptors are resolved
@@ -93,12 +100,19 @@ the agent.
 
 ### Worker-side agent
 
-Lives as the `Chat` tab in the worker PWA footer (§14). Its tool
-surface is **the full CLI + REST surface available to the delegating
-user** — every command the worker can execute is available to the
-agent. Tool descriptors are resolved dynamically from the user's
-current role grants and property assignments; the model sees only
-tools the user is authorized to use.
+On mobile, lives behind the `Chat` tab in the worker PWA footer
+(§14), which navigates to the full-screen `/chat` page. On desktop,
+lives in the right-hand `.desk__agent` rail of the worker shell —
+the same shared component that the manager shell mounts (§14
+"Desktop shell"); a `role` prop on `AgentSidebar` selects the
+per-role agent log/message endpoints
+(`/api/v1/agent/{employee|manager}/{log,message}`) and gates the
+manager-only "Pending approvals" block out of the worker view. Its
+tool surface is **the full CLI + REST surface available to the
+delegating user** — every command the worker can execute is
+available to the agent. Tool descriptors are resolved dynamically
+from the user's current role grants and property assignments; the
+model sees only tools the user is authorized to use.
 
 Because the delegated token inherits the user's permissions, the
 agent cannot read other users' data, cannot mutate other users' rows,
@@ -698,6 +712,20 @@ v1 members:
   (§03).
 - `crewday admin purge` — hard-delete per-person payload (§02,
   §15).
+- `crewday admin budget set-cap` — adjust a workspace's rolling
+  30-day agent usage cap (§ "Workspace usage budget"). Usage:
+  `crewday admin budget set-cap --workspace <id> --cap-usd <value>
+  [--note "<reason>"]`. Writes the new `cap_usd_30d` value and a
+  `workspace_budget.updated` `audit_log` row with `actor_kind =
+  'system'` and `via = 'cli'`. No HTTP surface by design — the
+  operator is the only principal that can commit the workspace to a
+  larger spend.
+- `crewday admin budget show` — prints the current cap, the rolling
+  30-day cost, and the percent used for one workspace or all of
+  them.
+- `crewday admin budget reload-pricing` — re-reads
+  `app/config/llm_pricing.yml` without restarting the process. Used
+  after bumping per-1k-token prices in a config change.
 
 The agent-approval flow (§11) does not apply here because there is
 no request for the middleware to intercept. The operator audits
@@ -802,10 +830,16 @@ triggered it. The agent's HTTP request carries an
 
 | value                 | channel                                                |
 |-----------------------|--------------------------------------------------------|
-| `web_owner_sidebar`   | Owner/manager desktop sidebar chat (§14 `.desk__agent`) |
-| `web_worker_chat`     | Worker PWA Chat tab (§14)                              |
+| `web_owner_sidebar`   | Owner/manager web client — `.desk__agent` (desktop) or its mobile bottom-dock drawer (§14 "Desktop shell") |
+| `web_worker_chat`     | Worker web client — `.desk__agent` (desktop) or full-screen `/chat` (mobile, opened from the bottom-nav `Chat` tab) (§14) |
 | `offapp_whatsapp`     | Reserved for a future WhatsApp adapter (§23, deferred) |
 | *absent*              | `desk_only` — approval appears only in `/approvals`    |
+
+Channel values are role-scoped, not viewport-scoped: a single SPA
+bundle ships per role, and the chat surface picks its presentation
+(desktop sidebar vs. mobile drawer / full-screen) from CSS. The SSE
+socket and the `agent.action.pending` payload are identical across
+the two presentations.
 
 For the two web channels, pending approvals are pushed to the
 delegating user's open tabs over SSE via
@@ -922,12 +956,175 @@ For users whose workspace / work-engagement settings enable chat.
 ## Cost tracking
 
 Every LLM call writes to `llm_call` with the provider's reported
-`usage.total_tokens` and an estimated USD cost from a small pricing
-table kept in config. The background worker aggregates daily totals
-and the owner/manager dashboard shows rolling 30-day LLM spend, per
-capability and per model. Exceeding a configured daily cap disables
-the capability for the rest of the day (soft-fail: humans still work;
-agents see a clear error).
+`usage.total_tokens` and an estimated USD cost from the **pricing
+table** (§ "Pricing table" below). The background worker aggregates
+these rows into the rolling meter used by the **workspace usage
+budget** (§ "Workspace usage budget" below) and into the per-capability
+daily breakdowns on the LLM settings page. The per-capability
+`model_assignment.budget_json` caps (per-call max tokens, per-day
+USD, per-minute reqs) are enforced in the client; the workspace
+rolling cap is enforced before that, as an envelope over every
+capability.
+
+## Workspace usage budget
+
+One layer above the existing per-capability `model_assignment.budget_json`
+caps: a **workspace-wide rolling dollar budget** that envelopes every
+LLM capability charged to the workspace. The per-capability caps stay
+— they remain useful to throttle a single noisy capability — but the
+product-level question "how much is this household spending on agents?"
+is answered by this envelope, and so is the "stop me before I
+overspend" guard.
+
+### Meter
+
+Window: **rolling 30 days**. There is no calendar alignment, no
+monthly reset, and no reset date shown to the user. The user-visible
+label is always "Rolling 30 days"; the implementation is a trailing-
+window sum over `llm_call.cost_usd` scoped by `workspace_id` and
+`at >= now() - interval '30 days'`.
+
+- `workspace_usage.cost_30d_usd` is a **materialized aggregate**
+  refreshed by the worker every 60 s (cheap query) and recomputed
+  from `llm_call` on process start. A pre-flight check on every LLM
+  call adds the projected cost of the current call (estimated from
+  `prompt_tokens + max_output_tokens`) to the cached aggregate
+  before comparing to the cap; the post-call update uses the
+  provider's actual `usage.total_tokens`.
+- Rows older than 30 days are ignored by the meter regardless of
+  retention settings (§15 keeps `llm_call` for 90 days for audit
+  reasons; only the first 30 contribute to the meter).
+
+### Cap
+
+Stored on the workspace:
+
+```
+workspace_budget
+├── workspace_id          ULID PK/FK
+├── cap_usd_30d           numeric(8,4)  -- e.g. 5.0000
+├── set_by                text           -- 'default' | 'operator'
+├── set_at                tstz
+└── note                  text?          -- operator-supplied justification
+```
+
+Defaults:
+
+- **Prod:** `cap_usd_30d = 5.0000` seeded at workspace creation. This
+  row is inserted in the same transaction as the workspace row.
+- **Demo:** `cap_usd_30d = 0.1000` seeded per scenario (§24); see
+  "Demo mode overrides" below.
+
+Raising or lowering the cap has **no HTTP surface**. It is a host-CLI
+admin command (§16 `crewday admin budget set-cap`). The rationale
+mirrors the §11 "Host-CLI-only administrative commands" pattern: the
+operator is the only principal that can commit their billing to a
+larger spend, and that commitment belongs on the host, not in the app.
+An owner or manager who feels they need more budget contacts the
+operator out-of-band.
+
+The UI exposes neither dollar amounts nor the cap itself to any
+grant role. See "Visible surfaces" below.
+
+### At-cap behaviour
+
+A call is **refused** when `cost_30d_usd + projected_call_cost >
+cap_usd_30d`. The refusal is first-class and structured:
+
+```json
+{
+  "error": "budget_exceeded",
+  "capability": "chat.manager",
+  "window": "30d_rolling",
+  "message": "Workspace agent budget exceeded. Agents will resume as older calls age out."
+}
+```
+
+- Capability callers (chat composers, the digest job, NL intake) surface
+  the message as-is; the agents render a neutral banner in the chat
+  surface and do not attempt a retry.
+- The `llm_call` row is **not** written for a refused call — the
+  meter counts only calls that left the client.
+- No capability is "paused" per se — the envelope is workspace-wide
+  and the same envelope gates every capability. Once older calls age
+  out of the 30-day window, the next call through succeeds again.
+- An operator can raise the cap (or lower it) at any time via the
+  host CLI; the cached aggregate and the next pre-flight check pick up
+  the new value within 60 s.
+
+Refusals are logged at `INFO` with `event = "llm.budget_exceeded"`,
+the workspace id, the capability, and the projected overshoot.
+Refusals do not hit `audit_log` — they are operational telemetry, not
+state changes.
+
+### Pricing table
+
+Per-model USD cost per 1k input and output tokens, kept in a YAML
+file (`app/config/llm_pricing.yml`) baked into the image. Loaded at
+process start; hot-reloadable via `crewday admin budget reload-pricing`.
+An unknown `model_id` in the pricing table falls back to
+`(input_per_1k, output_per_1k) = (0.0, 0.0)` **and** logs a
+`WARNING` every call. A free-tier model (`:free` suffix on
+OpenRouter) is priced at zero — the meter still records the call for
+telemetry but the cost contribution is zero.
+
+### Visible surfaces
+
+- **Manager settings panel.** A single tile: "Agent usage — N%" over
+  a slim progress bar, subtitled "Rolling 30 days". The tile turns
+  red and reads "Paused" when `N >= 100`. No dollars, no tokens, no
+  cap value, no reset date.
+  - Endpoint: `GET /api/v1/workspace/usage` →
+    `{ "percent": 32, "paused": false, "window_label": "Rolling 30 days" }`.
+  - `percent` is floored at 0 and capped at 100 for display; internal
+    maths keeps the precise ratio for the at-cap decision.
+  - Accessible to every user whose grant role passes the existing
+    `settings.view` action (owners and managers by default; §05).
+- **LLM settings page** (`/settings/llm`). Dollar amounts, token
+  counts, and per-capability spend **remain visible here** — this is
+  the operator-visibility surface and its audience is the workspace
+  owner who hooked up the OpenRouter key in the first place. The
+  workspace cap itself is shown read-only, with a "Contact your host
+  to change this" note when the current user cannot reach the host
+  CLI. No in-app edit control.
+- **Worker PWA.** No usage surface. Workers see only the at-cap
+  banner inside the chat tab on refusal.
+
+### Demo mode overrides
+
+On the demo deployment (§24), three knobs flip:
+
+- `cap_usd_30d` defaults to **$0.10** for every freshly-seeded
+  workspace; overridable per scenario in the fixture.
+- The capability whitelist narrows to `chat.manager`, `chat.employee`,
+  `chat.compact`, `chat.detect_language`, `chat.translate`, and
+  `tasks.nl_intake`. Every other capability is short-circuited to a
+  `demo_disabled` error shape (§24 "Disabled integrations") that does
+  not consume budget.
+- Default model for every running capability is the free-tier
+  OpenRouter variant (`google/gemma-3-27b-it:free` in v1). The cap
+  stays on as a belt-and-suspenders guard against provider pricing
+  changes or a mis-routed call.
+
+A second line of defence, layered on top of the per-workspace budget,
+exists only on the demo deployment: a **global daily cap** across
+every demo workspace in the container, governed by
+`CREWDAY_DEMO_GLOBAL_DAILY_USD_CAP` (default `$5`). Exceeding the
+global cap pauses every chat capability on the deployment until UTC
+midnight and emits `demo.global_cap_exceeded` to the structured log.
+See §16 for deployment wiring and §24 for the demo-side UX.
+
+## Cost tracking — extended
+
+Every LLM call still writes to `llm_call` with the provider's reported
+`usage.total_tokens` and the pricing-table cost estimate. The
+background worker aggregates daily totals; the owner/manager
+`/settings/llm` page still shows rolling 30-day LLM spend per
+capability and per model (dollars visible here — see "Visible
+surfaces" above). The per-capability `budget_json` caps remain a
+useful throttle on a single noisy capability; they run **before** the
+workspace envelope check so the capability-level error is preserved
+for observability.
 
 ## Failure modes
 
@@ -938,8 +1135,17 @@ agents see a clear error).
   `Retry-After` header.
 - Content refused / unsafe: return an empty structured output; log
   `finish_reason`; caller surfaces a neutral fallback.
-- Budget exceeded: 429 with explanation; capability paused until next
-  day.
+- Per-capability `budget_json` daily cap exceeded: 429 with
+  explanation; that capability pauses until UTC midnight.
+- **Workspace usage budget exceeded** (see "Workspace usage budget"):
+  the client refuses the call before it leaves with the structured
+  `budget_exceeded` error shape; the agent surfaces a neutral "Agents
+  paused" banner. Older calls age out of the rolling 30-day window
+  and capacity returns automatically.
+- **Demo capability disabled** (see §24): the call is short-circuited
+  client-side to a structured `demo_disabled` error with the
+  operation key. The agent is expected to explain the limitation in
+  its reply.
 
 ## Out of scope (v1)
 
