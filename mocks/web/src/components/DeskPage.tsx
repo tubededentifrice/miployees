@@ -7,9 +7,10 @@ interface Props {
   children: ReactNode;
 }
 
-// Shared manager-page chrome: sticky topbar (title + optional sub +
-// actions), then content stacked at 22px gaps. Every ManagerLayout
-// page should render through this so topbar spacing stays uniform.
+// Shared manager-page chrome: topbar (title + optional sub + actions)
+// that scrolls with the page, then content stacked at 22px gaps.
+// Every ManagerLayout page renders through this so topbar spacing
+// stays uniform.
 export default function DeskPage({ title, sub, actions, children }: Props) {
   return (
     <>

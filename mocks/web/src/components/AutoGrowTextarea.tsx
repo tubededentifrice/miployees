@@ -7,17 +7,19 @@ import {
 } from "react";
 
 // Drop-in replacement for `<textarea>` that resizes to fit its
-// content, capped at `maxHeight` (defaults to 400px). Works with both
-// controlled and uncontrolled use; resize fires on every value change.
+// content. By default the textarea grows without bound — no scrollbars
+// ever appear. Pass `maxHeight` only for surfaces (e.g. chat composers)
+// that must stay inside a fixed slot; at that point overflow becomes a
+// scrollbar. Works with both controlled and uncontrolled use.
 export interface AutoGrowTextareaProps
   extends TextareaHTMLAttributes<HTMLTextAreaElement> {
-  /** Maximum pixel height before the textarea starts scrolling. */
+  /** Optional pixel cap. Omit to let the textarea grow indefinitely. */
   maxHeight?: number;
 }
 
 const AutoGrowTextarea = forwardRef<HTMLTextAreaElement, AutoGrowTextareaProps>(
   function AutoGrowTextarea(
-    { maxHeight = 400, rows = 1, onChange, onInput, value, ...rest },
+    { maxHeight, rows = 1, onChange, onInput, value, ...rest },
     forwarded,
   ) {
     const localRef = useRef<HTMLTextAreaElement | null>(null);
@@ -27,7 +29,20 @@ const AutoGrowTextarea = forwardRef<HTMLTextAreaElement, AutoGrowTextareaProps>(
       const el = localRef.current;
       if (!el) return;
       el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, maxHeight) + "px";
+      // box-sizing: border-box is global, so the `height` style must
+      // include borders; scrollHeight does not. Without this offset
+      // the element is short by `borderY` and overflows by that much.
+      const cs = getComputedStyle(el);
+      const borderY =
+        (parseFloat(cs.borderTopWidth) || 0) +
+        (parseFloat(cs.borderBottomWidth) || 0);
+      const full = el.scrollHeight + borderY;
+      const next = maxHeight != null ? Math.min(full, maxHeight) : full;
+      el.style.height = next + "px";
+      // Uncapped: suppress scrollbars unconditionally — the height
+      // already matches the content. Capped: let overflow-y fall back
+      // to the stylesheet so scrollbars appear once the cap is hit.
+      el.style.overflowY = maxHeight != null ? "" : "hidden";
     };
 
     // Controlled: value prop drives size.

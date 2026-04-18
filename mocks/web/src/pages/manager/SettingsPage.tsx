@@ -175,7 +175,12 @@ export default function SettingsPage() {
           is no HTTP surface to raise it. */}
       {usageQ.data ? (
         <section className="panel agent-usage">
-          <header className="panel__head"><h2>Agent usage</h2></header>
+          <header className="panel__head">
+            <div className="agent-usage__heading">
+              <h2>Agent usage</h2>
+              <span className="muted agent-usage__window">{usageQ.data.window_label}</span>
+            </div>
+          </header>
           <div className="agent-usage__row">
             <div className="agent-usage__value">
               {usageQ.data.paused ? (
@@ -188,7 +193,6 @@ export default function SettingsPage() {
               <ProgressBar value={usageQ.data.percent} />
             </div>
           </div>
-          <p className="muted agent-usage__window">{usageQ.data.window_label}</p>
           {usageQ.data.paused ? (
             <p className="muted">
               Agents are paused until older activity ages out of the window.

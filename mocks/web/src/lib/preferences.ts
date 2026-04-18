@@ -28,8 +28,31 @@ export function readThemeCookie(): Theme {
   return t === "dark" ? "dark" : "light";
 }
 
-export function readAgentCollapsedCookie(): boolean {
-  return readCookie(AGENT_COLLAPSED_COOKIE) === "1";
+// Tri-state: explicit "collapsed" / "open" / no-preference. The server
+// writes "1" or "0" depending on the user's last toggle; missing means
+// the user has never expressed a preference and we fall back to a
+// viewport-driven default (see `initialAgentCollapsed`).
+export function readAgentCollapsedCookie(): boolean | null {
+  const v = readCookie(AGENT_COLLAPSED_COOKIE);
+  if (v === "1") return true;
+  if (v === "0") return false;
+  return null;
+}
+
+// Viewport-driven default for users who haven't toggled the rail yet.
+// At wide desktops (≥ AGENT_DEFAULT_OPEN_AT) the rail starts open; on
+// laptop / tablet widths it starts collapsed so the main column has
+// room. Phone (≤720) is handled by the off-canvas drawer and ignores
+// this default entirely.
+const AGENT_DEFAULT_OPEN_AT = 1600;
+function defaultAgentCollapsed(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.innerWidth < AGENT_DEFAULT_OPEN_AT;
+}
+
+export function initialAgentCollapsed(): boolean {
+  const pref = readAgentCollapsedCookie();
+  return pref !== null ? pref : defaultAgentCollapsed();
 }
 
 // Fire-and-forget writers. The server is authoritative; we optimistic

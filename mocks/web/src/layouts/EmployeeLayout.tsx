@@ -1,10 +1,11 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import AgentSidebar from "@/components/AgentSidebar";
+import BottomTabs from "@/components/BottomTabs";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
-import { readAgentCollapsedCookie } from "@/lib/preferences";
+import { initialAgentCollapsed } from "@/lib/preferences";
 import type { Me } from "@/types/api";
 
 function roleLabel(role: string): string {
@@ -25,11 +26,19 @@ function roleLabel(role: string): string {
 // the phone-mode dock + bottom tab bar stay in the DOM and are hidden
 // by CSS.
 
+// /chat lives on the right-rail AgentSidebar at every non-phone width
+// (the rail is always present and user-toggleable above 720px) and on
+// the bottom tab bar at phone widths. No side-nav entry needed.
+//
+// `phoneHidden` removes items from the off-canvas hamburger drawer at
+// phone widths because they're already in the bottom tab bar; they
+// still render in the desktop side nav. With everything phone-hidden
+// the employee shell renders no hamburger / mobile top bar at all.
 const NAV_ITEMS: SideNavItem[] = [
-  { type: "link", to: "/today", label: "Today" },
-  { type: "link", to: "/week", label: "Week" },
-  { type: "link", to: "/my/expenses", label: "Expenses" },
-  { type: "link", to: "/me", matchPrefix: "/me", label: "Me" },
+  { type: "link", to: "/today", label: "Today", phoneHidden: true },
+  { type: "link", to: "/week", label: "Week", phoneHidden: true },
+  { type: "link", to: "/my/expenses", label: "Expenses", phoneHidden: true },
+  { type: "link", to: "/me", matchPrefix: "/me", label: "Me", phoneHidden: true },
 ];
 
 function initialsOf(name: string): string {
@@ -42,7 +51,7 @@ export default function EmployeeLayout() {
   const isChat = pathname === "/chat";
   const { data } = useQuery({ queryKey: qk.me(), queryFn: () => fetchJson<Me>("/api/v1/me") });
   const qc = useQueryClient();
-  const collapsed = readAgentCollapsedCookie();
+  const collapsed = initialAgentCollapsed();
 
   const toggleShift = useMutation({
     mutationFn: () => fetchJson<Me>("/api/v1/shifts/toggle", { method: "POST" }),
@@ -94,38 +103,12 @@ export default function EmployeeLayout() {
 
       {!isChat && <div className="phone__dock">{clockButton}</div>}
 
-      <nav className="phone__tabs" aria-label="Bottom navigation">
-        <Tab to="/today" glyph="◎" label="Today" />
-        <Tab to="/week" glyph="⋮⋮" label="Week" />
-        <Tab to="/chat" glyph="✦" label="Chat" />
-        <Tab to="/my/expenses" glyph="€" label="Expenses" />
-        <MeTab />
-      </nav>
+      <BottomTabs />
 
       {/* Sibling of <Outlet />. Do not nest. The CSS hides this rail
           below the desktop breakpoint; on phones, the bottom Chat tab
           navigates to /chat full-screen instead. */}
       <AgentSidebar role="employee" />
     </main>
-  );
-}
-
-function Tab({ to, glyph, label }: { to: string; glyph: string; label: string }) {
-  return (
-    <NavLink to={to} className={({ isActive }) => "tab" + (isActive ? " tab--active" : "")}>
-      <span className="tab__glyph" aria-hidden="true">{glyph}</span>
-      <span>{label}</span>
-    </NavLink>
-  );
-}
-
-function MeTab() {
-  const { pathname } = useLocation();
-  const active = pathname === "/me" || pathname === "/shifts" || pathname === "/history";
-  return (
-    <NavLink to="/me" className={"tab" + (active ? " tab--active" : "")}>
-      <span className="tab__glyph" aria-hidden="true">◌</span>
-      <span>Me</span>
-    </NavLink>
   );
 }

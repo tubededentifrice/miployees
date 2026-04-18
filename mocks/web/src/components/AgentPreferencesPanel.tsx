@@ -171,7 +171,6 @@ export default function AgentPreferencesPanel({
             className="agent-prefs__textarea"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            maxHeight={600}
             spellCheck
           />
           <div className={`agent-prefs__meta agent-prefs__meta--${counterTone}`}>

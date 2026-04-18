@@ -180,7 +180,16 @@ export default function MyExpensesPage() {
         {/* ── Upload phase ──────────────────────────────── */}
         {phase === "upload" && (
           <>
-            <h2 className="section-title">Submit an expense</h2>
+            <div className="section-title-row">
+              <h2 className="section-title">Submit an expense</h2>
+              <button
+                type="button"
+                className="btn btn--moss btn--sm"
+                onClick={handleManualEntry}
+              >
+                + New expense
+              </button>
+            </div>
             <label className="evidence__picker" tabIndex={0}>
               <input
                 ref={fileRef}
@@ -194,15 +203,6 @@ export default function MyExpensesPage() {
                 Photo, payment confirmation, or bank transfer
               </span>
             </label>
-            <div className="form__manual-entry">
-              <button
-                type="button"
-                className="link link--muted"
-                onClick={handleManualEntry}
-              >
-                or enter manually
-              </button>
-            </div>
           </>
         )}
 

@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { Menu } from "lucide-react";
 import AgentSidebar from "@/components/AgentSidebar";
+import BottomTabs from "@/components/BottomTabs";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
-import { readAgentCollapsedCookie } from "@/lib/preferences";
+import { initialAgentCollapsed } from "@/lib/preferences";
 import type { Me } from "@/types/api";
 
 // ManagerLayout mounts AgentSidebar as a SIBLING of <Outlet />.
@@ -15,18 +17,17 @@ import type { Me } from "@/types/api";
 // parent (that would couple them), and do NOT put a `key` prop on the
 // layout route (that would force a full remount).
 //
-// On mobile the top bar carries the hamburger nav drawer; the agent
-// drawer is opened from a bottom dock (a single Chat button) so the
-// mobile entry point matches the employee shell's bottom-bar Chat tab.
-// Opening either drawer sets a local boolean that toggles the relevant
-// `data-*` attribute / prop; navigating away closes both.
+// At phone widths the same shared <BottomTabs /> the worker shell uses
+// hosts the worker-facing routes (Today/Week/Chat/Expenses/Me); the
+// hamburger drawer holds the rest. MY WORK items are tagged
+// `phoneHidden` so they don't duplicate the bottom bar.
 
 const NAV_ITEMS: SideNavItem[] = [
-  { type: "section", label: "MY WORK" },
-  { type: "link", to: "/today", label: "My Day" },
-  { type: "link", to: "/week", label: "My Week" },
-  { type: "link", to: "/my/expenses", matchPrefix: "/my/expenses", label: "My Expenses" },
-  { type: "link", to: "/me", matchPrefix: "/me", label: "Me" },
+  { type: "section", label: "MY WORK", phoneHidden: true },
+  { type: "link", to: "/today", label: "My Day", phoneHidden: true },
+  { type: "link", to: "/week", label: "My Week", phoneHidden: true },
+  { type: "link", to: "/my/expenses", matchPrefix: "/my/expenses", label: "My Expenses", phoneHidden: true },
+  { type: "link", to: "/me", matchPrefix: "/me", label: "Me", phoneHidden: true },
   { type: "section", label: "OPERATE" },
   { type: "link", to: "/dashboard", label: "Dashboard" },
   { type: "link", to: "/properties", matchPrefix: "/propert", label: "Properties" },
@@ -53,67 +54,65 @@ const NAV_ITEMS: SideNavItem[] = [
   { type: "link", to: "/settings", label: "Settings" },
 ];
 
+// Drawer-bar visibility: only render the hamburger + mobile top bar
+// when there's at least one non-`phoneHidden` link to put inside the
+// drawer. Today's RBAC is implicit (workers have no manager-only
+// items), so the worker shell never shows it; once permissions filter
+// NAV_ITEMS this rule lets workers gain a hamburger when they earn
+// access to anything beyond MY WORK.
+function hasDrawerItems(items: SideNavItem[]): boolean {
+  return items.some((it) => it.type === "link" && !it.phoneHidden);
+}
+
 export default function ManagerLayout() {
   const { data } = useQuery({ queryKey: qk.me(), queryFn: () => fetchJson<Me>("/api/v1/me") });
-  const collapsed = readAgentCollapsedCookie();
+  const collapsed = initialAgentCollapsed();
   const { pathname } = useLocation();
   const [navOpen, setNavOpen] = useState(false);
-  const [agentOpen, setAgentOpen] = useState(false);
+  const showMobileBar = hasDrawerItems(NAV_ITEMS);
 
   useEffect(() => {
     setNavOpen(false);
-    setAgentOpen(false);
   }, [pathname]);
 
   useEffect(() => {
-    if (!navOpen && !agentOpen) return;
+    if (!navOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setNavOpen(false);
-        setAgentOpen(false);
-      }
+      if (e.key === "Escape") setNavOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [navOpen, agentOpen]);
-
-  const closeDrawers = useCallback(() => {
-    setNavOpen(false);
-    setAgentOpen(false);
-  }, []);
+  }, [navOpen]);
 
   return (
     <div
       className="desk"
       data-agent-collapsed={collapsed ? "true" : "false"}
       data-nav-open={navOpen ? "true" : "false"}
-      data-agent-mobile-open={agentOpen ? "true" : "false"}
+      data-mobile-bar={showMobileBar ? "true" : "false"}
     >
-      <header className="desk__mobile-bar" aria-label="Mobile controls">
-        <button
-          type="button"
-          className="desk__icon-btn"
-          onClick={() => setNavOpen((v) => !v)}
-          aria-label={navOpen ? "Close menu" : "Open menu"}
-          aria-expanded={navOpen}
-        >
-          <svg viewBox="0 0 24 24" width={20} height={20} fill="none" stroke="currentColor"
-               strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <line x1={3} y1={6} x2={21} y2={6} />
-            <line x1={3} y1={12} x2={21} y2={12} />
-            <line x1={3} y1={18} x2={21} y2={18} />
-          </svg>
-        </button>
-        <div className="desk__brand">
-          <span className="desk__logo" aria-hidden="true">◈</span>
-          <span className="desk__wordmark">crewday</span>
-        </div>
-      </header>
+      {showMobileBar && (
+        <header className="desk__mobile-bar" aria-label="Mobile controls">
+          <button
+            type="button"
+            className="desk__icon-btn"
+            onClick={() => setNavOpen((v) => !v)}
+            aria-label={navOpen ? "Close menu" : "Open menu"}
+            aria-expanded={navOpen}
+          >
+            <Menu size={20} strokeWidth={2} aria-hidden="true" />
+          </button>
+          <div className="desk__brand">
+            <span className="desk__logo" aria-hidden="true">◈</span>
+            <span className="desk__wordmark">crewday</span>
+          </div>
+        </header>
+      )}
 
-      {(navOpen || agentOpen) && (
+      {navOpen && (
         <div
           className="desk__scrim"
-          onClick={closeDrawers}
+          onClick={() => setNavOpen(false)}
           role="presentation"
           aria-hidden="true"
         />
@@ -133,20 +132,9 @@ export default function ManagerLayout() {
       </section>
 
       {/* Sibling of <Outlet />. Do not nest. */}
-      <AgentSidebar role="manager" mobileOpen={agentOpen} onMobileClose={() => setAgentOpen(false)} />
+      <AgentSidebar role="manager" />
 
-      <nav className="desk__bottom-dock" aria-label="Mobile actions">
-        <button
-          type="button"
-          className={"tab" + (agentOpen ? " tab--active" : "")}
-          onClick={() => setAgentOpen((v) => !v)}
-          aria-label={agentOpen ? "Close agent" : "Open agent"}
-          aria-expanded={agentOpen}
-        >
-          <span className="tab__glyph" aria-hidden="true">✦</span>
-          <span>Chat</span>
-        </button>
-      </nav>
+      <BottomTabs />
     </div>
   );
 }

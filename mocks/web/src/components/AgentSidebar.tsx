@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown } from "lucide-react";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
-import { persistAgentCollapsed, readAgentCollapsedCookie } from "@/lib/preferences";
-import AutoGrowTextarea from "@/components/AutoGrowTextarea";
+import { initialAgentCollapsed, persistAgentCollapsed } from "@/lib/preferences";
+import ChatComposer from "@/components/chat/ChatComposer";
 import type { AgentAction, AgentMessage, Role } from "@/types/api";
 
 // CRITICAL: AgentSidebar MUST mount as a SIBLING of <Outlet /> in
@@ -13,19 +14,17 @@ import type { AgentAction, AgentMessage, Role } from "@/types/api";
 // (scrollTop, composer draft, EventSource-fed cache) across page
 // changes.
 //
-// `mobileOpen` / `onMobileClose` drive the off-canvas drawer used at
-// tablet and phone widths. Desktop ignores them — the sidebar renders
-// inline from the layout's grid. `role` selects the per-role agent
-// log/message endpoints and gates the manager-only "Pending approvals"
-// block (employees never see it).
+// Above 720px the rail renders inline (collapsed or expanded — see
+// `initialAgentCollapsed`). Below 720px the rail is hidden by CSS;
+// both shells route their bottom Chat tab to /chat instead. `role`
+// selects the per-role log/message endpoints and gates the
+// manager-only "Pending approvals" block.
 interface AgentSidebarProps {
   role: Role;
-  mobileOpen?: boolean;
-  onMobileClose?: () => void;
 }
 
-export default function AgentSidebar({ role, mobileOpen = false, onMobileClose }: AgentSidebarProps) {
-  const [collapsed, setCollapsed] = useState<boolean>(() => readAgentCollapsedCookie());
+export default function AgentSidebar({ role }: AgentSidebarProps) {
+  const [collapsed, setCollapsed] = useState<boolean>(() => initialAgentCollapsed());
   const [draft, setDraft] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
   const qc = useQueryClient();
@@ -93,28 +92,22 @@ export default function AgentSidebar({ role, mobileOpen = false, onMobileClose }
   }, []);
 
   const handleSend = useCallback(
-    (e: React.FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      const trimmed = draft.trim();
-      if (!trimmed) return;
+    (trimmed: string) => {
       sendMessage.mutate(trimmed);
       setDraft("");
     },
-    [draft, sendMessage],
+    [sendMessage],
   );
 
-  const className =
-    "desk__agent" +
-    (collapsed ? " desk__agent--collapsed" : "") +
-    (mobileOpen ? " desk__agent--mobile-open" : "");
+  const className = "desk__agent" + (collapsed ? " desk__agent--collapsed" : "");
 
   return (
     <aside className={className} aria-label="Agent sidebar">
       <button
         type="button"
         className="desk__agent-head"
-        onClick={mobileOpen && onMobileClose ? onMobileClose : toggle}
-        aria-expanded={mobileOpen || !collapsed}
+        onClick={toggle}
+        aria-expanded={!collapsed}
         aria-controls="agent-body"
       >
         <span className="desk__agent-title">Agent</span>
@@ -123,10 +116,7 @@ export default function AgentSidebar({ role, mobileOpen = false, onMobileClose }
           <span>online</span>
         </span>
         <span className="desk__agent-chevron" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
-               strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <polyline points={mobileOpen ? "18 15 12 9 6 15" : "6 9 12 15 18 9"} />
-          </svg>
+          <ChevronDown size={14} strokeWidth={2} />
         </span>
       </button>
 
@@ -179,30 +169,14 @@ export default function AgentSidebar({ role, mobileOpen = false, onMobileClose }
           </div>
         )}
 
-        <form className="agent-composer" onSubmit={handleSend}>
-          <div className="agent-composer__field">
-            <AutoGrowTextarea
-              rows={1}
-              maxHeight={140}
-              placeholder="Ask the agent…"
-              aria-label="Message agent"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  e.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
-          </div>
-          <button type="submit" className="agent-composer__send" aria-label="Send">
-            <svg viewBox="0 0 24 24" width={18} height={18} fill="none" stroke="currentColor"
-                 strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="m4 12 16-8-6 18-3-8-7-2Z" />
-            </svg>
-          </button>
-        </form>
+        <ChatComposer
+          variant="inline"
+          value={draft}
+          onChange={setDraft}
+          onSubmit={handleSend}
+          placeholder="Ask the agent…"
+          ariaLabel="Message agent"
+        />
       </div>
     </aside>
   );

@@ -10,16 +10,22 @@ import { NavLink, useLocation } from "react-router-dom";
 // `.nav-section`, `.nav-link`, `.desk__me`). Callers pass items +
 // footer; the component renders the chrome.
 
+// `phoneHidden` items still render in the DOM (so the desktop side nav
+// shows them), but pick up a `--phone-hidden` modifier the CSS uses to
+// hide them inside the off-canvas hamburger drawer at <=720px. Use it
+// for entries that the bottom tab bar already exposes.
 export interface SideNavLinkItem {
   type: "link";
   to: string;
   label: string;
   matchPrefix?: string;
+  phoneHidden?: boolean;
 }
 
 export interface SideNavSectionItem {
   type: "section";
   label: string;
+  phoneHidden?: boolean;
 }
 
 export type SideNavItem = SideNavLinkItem | SideNavSectionItem;
@@ -54,12 +60,18 @@ export default function SideNav({
       <nav className="desk__nav-group">
         {items.map((item, i) =>
           item.type === "section" ? (
-            <div key={"s-" + i} className="nav-section">{item.label}</div>
+            <div
+              key={"s-" + i}
+              className={"nav-section" + (item.phoneHidden ? " nav-section--phone-hidden" : "")}
+            >
+              {item.label}
+            </div>
           ) : (
             <NavItem
               key={item.to}
               to={item.to}
               matchPrefix={item.matchPrefix}
+              phoneHidden={item.phoneHidden}
               onClick={onLinkClick}
             >
               {item.label}
@@ -84,18 +96,23 @@ export default function SideNav({
 interface NavItemProps {
   to: string;
   matchPrefix?: string;
+  phoneHidden?: boolean;
   children: React.ReactNode;
   onClick?: () => void;
 }
 
-function NavItem({ to, matchPrefix, children, onClick }: NavItemProps) {
+function NavItem({ to, matchPrefix, phoneHidden, children, onClick }: NavItemProps) {
   const { pathname } = useLocation();
   const active = matchPrefix ? pathname.startsWith(matchPrefix) : pathname === to;
   return (
     <NavLink
       to={to}
       onClick={onClick}
-      className={"nav-link" + (active ? " nav-link--active" : "")}
+      className={
+        "nav-link" +
+        (active ? " nav-link--active" : "") +
+        (phoneHidden ? " nav-link--phone-hidden" : "")
+      }
     >
       {children}
     </NavLink>
