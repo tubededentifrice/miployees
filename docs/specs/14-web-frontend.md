@@ -62,34 +62,59 @@ Canonical navigation. The authoritative tree is
 `mocks/web/src/App.tsx`; this list exists so an agent can answer
 "what routes should exist" without loading React code.
 
-### Public
+### URL shape
+
+Every authenticated route lives under a path prefix that names the
+active workspace (§01 "Workspace addressing"):
 
 ```
-/                          → role-based redirect (/today or /dashboard)
-/login
-/enroll/<token>
-/recover
-/guest/<token>
+<host>/w/<workspace_slug>/<route>
+```
+
+The slug is part of every URL emitted by the app — deep links,
+guest welcome URLs, email notifications, agent handoff links.
+Public routes (signup, login, workspace picker, health) live at
+the bare host. React Router mounts the full tree below under
+`/w/:slug/*` so `useParams()` in `<Shell />` resolves the active
+workspace once and the rest of the tree is unaware of the prefix.
+
+### Public (bare host, no workspace prefix)
+
+```
+/                          → auth redirect (to /login or /select-workspace)
+/signup                    → SaaS self-serve signup (§03)
+/signup/verify             → magic-link landing after signup email
+/select-workspace          → picker for users with ≥2 workspaces (see below)
+/login                     → passkey login
+/recover                   → break-glass recovery
 /styleguide                (dev + staging only)
 /healthz, /readyz, /version  (no auth; see §12)
 ```
 
-### Shared (any authenticated role)
+### Per-workspace public
+
+```
+/w/<slug>/enroll/<token>   → invited user completing enrollment
+/w/<slug>/guest/<token>    → guest welcome page
+```
+
+### Shared (any authenticated role, workspace-prefixed)
 
 Routes rendered under whichever shell matches the viewer's role
 (`ManagerLayout` for managers, `EmployeeLayout` for workers) — picked
-by a single `<Shell />` wrapper component in `App.tsx`.
+by a single `<Shell />` wrapper component in `App.tsx`. All paths
+below are relative to `/w/<slug>/`.
 
 ```
-/today           /week            /task/<id>
-/my/expenses     /me              /history         /issues/new
-/shifts          /asset/<id>
+today            week             task/<id>
+my/expenses      me               history          issues/new
+shifts           asset/<id>
 ```
 
-### Worker-only
+### Worker-only (under /w/<slug>/)
 
 ```
-/chat            /asset/scan
+chat             asset/scan
 ```
 
 Footer bottom-nav: `Today · Week · Chat · My Expenses · Me`. Chat is
@@ -102,25 +127,36 @@ shared with the manager layout, so `Chat` is no longer listed in the
 left-nav. The `/shifts` tab is hidden when `time.clock_mode` is `auto`
 or `disabled`.
 
-### Owner/Manager
+### Owner/Manager (under /w/<slug>/)
 
 ```
-/dashboard                      /properties
-/property/<id>                  /property/<id>/closures
-/stays                          /users
-/user/<id>                      /user/<id>/leaves
-/user/<id>/availability         /leaves
-/availability-overrides         /holidays
-/permissions                    /templates
-/schedules                      /instructions
-/instructions/<id>              /assets
-/asset/<id>                     /asset_types
-/documents                      /inventory
-/pay                            /expenses
-/approvals                      /audit
-/webhooks                       /llm
-/settings
+dashboard                      properties
+property/<id>                  property/<id>/closures
+stays                          users
+user/<id>                      user/<id>/leaves
+user/<id>/availability         leaves
+availability-overrides         holidays
+permissions                    templates
+schedules                      instructions
+instructions/<id>              assets
+asset/<id>                     asset_types
+documents                      inventory
+pay                            expenses
+approvals                      audit
+webhooks                       llm
+settings
 ```
+
+### Workspace switcher
+
+`/select-workspace` (bare host) is the landing page after login
+for users with two or more workspaces (resolved from
+`GET /api/v1/me/workspaces`, §12). It renders one card per
+workspace (name, slug, last-seen role) and a `Go →` button that
+navigates to `/w/<slug>/today` (worker) or `/w/<slug>/dashboard`
+(manager). Users with exactly one workspace skip this page and
+are redirected straight into it. A persistent "Switch workspace"
+link in the user menu re-opens the picker at any time.
 
 ### Desktop shell
 
@@ -172,16 +208,27 @@ the platform must guarantee*.
 
 - **Data layer.** TanStack Query (`@tanstack/react-query`) manages
   all server state through a typed `fetchJson<T>` wrapper that
-  handles auth headers, CSRF, and JSON parsing.
+  handles auth headers, CSRF, the active workspace slug, and JSON
+  parsing. Every request URL is built as
+  `/w/${workspaceSlug}/api/v1/...` from the `WorkspaceContext`
+  React context (set once per mount of `<Shell />`).
+- **Workspace-scoped query keys.** Every TanStack Query cache key
+  includes the active `workspace_slug` as its first segment
+  (e.g. `['w', 'acme', 'tasks', 'today']`). Switching workspaces
+  does not clear the cache — the old keys stay resident — but no
+  query from one slug can ever be served to a page rendering
+  another slug. This is the client-side counterpart to the §01
+  tenant-isolation invariant.
 - **Optimistic mutations.** `onMutate` snapshots cache; `onError`
   rolls back; `onSettled` invalidates. On concurrent writes (§06
   last-write-wins) the UI surfaces a "Completed by <name>" toast —
   never silently drop local state.
-- **SSE-driven invalidation.** One shared `EventSource('/events')`
-  mounted at the root. Events `task.updated`, `approval.resolved`,
-  `expense.decided`, `agent.message.appended`, and
-  `agent.action.pending` drive `queryClient.invalidateQueries(...)`.
-  No polling.
+- **SSE-driven invalidation.** One `EventSource('/w/${slug}/events')`
+  per active workspace, re-established on workspace switch. Events
+  `task.updated`, `approval.resolved`, `expense.decided`,
+  `agent.message.appended`, and `agent.action.pending` drive
+  `queryClient.invalidateQueries(...)` scoped to the matching
+  `['w', slug, ...]` prefix. No polling.
 - **Route-split bundles.** Worker and owner/manager entry points are
   separate. Shared routes (see route contract above) land in both
   bundles. Only manager-only operational surfaces (`/dashboard`,
@@ -245,21 +292,38 @@ WCAG 2.2 AA. Concretely:
 
 - Generated by **Vite PWA plugin** (Workbox) in
   `mocks/web/vite.config.ts`.
+- **One service worker per workspace.** The worker is registered
+  with `scope: '/w/<slug>/'`, so its fetch interception and cache
+  do not span workspaces. A user with access to multiple
+  workspaces has one SW registration per slug; each has its own
+  Cache Storage bucket, IndexedDB partition, and Background Sync
+  queue. Uninstalling (leaving) a workspace unregisters its SW.
+  The bare-host surface (`/signup`, `/login`, `/select-workspace`)
+  has **no** service worker.
+- **Slug-keyed cache entries.** Workbox strategies for API routes
+  include the slug in the cache key
+  (`/w/<slug>/api/v1/tasks/today`), so even if a key somehow
+  escapes the scope, it cannot collide with another workspace's
+  entry.
 - **Cache-first shell** for JS/CSS/logo.
 - **Stale-while-revalidate** for today's tasks; the cached response
   is served immediately and TanStack Query refreshes via
   invalidation when the background fetch lands.
 - **Background Sync outbox** for write-behind completions — body +
-  idempotency key stored in IndexedDB, FIFO, replayed on reconnect.
-  Offline taps that reference a pending photo use a local `blob` id;
-  the service worker uploads the photo first, then replays the
-  completion with the real `file_id`.
+  idempotency key stored in per-slug IndexedDB, FIFO, replayed on
+  reconnect. Offline taps that reference a pending photo use a
+  local `blob` id; the service worker uploads the photo first,
+  then replays the completion with the real `file_id`.
 - **Caps.** 50 queued completions; 50 MB queued photo bytes (both
-  configurable). Older entries are evicted with a visible "could not
-  keep queued for longer" warning.
+  configurable) **per workspace**. Older entries are evicted with
+  a visible "could not keep queued for longer" warning.
 - **Manifest.** `display: standalone`, `theme_color: #3F6E3B`,
-  `background_color: #FAF7F2`. Shortcuts: Today, Clock in, New
-  expense. Icons at 192, 512, maskable.
+  `background_color: #FAF7F2`. Shortcuts are workspace-scoped
+  (`/w/<slug>/today`, `/w/<slug>/shifts/clock-in`,
+  `/w/<slug>/my/expenses/new`); on multi-workspace devices the
+  install prompt is offered per workspace, so each installs as a
+  distinct PWA with its own name (`Crewday — <workspace.name>`)
+  and icon. Icons at 192, 512, maskable.
 
 ## Internationalization readiness
 
@@ -288,4 +352,19 @@ than adding to this list:
   load — is still to come.
 - **PWA service worker.** Vite PWA plugin is not yet wired in
   `mocks/web/vite.config.ts`; offline outbox and background sync
-  are specified but unimplemented.
+  are specified but unimplemented. Once wired, the SW registration
+  must use `scope: '/w/<slug>/'` (see "PWA constraints" above).
+- **Workspace path prefix.** The spec canonicalises every
+  authenticated route as `/w/<slug>/<route>` (§01 "Workspace
+  addressing"). The current `mocks/web/src/App.tsx` route tree
+  is still single-workspace and unprefixed. Migration is
+  deliberately deferred to the first app-code phase (§19 Phase 1)
+  so the mock rewrite and the real routing middleware land in
+  lockstep. Deep-linking, NavLink construction, and
+  `fetchJson<T>` URL building will all gain a workspace-slug
+  parameter at that point.
+- **Self-serve signup + workspace switcher.** `/signup`,
+  `/signup/verify`, `/select-workspace`, and the user-menu
+  "Switch workspace" action are specified (§03, §14 "Workspace
+  switcher") but not yet in the mocks. Same timing as the path-
+  prefix migration above.

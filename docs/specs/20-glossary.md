@@ -358,14 +358,80 @@ fix the offender.
 - **Welcome link.** Tokenized public URL exposing the guest welcome
   page for a stay. Revocation or expiry both serve a 410 with the
   same layout; wording differs.
-- **Workspace.** The tenancy boundary in v1. One workspace = one
-  employer entity. Every user-editable row carries `workspace_id`.
-  All uniqueness constraints on user-editable rows are scoped to
-  `workspace_id`. The v1 deployment ships a **single workspace**
-  seeded at first boot, but the schema, auth, and API surface are
-  already multi-tenant-ready — see §02 "Migration" and §19 "Beyond
-  v1" for the path to true multitenancy. Replaces the v0
-  "household."
+- **Workspace.** The tenancy boundary. One workspace = one employer
+  entity. Every user-editable row carries `workspace_id`, and all
+  uniqueness constraints on user-editable rows are scoped to
+  `workspace_id`. v1 is **multi-tenant from day 1** (§00 G11): a
+  single deployment holds many workspaces; the managed SaaS at
+  `crewday.app` provisions one per self-serve signup (§03);
+  self-hosted deployments default to one (bootstrapped by
+  `crewday admin init`) but may run many when backed by Postgres.
+  Every authenticated URL lives under `<host>/w/<slug>/...`.
+  Replaces the v0 "household."
+- **Workspace slug.** The URL-safe, globally unique identifier
+  for a workspace (§02 `workspace.slug`): ASCII kebab, regex
+  `^[a-z][a-z0-9-]{1,38}[a-z0-9]$`, plus a reserved-word
+  blocklist. Immutable after creation. Used in every authenticated
+  URL (`/w/<slug>/...`), in email deep links, and as the CLI
+  `--workspace <slug>` flag (§12, §13).
+- **`WorkspaceContext`.** Request-scoped carrier resolved by
+  `app/tenancy/middleware.py` from the URL slug and the session;
+  holds `workspace_id`, `workspace_slug`, `actor_id`, `actor_kind`,
+  `actor_grant_role`, `actor_was_owner_member`, and
+  `audit_correlation_id`. Every domain service function takes
+  this as its first argument (§01 "Multi-tenancy runtime").
+- **Bounded context.** An independent subpackage under
+  `app/domain/` (identity, places, tasks, stays, instructions,
+  inventory, assets, time, payroll, expenses, billing, messaging,
+  llm) with its own public surface, repository port, and tests.
+  Sibling contexts interact only through the public surface or
+  through typed in-process events — enforced by `import-linter`
+  on every commit (§01 "Module boundaries and bounded contexts",
+  §17).
+- **Shared kernel.** The cross-cutting modules every context is
+  allowed to import: `app.util`, `app.audit`, `app.tenancy`,
+  `app.events`, and the `app.adapters.*.ports` Protocols (§01).
+- **Row-Level Security (RLS).** Postgres engine-level filter on
+  every workspace-scoped table reading
+  `current_setting('crewday.workspace_id')`, installed at
+  migration time. Exposed as capability `features.rls` (§01) —
+  on when the backend is Postgres, off when SQLite. Defence-in-
+  depth behind the application-level `workspace_id` filter (§15);
+  SQLite deployments rely on the app-layer filter alone. Choice
+  of backend is a deployment tradeoff (§16), not a code gate —
+  both are fully multi-tenant.
+- **Capability registry.** The boot-time record at
+  `app/capabilities.py` holding every feature-flag the code
+  consults (§01). Populated from two sources: **environment
+  probes** (DB dialect → `features.rls`, storage backend →
+  `features.object_storage`, etc.) and **operator settings**
+  (admin-configurable preferences like `settings.signup_enabled`,
+  read through the same interface). The code has one path; the
+  registry tells it which features are live on this deployment.
+  There is no deployment-mode switch.
+- **Feature capability.** A boolean in the capability registry
+  sourced from an environment probe (immutable for the process
+  lifetime). Examples: `features.rls`, `features.fulltext_search`,
+  `features.object_storage`, `features.wildcard_subdomains`.
+- **Deployment setting.** A boolean or scalar in the capability
+  registry sourced from the `deployment_setting` table; operator-
+  configurable via `crewday admin settings set ...` and read
+  through the same interface as feature capabilities. Examples:
+  `settings.signup_enabled`, `settings.llm_default_budget_cents_30d`,
+  `settings.signup_throttle_*`. Changes take effect immediately.
+- **Self-serve signup.** The SaaS provisioning flow at
+  `/signup/start` → magic link → `/signup/verify` → passkey
+  enrollment → workspace ready at `/w/<slug>/today` (§03, §15).
+  Rate-limited per IP/email; disposable-domain blocklist; tight
+  caps pre-`human_verified`.
+- **Verification state.** Per-workspace enum
+  `unverified | email_verified | human_verified | trusted`
+  (§02). Drives tight abuse caps for self-serve tenants until
+  human activity is demonstrated.
+- **Plan + quota seam.** Every `workspace` carries `plan` +
+  `quota_json`; enforcement is live on the free tier from day 1
+  (§02, §15). Payments and paid plans are out of scope for v1
+  (§00 N1, §19 Beyond v1).
 - **Workspace usage budget.** Per-workspace rolling-30-day dollar
   envelope over every LLM call charged to the workspace. Stored on
   `workspace_budget.cap_usd_30d`; prod default $5, demo default $0.10.

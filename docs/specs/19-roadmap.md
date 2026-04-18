@@ -6,27 +6,64 @@ sprints. A phase ships when its goals are met and its quality gates
 
 ## Phase 0 — Project scaffolding
 
-- Repo layout (§01), tooling (`uv`, `ruff`, `mypy`, `pytest`,
-  `playwright`, Alembic, Caddy compose).
+- Repo layout with **bounded-context subpackages from day 1**
+  (§01 "Module boundaries and bounded contexts") —
+  `app/domain/<context>/` plus `app/tenancy/`, `app/audit/`,
+  `app/events/`, `app/util/`.
+- Tooling: `uv`, `ruff`, `mypy --strict`, `pytest`, `playwright`,
+  Alembic, Caddy compose, **`import-linter`** wired into the
+  pre-commit + CI pipeline (§17).
 - `AGENTS.md`, `CLAUDE.md`, skill files, CI pipeline.
-- Empty FastAPI app with `/healthz`, `/readyz`, `/version`.
-- Vite + React + TS strict pipeline; styleguide page; all 35 mock
-  routes at parity; SPA served by FastAPI at `127.0.0.1:8100`.
-- Docker images; single + compose recipes baseline.
+- Empty FastAPI app with `/healthz`, `/readyz`, `/version`,
+  `/signup/start`, `/signup/verify` stubs returning 501.
+- Vite + React + TS strict pipeline; styleguide page; all mock
+  routes prefixed under `/w/:slug/*`; SPA served by FastAPI at
+  `127.0.0.1:8100`.
+- **Capability registry** (§01) scaffolded: `app/capabilities.py`
+  probes DB dialect, storage backend, mail provider, LLM client
+  at boot; logs the snapshot once; exposes booleans to the rest
+  of the code. One codepath, no deploy-mode switch.
+- Docker images; recipe A + B baseline plus recipe D topology
+  example (Postgres + S3 + Caddy) as a deployment-docs reference.
 
-**Exit:** CI green on empty build; `crewday admin init` creates a
-workspace row and prints a magic link in the dev profile.
+**Exit:** CI green on empty build with import-linter active;
+`crewday admin workspace create --slug myhome` creates a
+workspace row and prints a magic link in the dev profile; the
+same image boots cleanly on SQLite and on Postgres, logs its
+capability snapshot, and passes the cross-tenant regression test
+on both.
 
-## Phase 1 — Identity
+## Phase 1 — Identity + multi-tenancy
 
+- **Multi-tenant `workspaces` table** with slug, plan, quota_json,
+  verification_state (§02); path-prefix addressing `/w/<slug>/...`
+  live across web, API, SSE, CLI (§01 §12 §14).
+- **SaaS self-serve signup** (§03 "Self-serve signup (SaaS)"):
+  `/signup/start`, magic link, `/signup/verify`, passkey
+  enrollment, workspace provisioning; rate limits, disposable-
+  domain blocklist, tight pre-verification caps (§15).
+- **Workspace switcher** and `GET /api/v1/me/workspaces` for
+  users with more than one workspace (§14).
+- **Postgres RLS policies** installed via migration on every
+  workspace-scoped table; `crewday.workspace_id` session
+  variable threaded from `WorkspaceContext` (§01 §15).
+- **Cross-tenant regression test** green on SQLite and Postgres
+  (§17).
 - Passkeys (all users), magic links, sessions, `role_grants`.
-- API tokens with scopes + per-token audit.
-- Audit log core.
-- Basic owner/manager UI: profile, passkeys, tokens.
+- API tokens with scopes + per-token audit (tokens scoped to a
+  workspace; cross-tenant use returns 404).
+- Audit log core, including workspace-level events
+  (`workspace.signup.completed`, `workspace.trusted`,
+  `workspace.switched`).
+- Basic owner/manager UI: profile, passkeys, tokens, workspace
+  selector, "Agent usage — N%" placeholder widget.
 
-**Exit:** an owner and a worker can be enrolled end-to-end on
-devices; a token can drive the API; every action appears in the audit
-log.
+**Exit:** a visitor provisions a workspace on the SaaS stack
+end-to-end; an operator provisions a workspace on self-host via
+`crewday admin init`; a user with access to two workspaces switches
+between them without losing session; a token scoped to workspace A
+used against `/w/<slug-B>/...` returns 404; every action appears in
+the audit log with the correct `workspace_id`.
 
 ## Phase 2 — Places and people
 
@@ -237,14 +274,12 @@ Items explicitly deferred, in rough priority order:
    bodies, and digests. Chat auto-translation for the worker agent
    already ships in v1 (see Phase 8).
 2. Local LLM provider (Ollama) adapter.
-3. **True multi-tenancy** — more than one workspace per deployment,
-   with a workspace-switcher UI and workspace-admin roles. The
-   **schema is already ready** (every user-editable row carries
-   `workspace_id`; junction tables `property_workspace` and
-   `user_workspace` exist; RLS seam is `workspace_id` per §15),
-   so lifting the single-workspace lock is a policy + auth change,
-   not a data migration. Bundled with SaaS lockout recovery that
-   does not require host shell access — see §03.
+3. **Paid plans + Stripe billing.** v1 ships the plan/quota seam
+   (§00 G13, §02 `workspace.plan` / `quota_json`) and the free
+   tier only. Beyond v1: plan catalog, Stripe subscriptions,
+   proration, dunning, tax handling per region, and tenant self-
+   serve plan changes. The multi-tenancy platform itself already
+   shipped in Phase 1 (§01 §03 §15).
 4. Native mobile apps (only if PWA limitations become painful).
 5. QuickBooks / Xero accounting export (beyond CSV).
 6. OIDC for owners/managers.

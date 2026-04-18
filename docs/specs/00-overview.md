@@ -17,11 +17,13 @@ the driver sees tomorrow's airport run; the head of house sees everything.
 
 - **Workspace.** The tenancy boundary. One workspace = one employer
   entity (a family, an estate, a small property-management outfit).
-  Every user-editable row carries `workspace_id`. The v1 deployment
-  ships with a **single workspace** seeded at first boot, but the
-  schema, auth, and API surface are already multi-tenant-ready so that
-  future releases can host more than one workspace per deployment
-  without a data migration. "Workspace" replaces the v0 term
+  Every user-editable row carries `workspace_id`. A single v1
+  deployment holds many workspaces simultaneously: the managed SaaS
+  at `crewday.app` provisions one per self-serve signup (§03, §15);
+  self-hosted deployments default to one (bootstrapped by
+  `crewday admin init`) but may run many when backed by Postgres.
+  Every authenticated URL on every deployment lives under
+  `<host>/w/<slug>/...`. "Workspace" replaces the v0 term
   `household` everywhere in the schema, API, and UI; see §20.
 - **Villa (property).** A managed physical place. A villa is a
   **multi-belonging unit**: the same villa can belong to more than one
@@ -108,21 +110,60 @@ the driver sees tomorrow's airport run; the head of house sees everything.
 - **G6.** Built-in LLM features: receipt OCR for expenses, natural-
   language task intake, daily digest, staff chat assistant. Default
   model via OpenRouter; per-capability model assignment table.
-- **G7.** Self-hosted, two supported deployments: **single-container
-  SQLite** (minimal) and **docker-compose full-stack** (Postgres +
-  MinIO + Caddy).
+- **G7.** **One codebase, many deployments.** The same image runs
+  as a single-container SQLite home install, a self-host compose
+  stack, a managed multi-tenant SaaS, or anything in between. No
+  deployment-mode switches, no fork codepaths. Where the backend
+  genuinely can't support a feature (SQLite → no Postgres RLS, no
+  `tsvector` full-text), the **capability registry** (§01) auto-
+  disables it and the UI/API surface it as unavailable; operator
+  preferences (e.g. whether signup is open) are runtime settings,
+  not modes. See §01 "Capability registry", §16.
 - **G8.** No binding to public interfaces by default; localhost or
   tailscale only unless explicitly overridden.
 - **G9.** Append-only audit log for every mutation made by a human or
   agent.
 - **G10.** Backup/restore is a single documented command in either
   deployment.
+- **G11.** **Multi-tenant platform from day 1.** A single deployment
+  holds many `workspace` rows simultaneously, on any supported
+  backend. The managed SaaS instance at `crewday.app`, a self-host
+  compose stack, and a single-container SQLite install all run the
+  same code and all support many workspaces. Workspace addressing
+  is path-based (`<host>/w/<slug>/...`) everywhere. Isolation is
+  enforced at the application layer by the `workspace_id` filter
+  on every repository call, and — where the backend supports it —
+  at the DB layer by Postgres RLS (capability `features.rls`, see
+  §01). See §01 "Multi-tenancy runtime", §15, §16.
+- **G12.** **Open self-serve SaaS signup.** The managed SaaS lets
+  any visitor provision a workspace: email → magic link → passkey
+  enrollment → workspace slug → ready. Rate-limited per IP/email,
+  disposable-domain blocklist, tight usage caps until first human
+  verification, abuse mitigations per §15. See §03.
+- **G13.** **Plan + quota seams without payments.** Every
+  `workspace` carries a `plan` and a quota blob (user count,
+  property count, LLM budget, storage bytes); enforcement is live
+  from day 1 on the free tier's caps. Payment processing is
+  explicitly out of scope for v1 (see N1).
+- **G14.** **Clean-architecture code structure from day 1.** Every
+  bounded context (identity, places, tasks, stays, inventory,
+  assets, time, payroll, expenses, billing, messaging, instructions,
+  llm) is its own subpackage with a narrow public surface; sibling
+  contexts interact only through that surface or through typed
+  in-process events. An `import-linter` CI gate blocks cross-context
+  submodule imports on every PR. This exists so the codebase can
+  scale to many humans and agents in parallel, and so any single
+  context can later be extracted as a separate service with only
+  its adapter rewritten. See §01 "Module boundaries and bounded
+  contexts" and §17.
 
 ## Non-goals (v1)
 
-- **N1. Multi-tenant SaaS.** One deployment = one workspace in v1.
-  Tenancy may be added later; the schema already names every seam
-  `workspace_id` (§02) but no multi-workspace enforcement is built.
+- **N1. Paid plans, metered billing, payments.** v1 ships the
+  *seams* for plans, quotas, and usage meters (see G11 below) but
+  no Stripe, no invoice PDFs, no dunning. Every SaaS workspace is
+  on a single free tier with hard caps; paid tiers come later
+  (§19 Beyond v1).
 - **N2. Tax & statutory HR.** We compute gross pay; taxes, social
   contributions, and statutory leave rules are out of scope. Export CSV
   to your accountant.

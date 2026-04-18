@@ -52,12 +52,17 @@ they will hold. The only things that vary by grant_role are the
 default magic-link TTL and whether break-glass codes are issued on
 acceptance (see "Break-glass codes" below).
 
-### First owner (first boot)
+### First owner (self-hosted first boot)
+
+This is the self-hosted bootstrap flow, used by operators running
+`crewday` on their own infrastructure. The SaaS deployment at
+`crewday.app` uses the **Self-serve signup** flow below instead.
 
 1. First-boot wizard runs once when the DB has no `users` rows. The
-   CLI `crewday admin init --email owner@example.com` creates the
-   workspace and emails that user a **bootstrap magic link** valid
-   for 15 minutes. The wizard atomically inserts a `users` row, a
+   CLI `crewday admin init --email owner@example.com --slug myhome`
+   creates the workspace (with `created_via='admin_init'`,
+   `verification_state='trusted'`) and emails that user a
+   **bootstrap magic link** valid for 15 minutes. The wizard atomically inserts a `users` row, a
    single `role_grants` row with
    `(scope_kind='workspace', scope_id=<ws>, grant_role='manager')`
    (the manager surface), seeds the four system permission groups
@@ -76,6 +81,78 @@ acceptance (see "Break-glass codes" below).
    consumed code is inert even if the resulting magic link expires
    unused — the user must consume another code to get a fresh
    link.
+
+### Self-serve signup
+
+Self-serve signup is a first-class, always-available flow on every
+deployment (§00 G12). The managed SaaS at `crewday.app` runs it
+with `settings.signup_enabled = true` so any visitor can provision
+a workspace; a home-network self-host typically runs it off
+(`settings.signup_enabled = false`) so nobody on the LAN can
+create a workspace without the operator's say-so. The flag is an
+operator-settable deployment setting (§01 "Capability registry"),
+not a deploy-mode gate — flipping it does not take the server
+offline and does not change any other codepath.
+
+When disabled, `POST /api/v1/signup/start` returns `404` and the
+`/signup` SPA route renders a "Signups are closed on this
+deployment — ask your admin" page; all other flows are
+unaffected.
+
+The flow lives entirely at the bare host (no `/w/<slug>/` prefix)
+because no workspace exists yet:
+
+1. **Email entry.** Visitor lands on `/signup`, submits an email.
+   Request hits `POST /signup/start` with `{ email, desired_slug }`.
+   Per-IP and per-email rate limits (§15 "Self-serve abuse
+   mitigations") apply; disposable-domain blocklist rejects
+   throwaway providers. `desired_slug` is validated against the
+   §02 regex and blocklist, then checked against live `workspaces`
+   rows; `409 slug_taken` returns a suggested alternative. The
+   server stores a `signup_attempt` row keyed by
+   `(email, desired_slug)` with a 15-minute TTL and emails a
+   magic link (`/signup/verify?token=...`).
+2. **Magic-link verification.** Visitor clicks the link. `GET
+   /signup/verify` redeems the token. The server atomically, in a
+   single transaction:
+   - inserts the `workspaces` row
+     (`created_via='self_serve'`, `verification_state='email_verified'`,
+     `plan='free'`, `quota_json` copied from the free-tier caps);
+   - inserts the `users` row, a `role_grants` row with
+     `(scope_kind='workspace', scope_id=<ws>, grant_role='manager')`,
+     the four system permission groups on the new workspace, and
+     the `permission_group_member` row placing the user in
+     `owners@<ws>`;
+   - writes `audit.signup.completed` with `actor_kind='system'`
+     (pre-session) and `ip_hash` for abuse tracing.
+3. **Passkey enrollment + break-glass codes.** Same ritual as the
+   self-hosted first-owner flow: display name + timezone, register
+   a passkey, receive break-glass codes, confirm "I wrote them
+   down". The signup session is issued only after passkey
+   registration succeeds — a stranded magic-link click followed by
+   an abandoned passkey ceremony leaves a row in `workspaces` with
+   no user and no session; the `signup_gc` worker prunes these
+   after 1 hour (see §15).
+4. **Ready.** Browser is redirected to
+   `https://crewday.app/w/<slug>/today`. The workspace is now
+   addressable; session cookies (`__Host-crewday_sess`) are
+   set on the bare host and used for every workspace the user
+   later joins.
+
+**Tight initial caps.** Until the workspace reaches
+`verification_state='human_verified'` (defined in §02), the LLM
+budget cap is **10% of the free-tier cap** and the upload quota is
+**25 MB**. Both lift automatically once the manager completes the
+human-verification trigger (one property created + one user
+invited + one task created). See §15 for the full cap table and
+abuse-response playbook.
+
+**Throttle on repeat provisioning.** The same email may provision
+at most **3 workspaces** lifetime on the SaaS deployment
+(enforced on `POST /signup/start`). The same IP may start at most
+**5 signups per hour**. Limits are documented in §15 and are
+configurable by the SaaS operator; self-host operators override
+via env vars.
 
 ### Additional users (invite)
 

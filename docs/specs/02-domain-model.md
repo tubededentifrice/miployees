@@ -56,9 +56,29 @@ Any `UNIQUE` on a user-editable column is a composite unique on
 (capability keys, webhook event types) are globally unique because
 they are not user-editable.
 
-v1 ships with a single workspace row seeded at first boot; multi-
-tenancy is then purely a matter of allowing more rows and adding RLS
-in Postgres (§15). No code change elsewhere.
+v1 is **multi-tenant from day 1** (§00 G11). A single deployment
+holds many `workspace` rows simultaneously on any supported
+backend; every authenticated URL lives under
+`<host>/w/<workspace_slug>/...` (§01 "Multi-tenancy runtime",
+§14). The managed SaaS at `crewday.app` provisions one workspace
+per self-serve signup (§03, §15); self-hosted deployments start
+with zero workspaces and grow via the same signup path, a
+managed admin flow (`crewday admin workspace create`), or an
+invite.
+
+Tenant isolation is enforced at the application layer on every
+backend: every repository call filters by `ctx.workspace_id`.
+Where the backend supports it (Postgres, capability `features.rls`
+— §01), policies on each workspace-scoped table read
+`current_setting('crewday.workspace_id')` as defence-in-depth.
+SQLite lacks RLS and relies on the application-level filter
+alone; the cross-tenant regression test in §17 runs on both
+backends to catch any drift.
+
+The `WorkspaceContext` (defined in §01) is the request-scoped
+carrier every domain service function takes as its first argument;
+it is the source of truth for `workspace_id` in every query and
+audit row.
 
 ### Villa belongs to many workspaces
 
@@ -292,16 +312,46 @@ state machines in detail. This file holds only the shared rules.
 (v0 name: `households`. The rename happens in the same migration that
 introduces `workspace_id` on every user-editable table.)
 
-| column        | type        | notes                              |
-|---------------|-------------|------------------------------------|
-| id            | ULID PK     | seeded at first boot               |
-| name          | text        | displayed in UI                    |
-| default_language | text     | BCP-47; used by §10 auto-translation and digest prose |
-| default_currency | text    | ISO-4217. Referenced by Money section below; per-property override in §04. |
-| default_country | text     | ISO-3166-1 alpha-2. Workspace-level fallback for properties. |
-| default_locale | text?     | BCP-47 locale tag (e.g. `fr-FR`). Nullable; when null, derived from `default_language` + `default_country`. Drives number/date/currency formatting on workspace-scoped documents. |
-| created_at    | tstz        |                                    |
-| settings_json | jsonb/text  | flat map of `dotted.key → value`; holds concrete workspace defaults for every registered setting (see "Settings cascade" below) |
+| column             | type        | notes                                                                                          |
+|--------------------|-------------|------------------------------------------------------------------------------------------------|
+| id                 | ULID PK     | generated at provisioning                                                                      |
+| slug               | text UNIQUE | canonical URL identifier (`<host>/w/<slug>/...`). Regex `^[a-z][a-z0-9-]{1,38}[a-z0-9]$`, reserved-word blocklist (see §01). Immutable after creation. Globally unique across the deployment. |
+| name               | text        | displayed in UI; editable                                                                      |
+| plan               | text        | `free \| pro \| enterprise \| unlimited`. Enforced by the quota gate (§15). v1 ships every SaaS workspace on `free`; self-host operators typically assign `unlimited` to their own workspaces via `crewday admin workspace set-plan`. Paid-tier enforcement (Stripe, dunning) is Beyond v1 — §19. |
+| quota_json         | jsonb/text  | caps actually enforced: `{users_max, properties_max, storage_bytes, llm_budget_cents_30d}`. Derived from `plan` on provisioning; editable by deployment operator via `crewday admin workspace set-quota`. |
+| created_via        | text        | `self_serve \| admin_invite \| admin_init \| seed`. Drives first-run UI + quota tightening.    |
+| verification_state | text        | `unverified \| email_verified \| human_verified \| trusted`. Self-serve tenants stay below `human_verified` under tight quotas until a manager approves. See §03, §15. |
+| created_at         | tstz        |                                                                                                |
+| created_by_user_id | ULID FK?    | provisioning user (the first owner); null for seeded rows                                      |
+| default_language   | text        | BCP-47; used by §10 auto-translation and digest prose                                          |
+| default_currency   | text        | ISO-4217. Referenced by Money section below; per-property override in §04.                     |
+| default_country    | text        | ISO-3166-1 alpha-2. Workspace-level fallback for properties.                                   |
+| default_locale     | text?       | BCP-47 locale tag (e.g. `fr-FR`). Nullable; when null, derived from `default_language` + `default_country`. Drives number/date/currency formatting on workspace-scoped documents. |
+| settings_json      | jsonb/text  | flat map of `dotted.key → value`; holds concrete workspace defaults for every registered setting (see "Settings cascade" below) |
+
+**Slug invariants.** Slugs are globally unique across the
+deployment (not `(workspace_id, slug)`, since the slug *is* the
+workspace identifier in the URL). The reserved-word blocklist is
+`w, api, admin, signup, login, recover, select-workspace, healthz,
+readyz, version, docs, redoc, styleguide, unsupported, static,
+assets` (kept in sync with §01). Case-insensitive on input,
+stored lowercase. On collision, the signup API returns
+`409 slug_taken` with a suggested variant.
+
+**Plan + quota.** `plan` is authoritative for which quotas apply;
+`quota_json` is the materialised snapshot actually enforced — the
+free-tier caps are copied in on provisioning so operator overrides
+are explicit. Hitting a quota cap returns `402 quota_exceeded`
+from the relevant API route; the UI renders the cap banner with a
+contact-your-operator CTA. Payment processing is out of scope for
+v1 (§00 N1).
+
+**Verification state.** `unverified` → `email_verified` after
+magic-link acceptance; → `human_verified` after first manager
+passkey enrollment and a minimum-activity gate (one property,
+one user invited, one task created); → `trusted` only when the
+deployment operator promotes the workspace. Per-state LLM and
+storage caps live in §15.
 
 ### `property_workspace`
 

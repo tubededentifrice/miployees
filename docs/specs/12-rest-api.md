@@ -15,13 +15,35 @@ unless explicitly noted.
 
 ## Base URL
 
-- `https://<host>/api/v1/`
+Every workspace-scoped endpoint lives under a path prefix keyed by
+the workspace's URL slug (§01 "Workspace addressing", §02
+`workspace.slug`):
+
+- `https://<host>/w/<slug>/api/v1/...` — all workspace-scoped
+  routes.
+- `https://<host>/api/v1/...` — **only** endpoints that cannot be
+  scoped to a workspace. The exhaustive list of bare-host routes is:
+  `/api/openapi.json`, `/api/v1/signup/{start,verify}`,
+  `/api/v1/auth/{login,logout,magic-link/redeem,webauthn/*}`,
+  `/api/v1/me/workspaces` (returns the caller's accessible
+  workspaces for the switcher), `/api/v1/healthz`,
+  `/api/v1/readyz`, `/api/v1/version`. Anything else 404s at the
+  bare host.
+
+The slug in the URL is the tenant identifier; authorisation is
+still the user's `role_grants` + `user_workspace` membership
+(§03, §02). A user without membership in `<slug>` hitting
+`/w/<slug>/api/v1/...` gets `404`, not `403` — per §01, SaaS
+tenants cannot enumerate each other.
+
 - JSON only (`Content-Type: application/json`).
 - UTF-8.
 
 ## Authentication
 
-`Authorization: Bearer mip_<key_id>_<secret>` — see §03.
+`Authorization: Bearer mip_<key_id>_<secret>` — see §03. The token's
+scope pins which workspace(s) it may reach; a token scoped to
+workspace A used against `/w/<slug-B>/api/v1/...` returns `404`.
 
 ## OpenAPI
 
@@ -66,6 +88,16 @@ CI fails any route that lacks an `operation_id` or an `x-cli`
 extension, unless the route is explicitly listed in
 `cli/crewday/_exclusions.yaml` (see §13). The parity gate in §17
 enforces each independently.
+
+**Workspace slug in the CLI.** Workspace-scoped routes carry
+`/w/<slug>/` in their path. The CLI generator does not emit
+`<slug>` as a per-command positional argument; instead, the
+generated `crewday` CLI exposes it as a **global flag**
+(`--workspace <slug>` / `-W <slug>`), resolved once and
+interpolated into every request URL. Profiles in `_config.py`
+may default the flag per-profile so operators do not have to
+repeat it. Bare-host routes (signup, login, `me/workspaces`,
+health) ignore the flag.
 
 ### Agent confirmation extension (`x-agent-confirm`)
 
@@ -210,20 +242,37 @@ non-obvious ones.
 
 ### Auth
 
+**Bare-host routes** (no `/w/<slug>/` prefix — identity is not
+workspace-scoped; §01, §03):
+
 ```
-POST   /auth/webauthn/begin_registration
-POST   /auth/webauthn/finish_registration
-POST   /auth/webauthn/begin_login
-POST   /auth/webauthn/finish_login
-POST   /auth/magic/send            # owner or manager only
-POST   /auth/magic/consume         # consume a break-glass code → magic link
-GET    /auth/me
-POST   /auth/logout
-POST   /auth/tokens                # create
-GET    /auth/tokens                # list (owner/manager)
-POST   /auth/tokens/{id}/revoke
-POST   /auth/tokens/{id}/rotate
+POST   /api/v1/signup/start                      # SaaS self-serve
+POST   /api/v1/signup/verify                     # magic link redeem + WS provisioning
+POST   /api/v1/auth/webauthn/begin_registration
+POST   /api/v1/auth/webauthn/finish_registration
+POST   /api/v1/auth/webauthn/begin_login
+POST   /api/v1/auth/webauthn/finish_login
+POST   /api/v1/auth/magic/send                   # owner or manager only
+POST   /api/v1/auth/magic/consume                # consume a break-glass code → magic link
+GET    /api/v1/auth/me
+POST   /api/v1/auth/logout
+GET    /api/v1/me/workspaces                     # switcher payload for the current session
 ```
+
+**Workspace-scoped routes** (API tokens scope to a workspace; §03):
+
+```
+POST   /w/<slug>/api/v1/auth/tokens              # create
+GET    /w/<slug>/api/v1/auth/tokens              # list (owner/manager)
+POST   /w/<slug>/api/v1/auth/tokens/{id}/revoke
+POST   /w/<slug>/api/v1/auth/tokens/{id}/rotate
+```
+
+All subsequent resource groups in this document live under
+`/w/<slug>/api/v1/` unless noted. The bare-path forms shown in
+earlier resource-group listings (`/properties`, `/tasks`, `/stays`,
+…) are relative to the workspace base URL — concatenate with
+`https://<host>/w/<slug>/api/v1/` to get the absolute URL.
 
 ### Properties / areas / stays
 

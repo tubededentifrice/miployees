@@ -353,7 +353,182 @@ a lost container is indistinguishable from 15 minutes of GC. The
 operator may still snapshot the scenario fixtures (they live in the
 image) for reproducibility.
 
-## Bootstrap (both recipes)
+## Recipe D — Managed multi-tenant deployment (Postgres + S3 + Caddy)
+
+A **deployment topology example**, not a mode — the same image
+that runs Recipe A runs Recipe D. The only differences are the
+backend choices, which the capability registry (§01) probes at
+boot: Postgres enables `features.rls`, S3 enables
+`features.object_storage`, and so on. Everything else
+(multi-tenancy, signup, RLS as defence-in-depth) is unified in
+the codebase.
+
+Target: the operator of `crewday.app` or any similar managed
+deployment where tenants are untrusted strangers. Visitors self-
+serve-signup via §03 with `settings.signup_enabled = true`; every
+workspace lives in one shared Postgres, isolated at the
+application layer by the `workspace_id` filter and at the DB
+layer by RLS (§15). Payments are **not** in scope for v1
+(§00 N1); every tenant is on the `free` plan with hard caps.
+
+### Topology
+
+```
+                Internet
+                    |
+              Caddy (TLS)    ───  wildcard-capable so per-WS subdomains
+                    |            can be added later (§01 "Workspace
+                    v            addressing") without re-issuing certs
+              app (FastAPI)       — same image as recipes A, B
+                    |
+       +------------+-----------+
+       |            |           |
+  Postgres 15     S3 / MinIO   OpenRouter
+  (RLS on        (per-WS path) (budgeted per WS)
+  every table)
+```
+
+- The **app** container is `crewday-server serve`; a **worker**
+  container runs `crewday-server worker` as a separate replica so
+  signup throttling, SSE fan-out, and LLM calls do not contend.
+- **Postgres 15+ recommended** for the threat profile (untrusted
+  tenants) because it activates `features.rls` (§01) as defence-
+  in-depth. The app runs equally on SQLite; the choice is about
+  isolation depth and concurrent-write scalability, not about
+  which codepath executes.
+- **S3-compatible storage** (MinIO in-cluster or a managed
+  bucket) with per-workspace prefixes
+  (`s3://crewday-saas/<workspace_id>/uploads/...`).
+
+### Compose snippet
+
+```yaml
+services:
+  app:
+    image: ghcr.io/<org>/crewday:<tag>
+    command: ["crewday-server", "serve"]
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      CREWDAY_DATABASE_URL: "postgresql+psycopg://crewday:${PG_PASS}@db:5432/crewday"
+      CREWDAY_STORAGE: "s3"
+      CREWDAY_S3_BUCKET: "crewday-saas"
+      CREWDAY_S3_ENDPOINT: "https://s3.<region>.amazonaws.com"
+      CREWDAY_BIND: "0.0.0.0:8000"
+      CREWDAY_ALLOW_PUBLIC_BIND: "1"
+      CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
+      CREWDAY_PUBLIC_URL: "https://crewday.app"
+      SMTP_HOST: "..."
+      SMTP_USER: "..."
+      SMTP_PASS: "..."
+      MAIL_FROM: "crewday <no-reply@crewday.app>"
+      OPENROUTER_API_KEY: "..."
+    depends_on: [db, worker]
+    ports: ["127.0.0.1:8000:8000"]
+
+  worker:
+    image: ghcr.io/<org>/crewday:<tag>
+    command: ["crewday-server", "worker"]
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      CREWDAY_DATABASE_URL: "postgresql+psycopg://crewday:${PG_PASS}@db:5432/crewday"
+      CREWDAY_STORAGE: "s3"
+      CREWDAY_S3_BUCKET: "crewday-saas"
+      CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
+      OPENROUTER_API_KEY: "..."
+    depends_on: [db]
+
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "crewday"
+      POSTGRES_PASSWORD: "${PG_PASS}"
+      POSTGRES_DB: "crewday"
+    volumes: ["./pgdata:/var/lib/postgresql/data"]
+```
+
+### Caddyfile
+
+```
+crewday.app {
+  reverse_proxy app:8000
+  encode zstd gzip
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    Permissions-Policy "camera=(), microphone=(self), geolocation=(self)"
+  }
+}
+
+# Optional, for the future subdomain-isolation layer (§01).
+# Uncomment once wildcard DNS + DNS-01 TLS is in place.
+# *.crewday.app {
+#   tls {
+#     dns route53
+#   }
+#   reverse_proxy app:8000
+# }
+```
+
+### RLS installation
+
+Alembic runs `alembic upgrade head` at boot; the final migration in
+the suite runs `app/tenancy/install_rls.py`, which creates or
+replaces a policy on every table carrying `workspace_id`:
+
+```sql
+ALTER TABLE <table> ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_read ON <table>
+    USING (workspace_id = current_setting('crewday.workspace_id')::text);
+CREATE POLICY tenant_write ON <table>
+    FOR INSERT / UPDATE / DELETE
+    WITH CHECK (workspace_id = current_setting('crewday.workspace_id')::text);
+```
+
+The migration is idempotent and re-asserts the policy on every
+deploy so drift via manual `psql` cannot persist.
+
+### Self-serve signup
+
+Self-serve signup is an operator setting, not an env var (see §01
+"Capability registry", §03 for flow, §15 for caps). On a fresh
+deployment signup is **off**. To turn it on:
+
+```
+docker compose exec app crewday admin settings set signup_enabled true
+docker compose exec app crewday admin settings set signup_disposable_domains_path /etc/crewday/disposable-domains.txt
+```
+
+Throttle overrides, disposable-domain paths, and pre-verification
+caps are also operator settings (`settings.signup_throttle_*`,
+`settings.signup_caps_*`); defaults come from §15. Changes take
+effect immediately — the settings are read through the capability
+registry at every request, not cached at boot.
+
+### Backup
+
+- **Postgres:** `pg_dump --format=custom` nightly to S3 with
+  server-side encryption; point-in-time recovery via WAL
+  shipping for anything more aggressive.
+- **S3 uploads:** lifecycle versioning on the bucket plus
+  cross-region replication for the operator's chosen
+  durability tier.
+- **Per-tenant export** (tenant self-serve): workspace owner can
+  request a full export via `POST /w/<slug>/api/v1/admin/export`,
+  returning a signed URL to a ZIP of the tenant's rows +
+  uploads. Used for GDPR data portability (§15).
+
+### Migration off SaaS (tenant self-rescue)
+
+A tenant may at any time download their export and re-import into
+a self-host instance via `crewday admin import <path>` (runs on
+Recipe A or Recipe B). The import assigns a new workspace row and
+remaps `workspace_id` — the slug is preserved unless it collides.
+
+## Bootstrap
+
+### Self-hosted (recipes A, B)
 
 ```
 # Generate a root key once and keep it SAFE.
@@ -361,10 +536,43 @@ export CREWDAY_ROOT_KEY=$(python -c "import os,base64; print(base64.b64encode(os
 
 # First boot:
 docker compose up -d
-docker compose exec app crewday admin init --email owner@example.com
+docker compose exec app crewday admin init --email owner@example.com --slug myhome
 
 # The command prints a magic link URL. Open on your phone to register.
+# The workspace is then reachable at https://<host>/w/myhome/today.
 ```
+
+### Managed multi-tenant (recipe D)
+
+```
+# Root key, same idea as above.
+export CREWDAY_ROOT_KEY=...
+export PG_PASS=...
+docker compose up -d
+
+# Migrations run at boot. On Postgres the RLS policies install
+# automatically (capability features.rls = true; see §01).
+
+# First operator workspace — same command as self-host, since
+# there is only one codepath.
+docker compose exec app crewday admin workspace create \
+    --slug ops --email ops@example.com
+
+# Open the deployment to public signups:
+docker compose exec app crewday admin settings set signup_enabled true
+
+# To promote a workspace to verification_state='trusted' (lifts
+# all tight caps; see §02):
+docker compose exec app crewday admin workspace trust <slug> --reason "..."
+
+# To close signups again (e.g. beta freeze):
+docker compose exec app crewday admin settings set signup_enabled false
+```
+
+### Demo (recipe C)
+
+See §24 for the demo-specific bootstrap flow — workspaces are
+provisioned per visitor, not per operator.
 
 ## Environment variables (selected)
 
@@ -389,6 +597,14 @@ docker compose exec app crewday admin init --email owner@example.com
 | `CREWDAY_DEMO_GLOBAL_DAILY_USD_CAP` | 5                      | Recipe C only; deployment-wide daily kill-switch across every demo workspace. §11 |
 | `CREWDAY_DEMO_BLOCK_CIDR`   | -                              | Recipe C only; optional comma-separated IP deny-list. §24 |
 | `CREWDAY_DEMO_DB_DENYLIST`  | -                              | Recipe C only; comma-separated list of DB URLs the demo refuses to start on. §16 |
+
+
+Signup behaviour, throttles, and disposable-domain paths are
+**deployment settings**, not env vars — see §01 "Capability
+registry" and the "Self-serve signup" subsection above.
+Environment differences (DB engine, storage backend, LLM
+provider) surface via capabilities probed at boot; the code does
+not branch on a deployment-mode switch.
 
 A full env reference lives in `deploy/.env.example`.
 

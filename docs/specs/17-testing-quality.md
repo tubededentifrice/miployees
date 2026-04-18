@@ -5,6 +5,8 @@
 | layer                | tool                      | runs on               | budget per run |
 |----------------------|---------------------------|-----------------------|----------------|
 | static (type/lint)   | `ruff`, `mypy --strict`   | every commit          | < 15s          |
+| import boundaries    | `import-linter`           | every commit          | < 10s          |
+| tenant isolation     | `pytest tests/tenant/`    | every PR              | < 60s          |
 | unit                 | `pytest`                  | every PR              | < 60s          |
 | frontend unit        | `vitest` + `@testing-library/react` + `msw` | every PR | < 60s |
 | integration (DB)     | `pytest` + testcontainers | every PR              | < 5min         |
@@ -20,10 +22,63 @@
 
 - Pure domain, no network, no real DB. Fakes for `Clock`, `Storage`,
   `Mailer`, `LLMClient`.
+- **One test package per bounded context**
+  (`tests/unit/<context>/`) mirroring `app/domain/<context>/`.
+  Each test imports only its context's public surface plus
+  in-memory fakes of the context's ports. A test that imports
+  from a sibling context's submodule is a code smell and is
+  caught by the import-boundary gate below unless the file lives
+  under `tests/integration/`.
 - Every schedule / RRULE edge case has a parametrized test.
 - Money math has property-based tests (`hypothesis`).
 - Policy helpers (capability resolution, assignment algorithm, approval
   detection) get exhaustive truth-table tests.
+
+## Import boundaries
+
+Enforced on every commit by `import-linter` (see §01 "Module
+boundaries and bounded contexts"). Config lives at
+`pyproject.toml` under `[tool.importlinter]`:
+
+- **Layer contract.** `domain` layer is forbidden from importing
+  `adapters`, `api`, `web`, or `worker`.
+- **Independence contract.** Each `domain.<X>` is an independent
+  module; sibling contexts may import `domain.<Y>` (the package
+  `__init__.py`) but not `domain.<Y>.<submodule>`.
+- **Shared-kernel allowlist.** `app.util`, `app.audit`,
+  `app.tenancy`, `app.events`, and `app.adapters.*.ports` are
+  the only modules any layer may import freely.
+- **Handler thinness.** `app.api.v1.<X>` may import only
+  `domain.<X>` (its own context's public surface) plus the
+  shared-kernel. Cross-context orchestration in a handler fails
+  the gate — it belongs in a domain service.
+
+A violation fails CI. There is no skip flag; the fix is either
+to move the code to the right module or to promote the function
+to a public surface.
+
+## Tenant isolation
+
+A dedicated test package `tests/tenant/` seeds two workspaces
+and verifies that code in one cannot reach rows in the other:
+
+- **Repository parity.** For every workspace-scoped repository
+  method across every context, a parametrised case asserts that
+  a caller with `WorkspaceContext(workspace_id=A)` cannot read,
+  write, soft-delete, or restore a row with `workspace_id=B`.
+  Runs on both SQLite (app-filter only) and Postgres (RLS +
+  app-filter) via `testcontainers`.
+- **RLS enforcement.** For Postgres, the test clears
+  `current_setting('crewday.workspace_id')` mid-transaction and
+  asserts every subsequent query raises rather than silently
+  returns cross-tenant rows.
+- **URL enumeration.** HTTP-level tests hit
+  `/w/<slug-B>/api/v1/...` with a session authenticated in
+  workspace A and assert `404` with a constant-time response
+  (see §15).
+- **Parity check.** A lint pass walks
+  `app/adapters/db/*/repository.py` and fails if a new public
+  method is not covered by the tenant test suite.
 
 ## Integration
 

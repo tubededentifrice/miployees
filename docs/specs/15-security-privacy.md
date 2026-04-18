@@ -362,24 +362,153 @@ much of the data is personal.
 ## Row-level security (RLS)
 
 The tenancy seam for row-level security is **`workspace_id`** (v0
-used `household_id`; the rename is covered in §02 "Migration"). On
-Postgres, every user-editable table carries a `workspace_id` column
-and a policy that restricts `SELECT / UPDATE / DELETE` to the
-caller's active workspace, bound to the session at the start of
-each request from the authenticated principal (any user session or
-token). The policy gates access to rows by `workspace_id`; it does
-not distinguish `grant_role` — that is enforced at the application
-layer (see §02 `role_grants`). On SQLite the equivalent is a query-
-time filter injected by the ORM layer — the same `workspace_id`
-column, enforced in code paths rather than by the engine. v1 ships
-single-workspace so the practical effect is nil; the seam is there
-so turning on true multi-tenancy later is a policy flip, not a
-schema migration.
+used `household_id`; the rename is covered in §02 "Migration").
+v1 is multi-tenant from day 1 (§00 G11, §01 "Multi-tenancy
+runtime"), so isolation is load-bearing on every deployment that
+holds more than one workspace — on any backend.
+
+Isolation is enforced in two layers:
+
+1. **Application layer (always on, every backend).** Every
+   repository call filters by `ctx.workspace_id` from the active
+   `WorkspaceContext` (§01). This is the primary isolation
+   mechanism; the import-boundary gate + per-repository tenant
+   regression test (§17) keep it honest. It runs identically on
+   SQLite and Postgres.
+2. **Database layer (capability `features.rls` — Postgres only).**
+   Every workspace-scoped table also carries an RLS policy that
+   restricts `SELECT / UPDATE / DELETE` to
+   `current_setting('crewday.workspace_id')`. The `tenancy`
+   module (§01) sets that session variable at the start of every
+   transaction from the active `WorkspaceContext`; missing it is
+   a programming error that trips a `SET LOCAL` sentinel and
+   aborts the transaction. Policies gate rows by `workspace_id`;
+   they do not distinguish `grant_role` — that is enforced at
+   the application layer (see §02 `role_grants`). RLS is
+   **defence-in-depth** — the safety net when a context forgets
+   the app-level filter.
+
+SQLite deployments lack the capability and therefore run on the
+application-layer filter alone. The cross-tenant regression test
+(§17) runs on both backends; any repository that passes on
+Postgres (where RLS would mask a bug) but fails on SQLite (where
+only the app filter stands) fails CI.
+
+For deployments where the adversary model includes other tenants
+on the same instance (open self-serve SaaS with untrusted
+tenants), Postgres is the recommended backend because the
+defence-in-depth layer is meaningful. For single-organisation
+self-host (trusted tenants, e.g. one family with multiple
+workspaces), SQLite with the app-level filter is acceptable.
+Neither is mode-gated; both are supported by the same code.
+
+### Cross-tenant regression test
+
+The §17 gate `tenant_isolation_cross_workspace` seeds two
+workspaces and, for every workspace-scoped repository method,
+verifies that a caller authenticated in workspace A cannot read,
+write, or soft-delete a row owned by workspace B — on both
+SQLite and Postgres. A failure fails CI; adding a new
+repository method without extending the gate is caught by a
+parity check.
 
 Users with membership in more than one workspace (§02
-`user_workspace`) pick an active workspace at session start; the
-chosen workspace id rides with every subsequent request. Switching
+`user_workspace`) pick an active workspace via the
+`/select-workspace` picker (§14); the chosen workspace id rides
+with every subsequent request as the URL slug. Switching
 workspaces re-seeds the RLS context and is audited.
+
+### Shared-origin XSS containment
+
+Path-prefix addressing (§01) means every workspace on a given
+deployment shares a single browser origin. Script that executes
+in one workspace has same-origin access to every workspace the
+current user is logged into on that deployment — cookies,
+IndexedDB, Cache Storage, and `postMessage` are all shared. This
+is tolerable for a self-hosted deployment (trusted tenants, one
+org) and a hard threat for SaaS with open self-serve signup
+(strangers). The defences below are mandatory on SaaS and
+recommended on self-host.
+
+- **Strict default CSP.** `default-src 'self'`, `script-src
+  'self' 'nonce-<per-request>'`, `style-src 'self' 'nonce-…'`,
+  `img-src 'self' data: blob:`, `connect-src 'self'`,
+  `frame-ancestors 'none'`, `form-action 'self'`. No inline
+  scripts or styles without a nonce. Emitted on every HTML
+  response by FastAPI middleware.
+- **Sanitiser on every UGC render.** Instructions (§07), task
+  comments (§06), expense descriptions, agent-preferences blobs
+  (§11), and guest-welcome overrides (§04) pass through
+  `bleach` (Python, server-side) with a whitelist of block
+  tags, no `<script>`, no `<iframe>`, no `javascript:` URLs, no
+  event-handler attributes. React renders the sanitised HTML
+  via `dangerouslySetInnerHTML` only from server output; never
+  from user input client-side.
+- **No `eval` on imported external content.** iCal bodies, OCR
+  receipts, and email inbound hooks are parsed with structured
+  parsers only — no regex-to-template-eval shortcuts. Same rule
+  for LLM-returned JSON: parsed and schema-validated, never
+  executed.
+- **`__Host-` cookies, origin-locked.** Session cookies use the
+  `__Host-` prefix (Secure, HttpOnly, SameSite=Lax, Path=/), so
+  they cannot be narrowed by path. Workspace scope is carried
+  by the URL path + server-side `user_workspace` check, not by
+  cookies.
+- **Subresource integrity.** Any third-party JS bundle served
+  (v1 goal: none) must carry `integrity="sha384-…"`. CI fails
+  a build that introduces a `<script src="https://...">`
+  without SRI.
+- **Postmessage allowlist.** The one intentional cross-frame
+  boundary (guest welcome iframe; demo-mode embedder, §24) uses
+  explicit `targetOrigin` checks on both sides. Any other
+  `postMessage` listener in the SPA is a lint error.
+
+### Self-serve abuse mitigations
+
+Open self-serve signup (§03, §00 G12) exposes any deployment that
+runs it to a new threat class: adversaries provisioning throwaway
+workspaces to burn LLM budget, enumerate the deployment, or abuse
+outbound email. The following gates apply whenever
+`settings.signup_enabled = true` (operator-settable, §01
+"Capability registry"); they are not deploy-mode-specific.
+
+- **Rate limits on `POST /api/v1/signup/start`:**
+  - ≤ 5 successful starts per source IP per hour.
+  - ≤ 3 successful starts per email lifetime on the deployment.
+  - ≤ 200 signup starts per deployment per hour (global
+    cool-off). Exceeded limits return `429` with a retry-after
+    header.
+- **Disposable-domain blocklist** on the email-domain portion of
+  the submitted address. The list ships with a default set
+  (the `disposable-email-domains` dataset, pinned release);
+  operators override via the deployment setting
+  `settings.signup_disposable_domains_path` (§01 "Capability
+  registry"). A blocked domain returns `400 disposable_email`
+  with copy inviting the user to use a different address.
+- **Magic-link TTL 15 min, one-use.** Links are single-consumption
+  and invalidate on claim or on `/signup/start` retry for the
+  same `(email, desired_slug)`.
+- **Tight caps pre-verification.** Workspaces with
+  `verification_state ∈ {unverified, email_verified}` have:
+  - LLM budget: 10% of the free-tier cap.
+  - Upload quota: 25 MB.
+  - Outbound email: 10 messages lifetime (invitations, notifications).
+  - No outbound webhooks (§12), no iCal polling (§05), no
+    integration-events transport.
+  Caps lift on `human_verified` (see §02 `workspace`).
+- **Abuse signals written to audit log** and surfaced on the
+  operator-only `/admin/signups` page: burst-rate trips, same
+  IP across distinct emails, repeat provisioning from one email,
+  quota near-breach events.
+- **Signup GC worker.** `signup_gc` runs every 15 minutes;
+  removes stalled signup attempts (magic-link redeemed but
+  passkey never registered) after 1 hour, and archives
+  workspaces whose provisioning user never completed passkey
+  registration after 24 hours.
+- **No workspace enumeration.** `GET /w/<slug>/...` from an
+  unauthenticated or non-member caller returns `404` uniformly,
+  with a constant-time response so slug-probing can't time-
+  fingerprint existence.
 
 ### Personal task visibility
 
