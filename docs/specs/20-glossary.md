@@ -441,7 +441,7 @@ fix the offender.
 - **Personal task.** A task with `is_personal = true`: visible only to
   the `created_by` user and workspace owners; hidden from non-owner
   managers, team dashboards, reports, and audit surfaces. Created via
-  quick-add on `/today` or `/week` where personal is the default; the
+  quick-add on `/today` or `/schedule` where personal is the default; the
   creator may flip "share to team" before submitting. See §06
   "Self-created and personal tasks" and §15 "Personal task visibility".
 - **Property.** A managed physical place containing one or more
@@ -491,6 +491,13 @@ fix the offender.
   §06 "Schedule ruleset (per-property rota)".
 - **Schedule.** Description of when tasks materialize (RRULE).
   `paused_at` wins over `active_from/active_until`.
+- **Schedule view (`/schedule`).** The self-only calendar surface
+  for workers and managers — replaces the legacy `/week` flat list
+  and the `/me/schedule` alias. Hub for "where am I, when am I
+  off, what hours do I need swapped on this day". Phone renders
+  an agenda; desktop renders a week grid. See §14 "Schedule view"
+  and §06 "Availability precedence stack" for the resolution rules.
+  Team-wide equivalent is `/scheduler`.
 - **Scope (instruction).** The visibility level of an instruction:
   `global` (all properties), `property` (one property), `area` (one
   area within a property), or linked via `instruction_link`. See §07.

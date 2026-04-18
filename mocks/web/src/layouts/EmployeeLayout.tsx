@@ -36,7 +36,7 @@ function roleLabel(role: string): string {
 // the employee shell renders no hamburger / mobile top bar at all.
 const NAV_ITEMS: SideNavItem[] = [
   { type: "link", to: "/today", label: "Today", phoneHidden: true },
-  { type: "link", to: "/week", label: "Week", phoneHidden: true },
+  { type: "link", to: "/schedule", label: "Schedule", phoneHidden: true },
   { type: "link", to: "/my/expenses", label: "Expenses", phoneHidden: true },
   { type: "link", to: "/me", matchPrefix: "/me", label: "Me", phoneHidden: true },
 ];

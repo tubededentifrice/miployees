@@ -544,6 +544,29 @@ class Leave:
 
 
 @dataclass
+class AvailabilityOverride:
+    """§06 — per-date override of a user's weekly availability.
+
+    Mirrors `user_availability_overrides` with the approval-required
+    field denormalised from the §06 "hybrid model" table. Server
+    computes it on create; mocks seed it directly.
+    """
+
+    id: str
+    user_id: str
+    workspace_id: str
+    date: date
+    available: bool
+    starts_local: str | None
+    ends_local: str | None
+    reason: str | None
+    approval_required: bool
+    approved_at: datetime | None
+    approved_by: str | None
+    created_at: datetime
+
+
+@dataclass
 class PropertyClosure:
     id: str
     property_id: str
@@ -2185,6 +2208,30 @@ LEAVES: list[Leave] = [
     Leave("lv-4", "e-arun",  date(2026, 6, 15), date(2026, 6, 29), "vacation",  "Annual trip home — India",
           approved_at=datetime(2026, 2, 20, 10, 15),
           user_id="u-arun", decided_by_user_id="u-elodie"),
+    Leave("lv-5", "e-maria", date(2026, 4, 17), date(2026, 4, 17), "personal",  "School run — parent-teacher",
+          user_id="u-maria"),
+]
+
+
+AVAILABILITY_OVERRIDES: list[AvailabilityOverride] = [
+    AvailabilityOverride(
+        "ao-maria-wed", "u-maria", "ws-bernard", date(2026, 4, 15),
+        available=True, starts_local="10:00", ends_local="14:00",
+        reason="Covering for Ben — happy to do a half day",
+        approval_required=False,
+        approved_at=datetime(2026, 4, 10, 18, 20),
+        approved_by="u-maria",
+        created_at=datetime(2026, 4, 10, 18, 20),
+    ),
+    AvailabilityOverride(
+        "ao-maria-thu", "u-maria", "ws-bernard", date(2026, 4, 16),
+        available=True, starts_local="09:00", ends_local="14:00",
+        reason="Dentist in the late afternoon",
+        approval_required=True,
+        approved_at=None,
+        approved_by=None,
+        created_at=datetime(2026, 4, 14, 9, 5),
+    ),
 ]
 
 

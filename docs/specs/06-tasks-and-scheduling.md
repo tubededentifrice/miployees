@@ -237,7 +237,7 @@ The canonical enum lives in §02 (`task_state`, 7 values including
 - `scheduled` → `pending` happens at `scheduled_for_utc - 1h` (or
   immediately for one-offs created with a past `scheduled_for`). This
   is the "now actionable, on today's list" boundary used to separate
-  `/today` from `/week` — for any user (worker or manager) who has
+  `/today` from `/schedule` — for any user (worker or manager) who has
   tasks assigned to them.
 - `pending` → `in_progress` is optional; workers may go directly
   to `completed`.
@@ -427,7 +427,7 @@ approved leave for that weekday.
 One-off `user_leave` rows still win over the weekly pattern on dates
 they cover. Conversely, the weekly pattern does **not** automatically
 generate `user_leave` rows — it is evaluated live at assignment time
-and at display time on the worker "Week" view.
+and at display time on the worker `/schedule` view (§14).
 
 ### Schedule ruleset (per-property rota)
 
@@ -495,10 +495,12 @@ cannot reject them without cross-workspace reads.
 
 **Editing authority.** Managers (and owners) edit rulesets and
 slots freely; workers see the effective rota read-only on
-`/me/schedule` (§14). Per-date exceptions go through
+`/schedule` (§14). Per-date exceptions go through
 `user_availability_override` (below) — a worker who needs a
-specific Monday off still submits an override; a manager who
-needs to shuffle a recurring pattern edits the ruleset.
+specific Monday off submits an override from `/schedule` (the
+self-service form calls `POST /api/v1/me/availability_overrides`,
+§12); a manager who needs to shuffle a recurring pattern edits
+the ruleset on `/schedules`.
 
 ### `user_availability_overrides`
 
@@ -952,7 +954,7 @@ For `mixed`: same rules but with
 Any user with the `tasks.create` permission (owners, managers, and
 workers — see §05 action catalog) may originate a task via
 `POST /api/v1/tasks` or the quick-add modal available on `/today` and
-`/week`.
+`/schedule`.
 
 The quick-add default is `is_personal = true, assigned_user_id =
 created_by` (self-assigned). The user may flip "share to team" before

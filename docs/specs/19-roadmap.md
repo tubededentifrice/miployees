@@ -92,7 +92,7 @@ CLI generation pipeline produces commands for all Phase 2 endpoints;
 - **Public holidays with scheduling effects** (`block | allow |
   reduced`).
 - **Unified self-service tasks + MY WORK on manager shell** — any role
-  may create personal tasks via quick-add on `/today` / `/week`
+  may create personal tasks via quick-add on `/today` / `/schedule`
   (`is_personal = true` by default, §06 §15); managers access their
   own work surfaces inside the desktop shell via a new MY WORK nav
   group (§14).

@@ -13,10 +13,15 @@ import AppearancePanel from "@/components/AppearancePanel";
 import AvatarEditor from "@/components/AvatarEditor";
 import ChatChannelsMeCard from "@/components/ChatChannelsMeCard";
 import PersonalTokensPanel from "@/components/PersonalTokensPanel";
-import type { Leave, Me } from "@/types/api";
+import { LeaveDialog, OverrideDialog } from "@/components/ScheduleDialogs";
+import type { AvailabilityOverride, Leave, Me } from "@/types/api";
 
 interface LeavesPayload {
   leaves: Leave[];
+}
+
+interface OverridesPayload {
+  overrides: AvailabilityOverride[];
 }
 
 const LANG_LABEL: Record<string, string> = {
@@ -44,6 +49,13 @@ const DAYS: [string, string][] = [
 
 export default function MePage() {
   const [editorOpen, setEditorOpen] = useState(false);
+  // `leaveIso` / `overrideIso` null = dialog closed; an ISO string
+  // opens the corresponding shared dialog with that date pre-filled
+  // (today when opened from the panel actions). The same writers
+  // /schedule uses — same approval semantics, same invalidation set.
+  const [leaveIso, setLeaveIso] = useState<string | null>(null);
+  const [overrideIso, setOverrideIso] = useState<string | null>(null);
+
   const me = useQuery({
     queryKey: qk.me(),
     queryFn: () => fetchJson<Me>("/api/v1/me"),
@@ -55,6 +67,11 @@ export default function MePage() {
     queryKey: qk.employeeLeaves(empId),
     queryFn: () => fetchJson<LeavesPayload>("/api/v1/employees/" + empId + "/leaves"),
     enabled: Boolean(empId),
+  });
+
+  const overridesQ = useQuery({
+    queryKey: qk.meOverrides(),
+    queryFn: () => fetchJson<OverridesPayload>("/api/v1/me/availability_overrides"),
   });
 
   if (me.isPending) {
@@ -70,8 +87,13 @@ export default function MePage() {
 
   const { employee } = me.data;
   const leaves = leavesQ.data?.leaves ?? [];
+  const overrides = overridesQ.data?.overrides ?? [];
   const langLabel = LANG_LABEL[employee.language] ?? employee.language;
   const clockChip = CLOCK_CHIP[employee.clock_mode] ?? "ghost";
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const weeklyPatternByDay: Record<string, number> = {
+    mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6,
+  };
 
   return (
     <section className="me-page">
@@ -163,13 +185,16 @@ export default function MePage() {
       <section className="panel">
         <header className="panel__head">
           <h2>Weekly availability</h2>
-          <Link to="/me/schedule" className="btn btn--ghost btn--sm">
+          <Link to="/schedule" className="btn btn--ghost btn--sm">
             Open schedule
           </Link>
         </header>
         <p className="muted">
-          Read-only. Ask the manager to change these. Your per-property rota
-          lives under <Link to="/me/schedule">Schedule</Link>.
+          Your standing weekly pattern — managers own the pattern itself.
+          For a one-off change (a specific day off, a different shift on
+          Friday), use <strong>Adjust a day</strong> below or on the{" "}
+          <Link to="/schedule">Schedule</Link> page. Extra hours are
+          auto-approved; reducing hours needs manager approval (§06).
         </p>
         <div className="avail-grid">
           {DAYS.map(([key, label]) => {
@@ -194,7 +219,16 @@ export default function MePage() {
       </section>
 
       <section className="panel">
-        <header className="panel__head"><h2>My leave</h2></header>
+        <header className="panel__head">
+          <h2>My leave</h2>
+          <button
+            className="btn btn--moss btn--sm"
+            type="button"
+            onClick={() => setLeaveIso(todayIso)}
+          >
+            + Request leave
+          </button>
+        </header>
         <ul className="task-list">
           {leaves.length === 0 ? (
             <li className="empty-state empty-state--quiet">No leave on file.</li>
@@ -206,7 +240,7 @@ export default function MePage() {
                     {fmtDate(lv.starts_on)} → {fmtDate(lv.ends_on)}
                   </strong>
                   <div className="stack-row__sub">
-                    {cap(lv.category)} · {lv.note}
+                    {cap(lv.category)}{lv.note ? ` · ${lv.note}` : ""}
                   </div>
                 </div>
                 <Chip tone={lv.approved_at ? "moss" : "sand"} size="sm">
@@ -216,7 +250,47 @@ export default function MePage() {
             ))
           )}
         </ul>
-        <button className="btn btn--ghost" type="button">+ Request leave</button>
+      </section>
+
+      <section className="panel">
+        <header className="panel__head">
+          <h2>My availability overrides</h2>
+          <button
+            className="btn btn--moss btn--sm"
+            type="button"
+            onClick={() => setOverrideIso(todayIso)}
+          >
+            + Adjust a day
+          </button>
+        </header>
+        <p className="muted">
+          One-off changes to your working hours for a specific date. Also
+          editable per-day from <Link to="/schedule">Schedule</Link>.
+        </p>
+        <ul className="task-list">
+          {overrides.length === 0 ? (
+            <li className="empty-state empty-state--quiet">No overrides on file.</li>
+          ) : (
+            overrides.map((ao) => (
+              <li key={ao.id} className="stack-row">
+                <div>
+                  <strong>{fmtDate(ao.date)}</strong>
+                  <div className="stack-row__sub">
+                    {ao.available
+                      ? ao.starts_local && ao.ends_local
+                        ? `${ao.starts_local}–${ao.ends_local}`
+                        : "Working (pattern hours)"
+                      : "Off"}
+                    {ao.reason ? ` · ${ao.reason}` : ""}
+                  </div>
+                </div>
+                <Chip tone={ao.approved_at ? "moss" : "sand"} size="sm">
+                  {ao.approved_at ? "Approved" : "Pending"}
+                </Chip>
+              </li>
+            ))
+          )}
+        </ul>
       </section>
 
       <AppearancePanel />
@@ -296,6 +370,32 @@ export default function MePage() {
         onClose={() => setEditorOpen(false)}
         currentUrl={employee.avatar_url}
         userName={employee.name}
+      />
+
+      <LeaveDialog
+        iso={leaveIso}
+        employeeId={empId || null}
+        onClose={() => setLeaveIso(null)}
+      />
+      <OverrideDialog
+        iso={overrideIso}
+        employeeId={empId || null}
+        pattern={
+          overrideIso
+            ? (() => {
+                // Translate the MePage weekly_availability dict into the
+                // SelfWeeklyAvailabilitySlot shape the dialog expects.
+                const wd = (new Date(overrideIso).getDay() + 6) % 7;
+                const key = Object.entries(weeklyPatternByDay)
+                  .find(([, idx]) => idx === wd)?.[0];
+                const slot = key ? employee.weekly_availability[key] : null;
+                return slot
+                  ? { weekday: wd, starts_local: slot[0], ends_local: slot[1] }
+                  : { weekday: wd, starts_local: null, ends_local: null };
+              })()
+            : null
+        }
+        onClose={() => setOverrideIso(null)}
       />
     </section>
   );

@@ -1986,6 +1986,255 @@ def api_scheduler_calendar(request: Request,
     })
 
 
+# ── /schedule self-service surface (§14 "Schedule view") ─────────────
+
+_WEEKLY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _weekly_slots_for_user(uid: str) -> list[dict[str, Any]]:
+    """Serialise the signed-in user's weekly pattern as ISO-weekday slots.
+
+    The seed stores weekly availability on Employee for historical
+    reasons; §06 will migrate it to `user_weekly_availability`. The
+    response shape here is the target shape so the frontend is
+    forward-compatible.
+    """
+    emp = next((e for e in md.EMPLOYEES if e.user_id == uid), None)
+    if emp is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for i, key in enumerate(_WEEKLY_KEYS):
+        hours = emp.weekly_availability.get(key)
+        if hours:
+            out.append({"weekday": i, "starts_local": hours[0], "ends_local": hours[1]})
+        else:
+            out.append({"weekday": i, "starts_local": None, "ends_local": None})
+    return out
+
+
+def _time_to_minutes(hhmm: str) -> int:
+    parts = hhmm.split(":")
+    return int(parts[0]) * 60 + int(parts[1])
+
+
+def _override_reduces_hours(
+    weekly: list[dict[str, Any]],
+    weekday: int,
+    available: bool,
+    starts_local: str | None,
+    ends_local: str | None,
+) -> bool:
+    """§06 "Approval logic (hybrid model)" — does this override narrow availability?
+
+    Mirrors the table exactly: off → working = auto; working → off = approval;
+    reduce hours = approval; extend hours = auto; off → off = auto.
+    """
+    pattern = next((s for s in weekly if s["weekday"] == weekday), None)
+    pat_off = not pattern or pattern["starts_local"] is None
+    if not available:
+        return not pat_off  # removing a working day → approval
+    # Available = True.
+    if pat_off:
+        return False  # extra day — auto-approved
+    # Both have hours — compare widths.
+    pat_start = _time_to_minutes(pattern["starts_local"])
+    pat_end = _time_to_minutes(pattern["ends_local"])
+    if starts_local is None or ends_local is None:
+        return False  # inherits pattern hours, same width
+    new_start = _time_to_minutes(starts_local)
+    new_end = _time_to_minutes(ends_local)
+    # Narrower on either edge → approval.
+    return new_start > pat_start or new_end < pat_end
+
+
+@app.get("/api/v1/me/schedule")
+def api_me_schedule(
+    request: Request,
+    from_: str | None = None,
+    to: str | None = None,
+) -> Response:
+    """Self-only calendar feed for `/schedule` (§14).
+
+    Returns rota slots + assigned tasks + approved leaves + overrides
+    covering the window. Pending leaves and overrides are returned too,
+    flagged by `approved_at IS NULL`, so the UI can render their state
+    without having to re-derive it.
+    """
+    uid = current_user_id(request)
+    ws_id = current_workspace_id(request)
+    today = date.today()
+    from_d = date.fromisoformat(from_) if from_ else today
+    to_d = date.fromisoformat(to) if to else today + timedelta(days=13)
+
+    # Rota — same join as /scheduler/calendar but narrowed to self.
+    uwr_ids = {r.id for r in md.USER_WORK_ROLES if r.user_id == uid and r.workspace_id == ws_id}
+    assignments = [
+        a for a in md.assignments_for_workspace(ws_id) if a.user_work_role_id in uwr_ids
+    ]
+    ruleset_ids = {a.schedule_ruleset_id for a in assignments if a.schedule_ruleset_id}
+    rulesets = [r for r in md.SCHEDULE_RULESETS if r.id in ruleset_ids]
+    slots = [s for s in md.SCHEDULE_RULESET_SLOTS if s.schedule_ruleset_id in ruleset_ids]
+    pids = {a.property_id for a in assignments}
+
+    # Tasks assigned to this user in the window.
+    tasks = [
+        t for t in md.TASKS
+        if t.assigned_user_id == uid
+        and from_d <= t.scheduled_start.date() <= to_d
+    ]
+    task_view = [
+        {
+            "id": t.id,
+            "title": t.title,
+            "property_id": t.property_id,
+            "user_id": t.assigned_user_id,
+            "scheduled_start": t.scheduled_start,
+            "estimated_minutes": t.estimated_minutes,
+            "priority": t.priority,
+            "status": t.status,
+        }
+        for t in tasks
+    ]
+    pids = pids | {t.property_id for t in tasks}
+
+    # Leaves + overrides covering the window (any approval state).
+    emp = next((e for e in md.EMPLOYEES if e.user_id == uid), None)
+    emp_id = emp.id if emp else None
+    leaves = [
+        lv for lv in md.LEAVES
+        if (lv.user_id == uid or lv.employee_id == emp_id)
+        and lv.starts_on <= to_d and lv.ends_on >= from_d
+    ]
+    overrides = [
+        ao for ao in md.AVAILABILITY_OVERRIDES
+        if ao.user_id == uid and from_d <= ao.date <= to_d
+    ]
+
+    return ok({
+        "window": {"from": from_d.isoformat(), "to": to_d.isoformat()},
+        "user_id": uid,
+        "weekly_availability": _weekly_slots_for_user(uid),
+        "rulesets": rulesets,
+        "slots": slots,
+        "assignments": [
+            {
+                "id": a.id,
+                "user_id": md.user_id_for_uwr(a.user_work_role_id),
+                "work_role_id": md.work_role_id_for_uwr(a.user_work_role_id),
+                "property_id": a.property_id,
+                "schedule_ruleset_id": a.schedule_ruleset_id,
+            }
+            for a in assignments
+        ],
+        "tasks": task_view,
+        "properties": [
+            {"id": p.id, "name": p.name, "timezone": getattr(p, "timezone", "Europe/Paris")}
+            for p in md.PROPERTIES if p.id in pids
+        ],
+        "leaves": leaves,
+        "overrides": overrides,
+    })
+
+
+@app.post("/api/v1/me/leaves")
+async def api_me_leaves_create(request: Request) -> Response:
+    """Self-service leave request — always lands pending (§06)."""
+    body = await request.json()
+    uid = current_user_id(request)
+    emp = next((e for e in md.EMPLOYEES if e.user_id == uid), None)
+    try:
+        starts = date.fromisoformat(body["starts_on"])
+        ends = date.fromisoformat(body["ends_on"])
+    except (KeyError, ValueError):
+        return ok({"error": "invalid_dates"}, status_code=422)
+    if ends < starts:
+        return ok({"error": "ends_before_starts"}, status_code=422)
+    category = body.get("category", "personal")
+    if category not in {"vacation", "sick", "personal", "bereavement", "other"}:
+        return ok({"error": "invalid_category"}, status_code=422)
+    leave = md.Leave(
+        id=f"lv-{len(md.LEAVES) + 1}-{uid[-4:]}",
+        employee_id=emp.id if emp else "",
+        user_id=uid,
+        starts_on=starts,
+        ends_on=ends,
+        category=category,
+        note=body.get("note_md", "") or "",
+        approved_at=None,
+        decided_by_user_id=None,
+    )
+    md.LEAVES.append(leave)
+    hub.publish("user_leave.upserted", {"id": leave.id, "user_id": uid})
+    return ok(leave, status_code=201)
+
+
+@app.get("/api/v1/me/availability_overrides")
+def api_me_overrides_list(request: Request) -> Response:
+    """Self-only override list for `/me` and `/schedule` (§14).
+
+    Returns every `user_availability_override` owned by the signed-in
+    user, any approval state, sorted by date descending. No window —
+    `/me` lists them all; `/schedule` narrows to its viewport from the
+    richer `/me/schedule` feed.
+    """
+    uid = current_user_id(request)
+    rows = [ao for ao in md.AVAILABILITY_OVERRIDES if ao.user_id == uid]
+    rows.sort(key=lambda r: r.date, reverse=True)
+    return ok({"overrides": rows})
+
+
+@app.post("/api/v1/me/availability_overrides")
+async def api_me_overrides_create(request: Request) -> Response:
+    """Self-service override. Approval required iff it narrows availability (§06)."""
+    body = await request.json()
+    uid = current_user_id(request)
+    ws_id = current_workspace_id(request)
+    try:
+        d = date.fromisoformat(body["date"])
+    except (KeyError, ValueError):
+        return ok({"error": "invalid_date"}, status_code=422)
+    available = bool(body.get("available", True))
+    starts_local = body.get("starts_local")
+    ends_local = body.get("ends_local")
+    if available and (starts_local is None) != (ends_local is None):
+        return ok({"error": "hours_must_be_paired"}, status_code=422)
+    if not available:
+        starts_local = None
+        ends_local = None
+    weekly = _weekly_slots_for_user(uid)
+    weekday = d.weekday()
+    approval_required = _override_reduces_hours(
+        weekly, weekday, available, starts_local, ends_local,
+    )
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    ao = md.AvailabilityOverride(
+        id=f"ao-{uid[-6:]}-{d.isoformat()}",
+        user_id=uid,
+        workspace_id=ws_id,
+        date=d,
+        available=available,
+        starts_local=starts_local,
+        ends_local=ends_local,
+        reason=(body.get("reason") or None),
+        approval_required=approval_required,
+        approved_at=None if approval_required else now,
+        approved_by=None if approval_required else uid,
+        created_at=now,
+    )
+    # Upsert: one override per (user, date).
+    md.AVAILABILITY_OVERRIDES = [
+        existing for existing in md.AVAILABILITY_OVERRIDES
+        if not (existing.user_id == uid and existing.date == d)
+    ]
+    md.AVAILABILITY_OVERRIDES.append(ao)
+    hub.publish(
+        "user_availability_override.upserted",
+        {"id": ao.id, "user_id": uid, "date": d.isoformat(),
+         "approval_required": approval_required},
+    )
+    return ok(ao, status_code=201)
+
+
 @app.get("/api/v1/instructions")
 def api_instructions() -> Response:
     return ok(md.INSTRUCTIONS)

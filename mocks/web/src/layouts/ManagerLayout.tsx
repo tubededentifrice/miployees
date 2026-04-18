@@ -18,14 +18,14 @@ import type { Me } from "@/types/api";
 // layout route (that would force a full remount).
 //
 // At phone widths the same shared <BottomTabs /> the worker shell uses
-// hosts the worker-facing routes (Today/Week/Chat/Expenses/Me); the
-// hamburger drawer holds the rest. MY WORK items are tagged
+// hosts the worker-facing routes (Today/Schedule/Chat/Expenses/Me);
+// the hamburger drawer holds the rest. MY WORK items are tagged
 // `phoneHidden` so they don't duplicate the bottom bar.
 
 const BASE_NAV_ITEMS: SideNavItem[] = [
   { type: "section", label: "MY WORK", phoneHidden: true },
   { type: "link", to: "/today", label: "My Day", phoneHidden: true },
-  { type: "link", to: "/week", label: "My Week", phoneHidden: true },
+  { type: "link", to: "/schedule", label: "My Schedule", phoneHidden: true },
   { type: "link", to: "/my/expenses", matchPrefix: "/my/expenses", label: "My Expenses", phoneHidden: true },
   { type: "link", to: "/me", matchPrefix: "/me", label: "Me", phoneHidden: true },
   { type: "section", label: "OPERATE" },

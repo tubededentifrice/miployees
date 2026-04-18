@@ -133,19 +133,24 @@ by a single `<Shell />` wrapper component in `App.tsx`. All paths
 below are relative to `/w/<slug>/`.
 
 ```
-today            week             task/<id>
+today            schedule         task/<id>
 my/expenses      me               history          issues/new
 shifts           asset/<id>
 ```
+
+The legacy routes `/week` and `/me/schedule` both 302-redirect to
+`/schedule` (§06 "Schedule view" is the single canonical surface
+for "my time"). Deep-links, bookmarks, agent tool outputs, and
+CLI examples that still name `/week` or `/me/schedule` continue to
+land on the right page.
 
 ### Worker-only (under /w/<slug>/)
 
 ```
 chat             asset/scan       kb
-me/schedule
 ```
 
-Footer bottom-nav: `Today · Week · Chat · My Expenses · Me`. Chat is
+Footer bottom-nav: `Today · Schedule · Chat · My Expenses · Me`. Chat is
 first-class, **not** a floating action button. The bottom-nav `Chat`
 tab is the **mobile** entry to the agent — it navigates to the
 full-screen `/chat` page. On desktop (≥720px) the worker shell drops
@@ -215,11 +220,86 @@ SSE invalidation: `schedule_ruleset.upserted`,
 `stay_task_bundle.*` events all invalidate
 `['scheduler-calendar']`.
 
-The worker surface `/me/schedule` is the self-only slice of the
-same feed — a read-only week view showing the user's rota, their
-assigned tasks, and any stay bundles their tasks belong to. It
-replaces the thin `Weekly availability` panel currently on `/me`
-(the panel becomes a link into `/me/schedule`).
+The worker and manager surface `/schedule` (self-only; also the
+target of the legacy `/me/schedule` and `/week` URLs) is the hub
+for "my time". It renders the same calendar feed as `/scheduler`
+narrowed to the caller, and adds the self-service edit affordances
+described below. It replaces the flat `/week` task list and the
+thin `Weekly availability` panel currently on `/me` (which
+becomes a link into `/schedule`).
+
+**Layout responsiveness.** Mobile (`<720px`) renders a vertical
+**agenda**: one row per day across a 14-day window, each row showing
+the day's rota band (coloured by property per §05), the day's
+assigned tasks as compact chips (title + time, up to N before an
+"+M more" collapse), and any leave / override / public-holiday /
+closure markers. Desktop (`≥720px`) renders the existing
+**week grid** (Mon..Sun columns) with rota as the background band
+and tasks tiled inside; a "next/prev/this week" navigator matches
+`/scheduler`. Both layouts drill into the same **day drawer** on
+click (mobile sheet, desktop side panel).
+
+**Day drawer.** Shows, for the focused date: rota slots
+(read-only), the day's tasks (each linking to `/task/<id>`,
+read-only — workers don't self-reassign), availability summary
+(effective hours resolved through §06 "Availability precedence
+stack"), and any covering leave or override. Action buttons:
+**Request leave** and **Request override**.
+
+- **Request override** opens an inline form pre-filled with the
+  weekday's pattern hours. The worker can flip "available" off
+  (→ `user_availability_override.available = false`) or pick
+  custom hours. On submit the server computes
+  `approval_required` per §06: widening availability (adding a
+  day, extending hours) lands approved; narrowing availability
+  (removing a day, reducing hours) lands pending. The UI shows
+  the resolved state explicitly — never pretend a pending
+  override is live.
+- **Request leave** opens a multi-day form (category, start,
+  end, note). Always pending approval; surfaced to the
+  owner/manager via `/leaves` and the daily digest.
+- **Inline override on desktop.** A worker may also edit the
+  day directly from the week grid — clicking a rota band opens
+  the same override form pre-filled. The mock ships click-to-edit;
+  the production shell may upgrade to a draggable edge gesture
+  ("Outlook-like") provided the underlying write is the same
+  `POST /api/v1/me/availability-overrides` call and the
+  approval-required rule is evaluated server-side. The UI MUST
+  NOT render a drag as committed until the server confirms the
+  approval state.
+- **Public holidays and property closures** are read-only on
+  this surface (managers edit them under `/holidays` and
+  `/property/<id>/closures` respectively); they render as
+  non-interactive markers.
+
+**Manager use of /schedule.** Under `MY WORK → My Schedule`, the
+manager gets the exact same page rendered against their own
+`user_work_role` — a manager who also works slots sees and edits
+them here. Cross-employee edits live on `/scheduler` instead.
+
+**/scheduler inline edits (per-date only).** On `/scheduler`,
+managers can edit *per-date* facts without leaving the page:
+
+- Click a **task tile** → task detail modal with inline
+  **Reassign** and **Reschedule** actions
+  (`POST /api/v1/scheduler/tasks/{id}/reschedule`,
+  `POST /api/v1/scheduler/tasks/{id}/reassign`); saving
+  fires the existing `task.updated` SSE event.
+- Click a **rota slot band** → a small chooser:
+  **"Edit just this date"** (creates a
+  `user_availability_override` for that user and date — the
+  manager is the creator, so auto-approved per §06) or
+  **"Edit the pattern"** (navigates to `/schedules` with the
+  ruleset pre-selected — the recurring edit path).
+- Click an **empty cell** → quick-add menu: add override,
+  record leave, or add property closure.
+
+Drag-to-mutate a rota slot **is not supported** on `/scheduler`.
+Ruleset edits are high-blast-radius (one drag changes every future
+week); they stay behind the explicit chooser above and the
+dedicated `/schedules` editor. Per-date drags (move a task to
+another day, extend a one-day override) are allowed because each
+drag writes exactly one row.
 
 The `kb` page (worker and manager) is the human-facing
 counterpart of the agent's `search_kb` tool — a single search
@@ -303,7 +383,7 @@ placed before all operational sections:
 ```
 MY WORK
   My Day       → /today
-  My Week      → /week
+  My Schedule  → /schedule
   My Expenses  → /my/expenses
   My History   → /history
 ```
@@ -608,10 +688,14 @@ than adding to this list:
   `user_work_roles` / `work_engagement` migration.
 - **Availability & holidays.** No mock pages yet for
   `/availability-overrides`, `/user/<id>/availability`, or
-  `/holidays`. The `/scheduler`, `/me/schedule`, and client
-  scheduler are new as of this revision — see §06 "Schedule
-  ruleset (per-property rota)" for the model and this section for
-  the surfaces.
+  `/holidays` (the manager CRUD surfaces). The worker-facing
+  self-service flows (request leave, request override) live on
+  `/schedule` and ship with the mocks — see §06 "Schedule ruleset
+  (per-property rota)" for the model and this section for the
+  worker surface. `/scheduler` inline per-date edits are specified
+  here but not yet fully implemented in the mocks; the day-drawer
+  click-to-reassign / click-to-override paths are the first
+  increment.
 - **Agent sidebar (`.desk__agent`).** The shared component
   `mocks/web/src/components/AgentSidebar.tsx` mounts in both
   `EmployeeLayout` and `ManagerLayout` (role-scoped via a `role`

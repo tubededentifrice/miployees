@@ -1466,3 +1466,45 @@ export interface SchedulerCalendarPayload {
   users: SchedulerUserView[];
   properties: { id: string; name: string; timezone: string }[];
 }
+
+// §06 — per-date override of the user's weekly availability.
+export type AvailabilityOverrideCategory =
+  | "off"
+  | "custom_hours"
+  | "extend"
+  | "extra_day";
+
+export interface AvailabilityOverride {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  date: string; // ISO date
+  available: boolean;
+  starts_local: string | null; // "HH:MM" when available with custom hours
+  ends_local: string | null;
+  reason: string | null;
+  approval_required: boolean;
+  approved_at: string | null;
+  approved_by: string | null;
+  created_at: string;
+}
+
+export interface SelfWeeklyAvailabilitySlot {
+  weekday: number; // 0..6 ISO
+  starts_local: string | null;
+  ends_local: string | null;
+}
+
+// §12 GET /api/v1/me/schedule — self-only calendar feed for /schedule (§14).
+export interface MySchedulePayload {
+  window: { from: string; to: string };
+  user_id: string;
+  weekly_availability: SelfWeeklyAvailabilitySlot[];
+  rulesets: ScheduleRuleset[];
+  slots: ScheduleRulesetSlot[];
+  assignments: ScheduleAssignment[];
+  tasks: SchedulerTaskView[];
+  properties: { id: string; name: string; timezone: string }[];
+  leaves: Leave[];
+  overrides: AvailabilityOverride[];
+}

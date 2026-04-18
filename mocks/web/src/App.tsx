@@ -7,7 +7,7 @@ import PublicLayout from "@/layouts/PublicLayout";
 import { useRole } from "@/context/RoleContext";
 
 import TodayPage from "@/pages/employee/TodayPage";
-import WeekPage from "@/pages/employee/WeekPage";
+import SchedulePage from "@/pages/employee/SchedulePage";
 import TaskDetailPage from "@/pages/employee/TaskDetailPage";
 import ChatPage from "@/pages/employee/ChatPage";
 import MyExpensesPage from "@/pages/employee/MyExpensesPage";
@@ -79,10 +79,10 @@ function RoleHome() {
   return <Navigate to={target} replace />;
 }
 
-// §14 — Shared routes (/today, /week, /my/expenses, etc.) render under
-// the viewer's role-appropriate shell. Manager / Employee / Client
-// each get their own layout; only `/me` is currently shared by all
-// three (every persona has a profile screen).
+// §14 — Shared routes (/today, /schedule, /my/expenses, etc.) render
+// under the viewer's role-appropriate shell. Manager / Employee /
+// Client each get their own layout; only `/me` is currently shared by
+// all three (every persona has a profile screen).
 function Shell() {
   const { role } = useRole();
   if (role === "manager") return <ManagerLayout />;
@@ -102,11 +102,15 @@ export default function App() {
         {/* Shared routes — any role. Shell picks the right layout. */}
         <Route element={<Shell />}>
           <Route path="/today" element={<TodayPage />} />
-          <Route path="/week" element={<WeekPage />} />
+          <Route path="/schedule" element={<SchedulePage />} />
+          {/* Legacy URLs — spec §14 collapses Week and /me/schedule
+              into /schedule. Keep redirects so deep-links, CLI output,
+              and agent tool refs continue to land on the right page. */}
+          <Route path="/week" element={<Navigate to="/schedule" replace />} />
+          <Route path="/me/schedule" element={<Navigate to="/schedule" replace />} />
           <Route path="/task/:tid" element={<TaskDetailPage />} />
           <Route path="/my/expenses" element={<MyExpensesPage />} />
           <Route path="/me" element={<MePage />} />
-          <Route path="/me/schedule" element={<SchedulerPage />} />
           <Route path="/scheduler" element={<SchedulerPage />} />
           <Route path="/shifts" element={<ShiftsPage />} />
           <Route path="/history" element={<HistoryPage />} />

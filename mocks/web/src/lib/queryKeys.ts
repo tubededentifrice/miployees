@@ -15,6 +15,9 @@ export const qk = {
   taskInstructions: (tid: string) => ["task", tid, "instructions"] as const,
   today: () => ["today"] as const,
   week: () => ["week"] as const,
+  mySchedule: (fromIso: string, toIso: string) =>
+    ["my-schedule", fromIso, toIso] as const,
+  meOverrides: () => ["me", "availability_overrides"] as const,
   dashboard: () => ["dashboard"] as const,
   expenses: (scope: "all" | "mine") => ["expenses", scope] as const,
   expensesPendingReimbursement: (userId: "me" | string) =>

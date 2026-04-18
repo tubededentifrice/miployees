@@ -609,6 +609,40 @@ POST   /public_holidays
 GET    /public_holidays/{id}
 PATCH  /public_holidays/{id}
 DELETE /public_holidays/{id}
+
+# Self-service shortcuts for the /schedule surface (§14 "Schedule view").
+# Each is syntactic sugar over the generic endpoint above with
+# `user_id = current_user.id` enforced server-side — a worker cannot
+# use them to author requests for another user (a manager still uses
+# the full endpoints, scoped by `user_id` param). SSE: POSTs emit
+# `user_leave.upserted` / `user_availability_override.upserted`
+# so `/schedule` and `/scheduler` both invalidate in lockstep.
+GET    /me/schedule                       # self-only calendar feed for /schedule
+                                          #   params: from, to (ISO dates;
+                                          #     defaults [today, today+14d])
+                                          #   returns: rota slots, assigned tasks,
+                                          #     approved leaves + overrides + holidays
+                                          #     covering the window, pending items
+                                          #     flagged separately so the UI can
+                                          #     render "pending approval" state
+                                          #     without treating them as live.
+POST   /me/leaves                         # body: {category, starts_on, ends_on, note_md?}
+                                          #   creates user_leave with approval_required
+                                          #   always true; returns 201 with pending row.
+GET    /me/availability_overrides         # self-only list of every
+                                          #   user_availability_override (any
+                                          #   approval state), for the /me and
+                                          #   /schedule surfaces. Keyed to the
+                                          #   caller; managers use the generic
+                                          #   `/user_availability_overrides?user_id=`
+                                          #   form for other users.
+POST   /me/availability_overrides         # body: {date, available, starts_local?, ends_local?, reason?}
+                                          #   server computes `approval_required` per
+                                          #   §06 "Approval logic (hybrid model)":
+                                          #     adding hours → auto-approved,
+                                          #     reducing hours → pending.
+                                          #   Returns 201 with resolved state so the
+                                          #   UI does not need to re-derive it.
 ```
 
 ### Tasks / templates / schedules
@@ -664,6 +698,20 @@ GET    /scheduler/calendar               # "who is booked where" feed
                                          #       client_org_id, users serialised
                                          #       as {first_name, work_role} only
                                          #       per §15 "Client rota visibility".
+
+POST   /scheduler/tasks/{id}/reschedule  # manager-only inline edit from /scheduler
+                                         #   (§14 "/scheduler inline edits").
+                                         #   body: {scheduled_for_local} (ISO dt,
+                                         #     property-local). Rejects drops that
+                                         #     cross the user's leave / closure /
+                                         #     approved-override boundaries with
+                                         #     422 `availability_conflict`. Emits
+                                         #     `task.updated` SSE.
+POST   /scheduler/tasks/{id}/reassign    # body: {assigned_user_id}. Runs the §06
+                                         #   availability precedence stack; 422
+                                         #   `availability_conflict` if the new
+                                         #   assignee is not available for
+                                         #   `scheduled_for_local`. Manager-only.
 
 POST   /stay_lifecycle_rules/{property_id}/apply_to_upcoming
        # body: {"from": "2026-04-15", "to": "2026-07-15",
