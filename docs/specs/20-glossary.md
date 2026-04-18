@@ -795,3 +795,39 @@ fix the offender.
   resolved billable rate, currency, minutes, and subtotal at the
   moment the shift closes. Drives the "billable hours by client"
   CSV. See §22.
+- **Marketplace (deferred).** Deployment-scope discovery layer in
+  which agencies publish `marketplace_listing` rows (service area
+  as GeoJSON polygon) and clients post `service_request` rows
+  (place of intervention as a GeoJSON point). An accepted
+  `marketplace_match` auto-creates a §22
+  `property_workspace_invite` so dispatching reuses the existing
+  agency↔client flow. The platform fee lives in an append-only
+  `platform_fee_event` ledger, snapshotting the match's fee bps.
+  Gated by the deployment setting `settings.marketplace_enabled`;
+  off by default. Not in v1 — see §25.
+- **Marketplace listing.** A `marketplace_listing` row — an
+  agency workspace's published offer (title, work roles,
+  GeoJSON service area, rate band, currency). Visible to every
+  authenticated workspace on the deployment when the marketplace
+  is enabled. See §25.
+- **Service request.** A `service_request` row — a client
+  workspace's posted need (property, work role, GeoJSON point,
+  schedule hint, budget band). Discoverable to listings whose
+  service area contains the point. Property address is redacted
+  until a match is accepted. See §25.
+- **Marketplace match.** A `marketplace_match` row pairing a
+  listing with a request. Acceptance is unconditionally
+  approval-gated on both sides (§11) and materialises an existing
+  §22 `property_workspace_invite`; the match is the durable
+  handle the fee ledger references. See §25.
+- **Platform fee event.** Append-only row in `platform_fee_event`
+  recording a fee accrual against a `marketplace_match`, keyed to
+  a billable source (`shift_billing` or `vendor_invoice`). Fee %
+  is snapshotted from the match. crew.day records the accrual;
+  collection is out of scope (same pattern as payroll and vendor
+  invoices). See §25.
+- **Service area (marketplace).** RFC 7946 GeoJSON polygon /
+  multipolygon on `marketplace_listing.service_area_geojson`
+  naming where an agency will intervene. Stored as JSONB on
+  Postgres and TEXT on SQLite; spatial indexing is reserved
+  behind the `features.postgis` capability. See §25.

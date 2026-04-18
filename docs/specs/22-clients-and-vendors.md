@@ -871,6 +871,13 @@ Appended to §10's catalog:
 
 ## Out of scope (v1)
 
+- **Embedded marketplace** — deployment-scope discovery where
+  agencies advertise (with GeoJSON service areas) and clients
+  post service requests with a place of intervention, with a
+  platform fee on the resulting billing. Reserved in §25; gated
+  by `settings.marketplace_enabled`, default off. When it ships,
+  an accepted match auto-creates a `property_workspace_invite`
+  and §22's flow runs unchanged.
 - **Split-billing a single property across multiple clients.** One
   property = one client. Co-ownership is modelled as two properties
   if genuinely necessary.

@@ -325,3 +325,17 @@ Items explicitly deferred, in rough priority order:
     text reply parsing across concurrent pending approvals is
     ambiguous. Revisit only when an adapter gains an interactive
     primitive or a disambiguation scheme proves reliable enough.
+14. **Embedded marketplace (§25).** Deployment-scope discovery
+    layer where agencies publish `marketplace_listing` rows (with
+    GeoJSON service areas) and clients post `service_request`
+    rows (with a place of intervention). Accepted matches
+    auto-create a §22 `property_workspace_invite` so dispatching
+    reuses the existing agency↔client flow; the platform takes a
+    configurable % fee captured in an append-only
+    `platform_fee_event` ledger. Gated by the deployment setting
+    `settings.marketplace_enabled`, default off. v1 ships **no**
+    marketplace routes, entities, or UI — only the design
+    reservation in §25 and the capability/setting seams in §01.
+    When implemented, the migration is strictly additive and
+    hooks into the existing §10 `shift_billing.resolved` /
+    `vendor_invoice.approved` webhook events.
