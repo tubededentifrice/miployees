@@ -20,7 +20,6 @@ function fmt(iso: string | null): string {
 function channelLabel(kind: ChatChannelKind): string {
   switch (kind) {
     case "offapp_whatsapp": return "WhatsApp";
-    case "offapp_sms": return "SMS";
     case "offapp_telegram": return "Telegram";
   }
 }

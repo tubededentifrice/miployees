@@ -194,7 +194,7 @@ export default function SettingsPage() {
       <section className="panel">
         <header className="panel__head"><h2>External chat adapters</h2></header>
         <p className="muted">
-          The architecture keeps a deferred seam for WhatsApp / SMS / Telegram
+          The architecture keeps a deferred seam for WhatsApp and Telegram
           adapters (§23), but they are not enabled in this preview or in
           shipped v1. Settings here intentionally stay focused on the
           in-app web chat surfaces.

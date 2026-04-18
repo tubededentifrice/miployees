@@ -5,8 +5,8 @@ agent (§11) exchanges messages with that user — no matter which
 channel the user reached for. The web sidebar (`.desk__agent`) and the
 worker PWA Chat tab are the only **live** channels in shipped v1. This
 document keeps the off-app transport design written down so WhatsApp,
-SMS, Telegram, push, and future adapters can plug into the same
-runtime later without re-architecting the agent brain.
+Telegram, push, and future adapters can plug into the same runtime
+later without re-architecting the agent brain.
 
 This spec names the contract the transports must satisfy and the data
 model the runtime persists. §11 remains the authority on what the
@@ -18,10 +18,9 @@ external adapters are enabled.
 
 1. **One agent per user, many channels.** The agent runtime in §11 is
    one code path per user. Channels carry envelope metadata (sender
-   address, interactive affordances, language hints, quiet-hours
-   semantics) and nothing semantic. The tool surface and the
-   delegated token are identical regardless of the channel the turn
-   arrived on.
+   address, interactive affordances, language hints) and nothing
+   semantic. The tool surface and the delegated token are identical
+   regardless of the channel the turn arrived on.
 2. **No implicit auth.** A channel message authenticates as a user
    only through an explicitly linked **binding** row, created by a
    challenge-response ceremony. An inbound message from an
@@ -51,13 +50,14 @@ with a code migration and an OpenAPI update.
 | `web_owner_sidebar`   | FastAPI SSE / `/api/v1/agent/manager/*` | both | shipping (§14) |
 | `web_worker_chat`     | FastAPI SSE / `/api/v1/agent/employee/*` | both | shipping (§14) |
 | `offapp_whatsapp`     | Meta Cloud API (WhatsApp Business) | both | deferred |
-| `offapp_sms`          | RFC-compliant SMS gateway    | agent→user only | deferred |
 | `offapp_telegram`     | Telegram Bot API             | both        | deferred — §19 |
 
-`offapp_sms` remains outbound-only in the current design because SMS has no
-interactive-button primitive and the reply parser would have to
-disambiguate free-text `YES` across every pending approval. Agent
-reach-out over SMS is still covered by §10.
+SMS is **not** a supported channel. It has no interactive-button
+primitive, no reliable media handling, and no opt-in parity with
+WhatsApp — and WhatsApp is already ubiquitous in the markets this
+product targets. Carrier-SMS workflows are intentionally out of
+scope; the feature can be revisited if WhatsApp becomes unusable in
+a target region.
 
 `offapp_telegram` is listed so `ChannelAdapter` (below) and
 `chat_channel_binding.channel_kind` accept it from day one; the
@@ -77,7 +77,7 @@ inbound envelopes to an identity.
 | workspace_id          | ULID FK  | the workspace the binding is scoped to (see "Multi-workspace users")  |
 | user_id               | ULID FK  | `users.id`                                                            |
 | channel_kind          | text     | one of the catalog slugs above                                        |
-| address               | text     | normalised transport address — E.164 for `offapp_whatsapp` / `offapp_sms`, `@handle` for `offapp_telegram`; `null` is not allowed |
+| address               | text     | normalised transport address — E.164 for `offapp_whatsapp`, `@handle` for `offapp_telegram`; `null` is not allowed |
 | address_hash          | text     | deterministic HMAC-SHA256 of `address` with the workspace key; the plaintext `address` is redacted from LLM contexts (§15) but the hash supports O(1) inbound lookup |
 | display_label         | text     | user-chosen, e.g. "Personal phone" — shown on `/me`                   |
 | state                 | text     | `pending | active | revoked`                                          |
@@ -99,7 +99,7 @@ user **and** one user per WhatsApp."
 **Per-user cap.** Partial unique index on `(user_id, channel_kind)
 WHERE state != 'revoked'` — one binding per channel kind per user
 (the decision recorded in this session). A user can hold one
-WhatsApp, one Telegram, one SMS binding simultaneously.
+WhatsApp and one Telegram binding simultaneously.
 
 **Multi-workspace users.** The current product ships single-workspace so every
 binding is scoped to that workspace. When true multi-tenancy lands
@@ -263,18 +263,21 @@ by this rule:
 
 1. If the current turn is a reply to a user-initiated turn on
    channel `C`, use `C`.
-2. Else, if the user has an active binding and
-   `preferred_offapp_channel = <that kind>` and the workspace's
-   `agent.reachout_offapp` policy allows it, use that binding
-   subject to the 24h session window (see below).
+2. Else, if the user has an active off-app binding (WhatsApp, and
+   in the future Telegram) and the workspace's `agent.reachout_offapp`
+   policy allows it, use that binding subject to the 24h session
+   window (see below). Off-app reach-out is on iff the user has an
+   active binding — presence of the binding **is** the opt-in, and
+   unlinking it is the opt-out.
 3. Else, queue the reply for **next time the user opens the web
    app** — write the `chat_message` with `delivery_state =
    'queued'` and channel `web_*`; the SSE subscription delivers on
    reconnect.
 
-This means an agent working on a task can send reminders over
-WhatsApp to a user who prefers WhatsApp, but will not spam them at
-2am (see "Quiet hours").
+Quiet-hours scheduling is the user's phone's job (OS-level
+do-not-disturb, WhatsApp's own mute), not a crewday-side setting.
+The gateway has no profile-level quiet-hours window; the `PAUSE`
+keyword below is still honoured per-binding for ad-hoc silence.
 
 ### Session window (WhatsApp)
 
@@ -297,21 +300,7 @@ binding (updated on every inbound) and on each outbound:
   that won't fit the template, it must defer and retry once the
   user speaks.
 
-Telegram and SMS have no equivalent constraint; the rule is
-WhatsApp-specific.
-
-### Quiet hours
-
-Unchanged from §10:
-
-- Each user has a quiet-hours window on their profile (default
-  21:00–08:00 local).
-- Agent-initiated outbound over any off-app channel is **deferred**
-  until the window closes; queued turns wait on the worker.
-- User-initiated inbound is never blocked — if the user messages
-  during quiet hours, the agent replies at once on the same
-  channel.
-- `PAUSE` keyword (above) extends quiet hours per-binding.
+Telegram has no equivalent constraint; the rule is WhatsApp-specific.
 
 ### Rate caps
 
@@ -375,12 +364,12 @@ and `card_risk`. On the gateway:
 
 This remains **deferred** with the rest of the external adapters.
 The schema keeps the affordance and approval mapping ready, but shipped
-v1 does not send approval cards over WhatsApp or SMS.
+v1 does not send approval cards over WhatsApp.
 
 ## Media handling
 
 Inbound media is fetched by the adapter (Meta Cloud returns a media
-id; SMS and Telegram return a URL), stored in a `file` row (§02)
+id; Telegram returns a URL), stored in a `file` row (§02)
 tagged with the binding id, and attached to the `chat_message` by
 id. The agent sees the file reference exactly as it sees a
 web-uploaded photo.
@@ -429,9 +418,8 @@ class ChannelAdapter(Protocol):
 ```
 
 The first planned implementation uses **Meta Cloud API** for
-`offapp_whatsapp`. The SMS adapter remains outbound-only and
-implements only `send_text` / `send_template` / `verify_webhook`.
-Telegram is specified by the same interface; the adapter is in §19.
+`offapp_whatsapp`. Telegram is specified by the same interface;
+the adapter is in §19.
 
 Provider credentials (WhatsApp access token, phone-number id,
 business-account id, webhook verify-token, template registrations)
@@ -531,10 +519,14 @@ Gateway-specific hardening:
 
 ## UX / surface (§14)
 
-- `/me → Chat channels` (every user): list current bindings,
-  display label, state, last-used timestamp; buttons to link a new
-  channel, unlink an existing one, toggle
-  `preferred_offapp_channel`, and edit quiet hours.
+- `/me → Chat channels` (every user): list current live bindings
+  (display label, state, last-used timestamp) with an **Unlink**
+  button, plus a **Link WhatsApp** form — the form is hidden while
+  an active or pending WhatsApp binding already exists (the per-user
+  cap above), and `revoked` bindings are filtered out of the list.
+  There are no preference toggles or quiet-hours controls on this
+  surface: linked WhatsApp means agent reach-out is on, unlinked
+  means it is off.
 - `/chat-channels` (owner/manager): workspace-wide view of
   bindings, delivery error rates, per-user
   opt-out status, Meta provider health ("last webhook received at
@@ -542,7 +534,7 @@ Gateway-specific hardening:
   listed in §14's route contract.
 - `/settings → Chat gateway`: provider config (Meta credentials,
   verified templates, webhook URL copy button), workspace
-  reach-out policy, quiet-hours default, rate caps.
+  reach-out policy, rate caps.
 - Inline rendering in the web chat surfaces (§14 sidebar and PWA
   Chat tab) is unchanged — they now consume `chat_message` rows
   by thread and render affordances from the same schema WhatsApp
@@ -551,8 +543,8 @@ Gateway-specific hardening:
 ## Out of scope (first off-app release)
 
 - Telegram adapter implementation (seam is ready — §19).
-- SMS inline approvals (no interactive primitive — channel
-  catalog).
+- Carrier SMS in any form (see "Channel catalog" — intentionally
+  dropped).
 - Cross-user WhatsApp DMs (not the gateway's purpose).
 - Real-time typing indicators.
 - Inbound calls / video (no channel supports it).

@@ -143,8 +143,14 @@ Off-app agent reach-out is intentionally **not enabled in shipped
 v1**. The future design still assumes:
 
 - User ↔ **agent** conversation, not human ↔ human DM.
-- Opt-in per user.
-- Quiet-hours and daily-cap controls.
+- Opt-in is **implicit in the binding** — presence of an active
+  `chat_channel_binding` means agent reach-out is on; unlinking it
+  is the opt-out. No separate `preferred_offapp_channel` toggle.
+- Notification timing is the user's phone's job (OS-level
+  do-not-disturb, WhatsApp's own mute). The product does not carry
+  its own quiet-hours window. Per-binding `PAUSE <duration>` still
+  works for ad-hoc silence (§23).
+- Daily-cap controls at the workspace level still apply.
 - A shared `chat_message` / `chat_thread` substrate rather than a
   separate delivery model.
 

@@ -216,8 +216,7 @@ export type InlineChannel =
   | "desk_only"
   | "web_owner_sidebar"
   | "web_worker_chat"
-  | "offapp_whatsapp"
-  | "offapp_sms";
+  | "offapp_whatsapp";
 
 export interface ApprovalRequest {
   id: string;
@@ -485,7 +484,7 @@ export interface Webhook {
   last_delivery_at: string;
 }
 
-export type ChatChannelKind = "offapp_whatsapp" | "offapp_sms" | "offapp_telegram";
+export type ChatChannelKind = "offapp_whatsapp" | "offapp_telegram";
 
 export interface AgentMessage {
   at: string;
@@ -616,10 +615,6 @@ export interface Me {
   now: string;
   user_id: string | null;
   agent_approval_mode: AgentApprovalMode;
-  // §10 / §23 — off-app reach-out preferences (self-writable).
-  preferred_offapp_channel: "whatsapp" | "sms" | "none";
-  quiet_hours_start: string; // "HH:MM"
-  quiet_hours_end: string;   // "HH:MM"
 }
 
 export interface HistoryPayload {

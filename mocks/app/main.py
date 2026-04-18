@@ -234,39 +234,6 @@ def api_me(request: Request) -> Response:
         "now": md.NOW,
         "user_id": me_user.id if me_user else None,
         "agent_approval_mode": me_user.agent_approval_mode if me_user else "strict",
-        "preferred_offapp_channel": me_user.preferred_offapp_channel if me_user else "none",
-        "quiet_hours_start": me_user.quiet_hours_start if me_user else "21:00",
-        "quiet_hours_end": me_user.quiet_hours_end if me_user else "08:00",
-    })
-
-
-@app.put("/api/v1/me/offapp_preferences")
-async def api_me_offapp_preferences_set(request: Request) -> Response:
-    """§10/§23 — self-writable reach-out preferences."""
-    user = md.user_by_id(current_user_id(request))
-    if user is None:
-        return ok({"error": "not_found"}, status_code=404)
-    body = await request.json() or {}
-    channel = body.get("preferred_offapp_channel")
-    if channel is not None:
-        if channel not in {"whatsapp", "sms", "none"}:
-            return ok({"error": "invalid_channel",
-                       "allowed": ["whatsapp", "sms", "none"]}, status_code=400)
-        user.preferred_offapp_channel = channel
-    qh_start = body.get("quiet_hours_start")
-    qh_end = body.get("quiet_hours_end")
-    if qh_start is not None:
-        if not isinstance(qh_start, str) or not _re.fullmatch(r"\d{2}:\d{2}", qh_start):
-            return ok({"error": "invalid_quiet_hours_start"}, status_code=400)
-        user.quiet_hours_start = qh_start
-    if qh_end is not None:
-        if not isinstance(qh_end, str) or not _re.fullmatch(r"\d{2}:\d{2}", qh_end):
-            return ok({"error": "invalid_quiet_hours_end"}, status_code=400)
-        user.quiet_hours_end = qh_end
-    return ok({
-        "preferred_offapp_channel": user.preferred_offapp_channel,
-        "quiet_hours_start": user.quiet_hours_start,
-        "quiet_hours_end": user.quiet_hours_end,
     })
 
 
@@ -1679,7 +1646,7 @@ def api_chat_channels_link_start(payload: dict[str, Any] = Body(...)) -> Respons
     channel_kind = str(payload.get("channel_kind") or "").strip()
     address = str(payload.get("address") or "").strip()
     user_id = str(payload.get("user_id") or md.DEFAULT_EMPLOYEE_ID).strip()
-    if channel_kind not in {"offapp_whatsapp", "offapp_sms", "offapp_telegram"}:
+    if channel_kind not in {"offapp_whatsapp", "offapp_telegram"}:
         return JSONResponse({"detail": "bad channel_kind"}, status_code=400)
     if not address:
         return JSONResponse({"detail": "address required"}, status_code=400)

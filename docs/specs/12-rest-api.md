@@ -581,7 +581,7 @@ Every successful `PUT` emits:
 
 Delegated-token requests (§03) may additionally set
 `X-Agent-Channel` — `web_owner_sidebar | web_worker_chat |
-offapp_whatsapp | offapp_sms` (absent = `desk_only`) — stored on
+offapp_whatsapp` (absent = `desk_only`) — stored on
 `agent_action.inline_channel`. On gate, the server emits the SSE
 event `agent.action.pending` (scoped to `for_user_id`) with
 `approval_id`, `card_summary`, `card_risk`, `card_fields_json`,

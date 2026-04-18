@@ -180,9 +180,9 @@ fix the offender.
   row with `grant_role = 'manager'`.
 - **Model assignment.** The capability → model mapping (§11).
 - **Off-app reach-out.** Deferred feature in which the agent may send
-  a WhatsApp or SMS message to a user for low-stakes checks. The
-  design still assumes `preferred_offapp_channel` plus an active
-  `chat_channel_binding` (§23). See §10.
+  a WhatsApp message to a user for low-stakes checks. Opt-in is the
+  presence of an active `chat_channel_binding`; unlinking it opts
+  the user out (§23). SMS is intentionally not supported. See §10.
 - **Owner / owners group.** **v0** had an `owner` grant_role
   with "exactly one per scope". **v1** replaces this with the
   `owners` **permission group**: a system group seeded per

@@ -423,10 +423,11 @@ legal-name fields:
   `kind`, `direction`, and timestamps remain.
 
 When these adapters ship, workspace owners should be able to turn off
-off-app reach-out globally or per user; the user's own
-`preferred_offapp_channel = none` (§10) remains the hard opt-out. A
-`STOP` keyword reply on any bound address must flip the binding to
-`revoked` immediately (§23).
+off-app reach-out globally or per user. For the user, the opt-out
+is **unlinking the binding** — there is no separate preference
+toggle; no active binding means no off-app reach-out (§10, §23).
+A `STOP` keyword reply on any bound address must flip the binding
+to `revoked` immediately (§23).
 
 ## LLM data handling
 

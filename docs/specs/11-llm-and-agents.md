@@ -764,7 +764,7 @@ agent_action
 ├── card_summary               # rendered `x-agent-confirm.summary` at request time (authoritative for inline)
 ├── card_risk                  # low | medium | high — from annotation, else derived from gate_source
 ├── card_fields_json           # resolved {key: display_value} map from `fields_to_show`
-├── inline_channel             # desk_only | web_owner_sidebar | web_worker_chat | offapp_whatsapp | offapp_sms
+├── inline_channel             # desk_only | web_owner_sidebar | web_worker_chat | offapp_whatsapp
 ├── resolved_user_mode         # bypass | auto | strict — snapshot of the delegating user's mode at request time; null if no delegated token
 ├── decided_at
 ├── decided_by_user_id
@@ -805,7 +805,6 @@ triggered it. The agent's HTTP request carries an
 | `web_owner_sidebar`   | Owner/manager desktop sidebar chat (§14 `.desk__agent`) |
 | `web_worker_chat`     | Worker PWA Chat tab (§14)                              |
 | `offapp_whatsapp`     | Reserved for a future WhatsApp adapter (§23, deferred) |
-| `offapp_sms`          | Reserved for a future SMS adapter (§23, deferred)      |
 | *absent*              | `desk_only` — approval appears only in `/approvals`    |
 
 For the two web channels, pending approvals are pushed to the
@@ -816,10 +815,10 @@ buttons wired to the same `/approvals/{id}/{decision}` endpoints
 that the desk uses. The same row remains visible on `/approvals`
 so owners and managers can oversee agent activity across users.
 
-`offapp_whatsapp` and `offapp_sms` remain **deferred**. Their values
-stay in the schema so the approval pipeline does not need a later
-re-design, but shipped v1 only renders inline cards in the two web
-surfaces. See §23 for the deferred transport-specific behaviour.
+`offapp_whatsapp` remains **deferred**. Its value stays in the
+schema so the approval pipeline does not need a later re-design,
+but shipped v1 only renders inline cards in the two web surfaces.
+See §23 for the deferred transport-specific behaviour.
 
 ### TTL
 

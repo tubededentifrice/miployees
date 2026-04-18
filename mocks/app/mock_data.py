@@ -107,14 +107,6 @@ class User:
     # an inline confirmation card before executing a delegated-token
     # mutation. Self-writable only; default `strict`.
     agent_approval_mode: Literal["bypass", "auto", "strict"] = "strict"
-    # §10 / §23 — off-app reach-out preference. `none` is a hard opt-out
-    # (overrides workspace policy). The transport address lives on
-    # `chat_channel_binding`, not on the user.
-    preferred_offapp_channel: Literal["whatsapp", "sms", "none"] = "none"
-    # §10 / §23 — local-time quiet-hours window for agent-initiated
-    # outbound. Stored as "HH:MM" strings; default 21:00–08:00.
-    quiet_hours_start: str = "21:00"
-    quiet_hours_end: str = "08:00"
     archived_at: datetime | None = None
 
 
@@ -445,7 +437,6 @@ class ApprovalRequest:
         "web_owner_sidebar",
         "web_worker_chat",
         "offapp_whatsapp",
-        "offapp_sms",
     ] = "desk_only"
     card_summary: str = ""
     card_fields: list[tuple[str, str]] = field(default_factory=list)
@@ -1148,8 +1139,7 @@ USERS: list[User] = [
     User("u-maria",   "maria@example.com",           "Maria Alvarez",   languages=["fr"],
          preferred_locale="fr-FR", primary_workspace_id="ws-bernard",
          phone_e164="+33 6 12 34 56 78",
-         agent_approval_mode="strict",
-         preferred_offapp_channel="whatsapp"),
+         agent_approval_mode="strict"),
     User("u-arun",    "arun@example.com",            "Arun Patel",      languages=["en", "hi"],
          preferred_locale="en-GB", primary_workspace_id="ws-bernard",
          phone_e164="+33 6 22 45 67 89",
@@ -2792,7 +2782,7 @@ class AgentMessage:
     # §23 — the chat gateway tags each inbound/outbound turn with the
     # channel it arrived on. Null means "web" (sidebar or PWA Chat tab).
     channel_kind: Literal[
-        "offapp_whatsapp", "offapp_sms", "offapp_telegram"
+        "offapp_whatsapp", "offapp_telegram"
     ] | None = None
 
 
@@ -2921,7 +2911,7 @@ class ChatChannelBinding:
     id: str
     user_id: str
     channel_kind: Literal[
-        "offapp_whatsapp", "offapp_sms", "offapp_telegram"
+        "offapp_whatsapp", "offapp_telegram"
     ]
     address: str
     display_label: str
@@ -2994,14 +2984,6 @@ CHAT_GATEWAY_PROVIDERS: list[ChatGatewayProvider] = [
         display_stub="+33 1 86 65 xx xx · phone_number_id … 4921",
         last_webhook_at=datetime(2026, 4, 15, 8, 11),
         templates=["chat_channel_link_code", "chat_agent_nudge"],
-    ),
-    ChatGatewayProvider(
-        channel_kind="offapp_sms",
-        provider="Twilio",
-        status="connected",
-        display_stub="+33 7 55 xx xx xx",
-        last_webhook_at=None,
-        templates=[],
     ),
     ChatGatewayProvider(
         channel_kind="offapp_telegram",
