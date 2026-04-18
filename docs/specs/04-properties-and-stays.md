@@ -20,6 +20,7 @@ property.
 | timezone              | text        | IANA (`Europe/Paris`)          |
 | default_currency      | text        | ISO 4217, inherits workspace   |
 | client_org_id         | ULID FK?    | `organization.id` (§22). Null = workspace-owned / self-managed. Set = billable to that client; tasks, shifts, work_orders at this property carry the client forward for rate resolution and CSV rollup. Referenced org must have `is_client = true`. |
+| owner_user_id         | ULID FK?    | `users.id`. Optional "owner of record" pointer — the natural person who owns the property in real life (e.g. the homeowner whose villa an agency manages). Display-only: authorisation is governed by the property's `owner_workspace` membership and that workspace's `owners` permission group, never by this column. Useful in the agency / multi-belonging case (§02) so the UI can show "Villa du Lac · owner: Vincent Dupont" alongside the workspace memberships. |
 | country               | text        | ISO-3166-1 alpha-2. Required. Authoritative source: `address_json.country` when present; otherwise inherits workspace `default_country`. Drives holiday suggestions, payslip jurisdiction, locale derivation. |
 | locale                | text?       | BCP-47. Nullable; when null, derived from workspace language + property country. |
 | property_notes_md     | text        | internal, staff-visible        |
@@ -49,6 +50,35 @@ A property may belong to a **billing client** via
 One property may have at most one `client_org_id` at a time.
 Split-billing a single property across multiple clients is
 explicitly out of scope (§22 "Out of scope").
+
+### Multi-belonging (sharing across workspaces)
+
+A property is **not** owned by a single workspace. The same physical
+place can be linked to several workspaces simultaneously through
+the `property_workspace` junction (§02 "Villa belongs to many
+workspaces"), with one of three `membership_role` values:
+
+- **`owner_workspace`** — exactly one. The party who can grant or
+  revoke other workspaces' access. Typical client-owned scenario:
+  the client's own workspace holds this row.
+- **`managed_workspace`** — operational access granted by the owner
+  (the agency that dispatches workers and creates work orders here).
+- **`observer_workspace`** — read-only. Useful for a consulting party
+  or a finance team that needs visibility without write rights.
+
+Workers, shifts, work orders, and vendor invoices written under any
+linked workspace carry that workspace's `workspace_id` forward, so
+payroll, billing, and audit history stay separated even when several
+teams share the same villa. Switching the agency that manages a
+property is a `property_workspace` revoke + insert (subject to the
+approval-gated list in §22), and the client's `owner_workspace`
+link is what makes that revoke possible without the agency's
+consent.
+
+The web UI surfaces this on a per-property "Sharing & client" tab
+(§14): list of memberships, the linked client organization, and
+"Invite as agency" / "Revoke" controls visible only to members of
+the owner workspace.
 
 ### `address_json` canonical shape
 

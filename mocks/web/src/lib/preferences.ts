@@ -8,6 +8,7 @@ import type { Role, Theme } from "@/types/api";
 const ROLE_COOKIE = "crewday_role";
 const THEME_COOKIE = "crewday_theme";
 const AGENT_COLLAPSED_COOKIE = "crewday_agent_collapsed";
+const WORKSPACE_COOKIE = "crewday_workspace";
 
 function readCookie(name: string): string | null {
   const target = name + "=";
@@ -20,7 +21,12 @@ function readCookie(name: string): string | null {
 
 export function readRoleCookie(): Role {
   const r = readCookie(ROLE_COOKIE);
-  return r === "manager" ? "manager" : "employee";
+  if (r === "manager" || r === "client") return r;
+  return "employee";
+}
+
+export function readWorkspaceCookie(): string | null {
+  return readCookie(WORKSPACE_COOKIE);
 }
 
 export function readThemeCookie(): Theme {
@@ -65,6 +71,11 @@ export function persistRole(role: Role): void {
 
 export function persistTheme(theme: Theme): void {
   fetch("/theme/set/" + theme, { method: "POST", credentials: "same-origin", keepalive: true })
+    .catch(() => { /* best-effort */ });
+}
+
+export function persistWorkspace(workspaceId: string): void {
+  fetch("/workspaces/switch/" + workspaceId, { method: "POST", credentials: "same-origin", keepalive: true })
     .catch(() => { /* best-effort */ });
 }
 

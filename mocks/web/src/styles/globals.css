@@ -783,6 +783,49 @@
   font-size: 1.25rem; letter-spacing: -0.03em;
   font-variation-settings: "opsz" 72;
 }
+/* §02 — workspace switcher chip placed between the brand row and the
+   nav groups. Appears only when the user has more than one workspace
+   to switch into. */
+.ws-switcher { position: relative; padding: 0 4px; }
+.ws-switcher__trigger {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: var(--paper-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; cursor: pointer;
+  color: var(--ink-1); text-align: left;
+  font: inherit; font-size: 13px; font-weight: 600;
+}
+.ws-switcher__trigger:hover { background: var(--paper-3, var(--paper-2)); }
+.ws-switcher__trigger--inert { cursor: default; opacity: 0.85; }
+.ws-switcher__trigger--inert:hover { background: var(--paper-2); }
+.ws-switcher__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-switcher__role {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); font-weight: 500;
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
+}
+.ws-switcher__chev { color: var(--ink-3); flex-shrink: 0; }
+.ws-switcher__menu {
+  position: absolute; top: calc(100% + 4px); left: 4px; right: 4px;
+  list-style: none; margin: 0; padding: 4px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: var(--shadow);
+  z-index: 50; max-height: 60vh; overflow-y: auto;
+}
+.ws-switcher__opt {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: 0; padding: 8px 10px; cursor: pointer;
+  color: var(--ink-1); text-align: left; border-radius: 6px;
+  font: inherit; font-size: 13px;
+}
+.ws-switcher__opt:hover { background: var(--paper-2); }
+.ws-switcher__opt--active { background: var(--moss-soft); color: var(--moss); font-weight: 600; }
+.ws-switcher__opt-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-switcher__opt-role {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); font-weight: 500;
+}
+.ws-switcher__opt-check { flex-shrink: 0; }
+
 .desk__nav-group { display: flex; flex-direction: column; gap: 2px; }
 .nav-section {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;
@@ -967,6 +1010,33 @@
 }
 .prop-card__city { color: var(--ink-3); font-size: 13px; margin-top: 2px; }
 .prop-card__stats { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; color: var(--ink-2); font-size: 13px; }
+.prop-card__chips { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* §02 + §22 — sharing & client tab on PropertyDetail. */
+.sharing-add { display: flex; align-items: center; gap: 10px; }
+.sharing-client { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.sharing-client h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); }
+.sharing-client__row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.sharing-client__chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.sharing-client__owner { margin-top: 10px; font-size: 13px; }
+
+/* §22 — Organizations directory. Two-column page: list on the left,
+   detail panel on the right. */
+.org-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.org-list__row {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 8px; cursor: pointer;
+}
+.org-list__row:hover { background: var(--paper-2); }
+.org-list__row--active { background: var(--moss-soft); }
+.org-list__chips { display: flex; gap: 6px; flex-shrink: 0; }
+.org-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.org-section h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); }
+.org-meta { font-size: 13px; margin-top: 8px; }
+.org-contacts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.org-prop-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.org-portal { margin-top: 16px; font-size: 13px; }
+
 .prop-card__footer {
   padding: 10px 16px; border-top: 1px solid var(--line);
   display: flex; justify-content: space-between; align-items: center;
@@ -2149,3 +2219,45 @@
   display: flex; gap: 12px;
 }
 .me-chat-channels__times .me-chat-channels__field { flex: 1 1 0; }
+
+/* §03 API tokens — page and /me panel. */
+.form-grid {
+  display: flex; flex-direction: column; gap: 14px;
+  margin-top: 12px;
+}
+.form-actions {
+  display: flex; gap: 8px; margin-top: 4px;
+}
+.chip-pick {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.chip-pick__item {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 13px; color: var(--ink-2);
+}
+.chip-pick__item input { margin: 0; }
+.code-block {
+  background: var(--paper-2); color: var(--ink-1);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 10px 12px; overflow-x: auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px; line-height: 1.5;
+}
+.panel--warn {
+  border-color: var(--rust); border-width: 1.5px;
+  background: var(--rust-soft, var(--paper-2));
+}
+.panel--inset {
+  margin-top: 12px; background: var(--paper-2);
+}
+.error-msg {
+  margin: 0; padding: 6px 10px;
+  background: var(--rust-soft, var(--paper-2)); color: var(--rust);
+  border-left: 3px solid var(--rust); border-radius: 4px;
+  font-size: 13px;
+}
+.inline-code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.9em; padding: 1px 5px; border-radius: 4px;
+  background: var(--paper-2); color: var(--ink-1);
+}

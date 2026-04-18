@@ -7,6 +7,7 @@ import { makeQueryClient } from "@/lib/queryClient";
 import { RoleProvider } from "@/context/RoleContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { SseProvider } from "@/context/SseContext";
+import { WorkspaceProvider } from "@/context/WorkspaceContext";
 
 import "@/styles/tokens.css";
 import "@/styles/reset.css";
@@ -36,9 +37,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <BrowserRouter>
         <ThemeProvider>
           <RoleProvider>
-            <SseProvider>
-              <App />
-            </SseProvider>
+            <WorkspaceProvider>
+              <SseProvider>
+                <App />
+              </SseProvider>
+            </WorkspaceProvider>
           </RoleProvider>
         </ThemeProvider>
       </BrowserRouter>

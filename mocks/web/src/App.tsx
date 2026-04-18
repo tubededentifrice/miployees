@@ -39,8 +39,10 @@ import AssetTypesPage from "@/pages/manager/AssetTypesPage";
 import DocumentsPage from "@/pages/manager/DocumentsPage";
 import PayPage from "@/pages/manager/PayPage";
 import AuditPage from "@/pages/manager/AuditPage";
+import OrganizationsPage from "@/pages/manager/OrganizationsPage";
 import PermissionsPage from "@/pages/manager/PermissionsPage";
 import WebhooksPage from "@/pages/manager/WebhooksPage";
+import ApiTokensPage from "@/pages/manager/ApiTokensPage";
 import LlmPage from "@/pages/manager/LlmPage";
 import SettingsPage from "@/pages/manager/SettingsPage";
 
@@ -51,17 +53,30 @@ import GuestPage from "@/pages/public/GuestPage";
 
 import StyleguidePage from "@/pages/StyleguidePage";
 
+import ClientLayout from "@/layouts/ClientLayout";
+import ClientPortfolioPage from "@/pages/client/PortfolioPage";
+import ClientBillableHoursPage from "@/pages/client/BillableHoursPage";
+import ClientQuotesPage from "@/pages/client/QuotesPage";
+import ClientInvoicesPage from "@/pages/client/InvoicesPage";
+
 function RoleHome() {
   const { role } = useRole();
-  return <Navigate to={role === "employee" ? "/today" : "/dashboard"} replace />;
+  const target =
+    role === "employee" ? "/today"
+    : role === "client" ? "/portfolio"
+    : "/dashboard";
+  return <Navigate to={target} replace />;
 }
 
 // §14 — Shared routes (/today, /week, /my/expenses, etc.) render under
-// the viewer's role-appropriate shell: ManagerLayout for managers,
-// EmployeeLayout for workers. Picked here instead of at every route.
+// the viewer's role-appropriate shell. Manager / Employee / Client
+// each get their own layout; only `/me` is currently shared by all
+// three (every persona has a profile screen).
 function Shell() {
   const { role } = useRole();
-  return role === "manager" ? <ManagerLayout /> : <EmployeeLayout />;
+  if (role === "manager") return <ManagerLayout />;
+  if (role === "client") return <ClientLayout />;
+  return <EmployeeLayout />;
 }
 
 export default function App() {
@@ -124,9 +139,18 @@ export default function App() {
           <Route path="/pay" element={<PayPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/permissions" element={<PermissionsPage />} />
+          <Route path="/organizations" element={<OrganizationsPage />} />
           <Route path="/webhooks" element={<WebhooksPage />} />
+          <Route path="/tokens" element={<ApiTokensPage />} />
           <Route path="/llm" element={<LlmPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+        </Route>
+
+        <Route element={<ClientLayout />}>
+          <Route path="/portfolio" element={<ClientPortfolioPage />} />
+          <Route path="/billable_hours" element={<ClientBillableHoursPage />} />
+          <Route path="/quotes" element={<ClientQuotesPage />} />
+          <Route path="/invoices" element={<ClientInvoicesPage />} />
         </Route>
 
         <Route element={<PublicLayout />}>

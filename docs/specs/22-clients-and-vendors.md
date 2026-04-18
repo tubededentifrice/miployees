@@ -630,6 +630,13 @@ Appended to §11 "Always-gated (not configurable)":
 - `work_engagement.set_engagement_kind` (when switching *to* or
   *from* `payroll`, because it moves the engagement between pay
   pipelines)
+- `property_workspace.share` (adds a `managed_workspace` or
+  `observer_workspace` link on a property — same gate as adding
+  a manager grant on the workspace because it materially widens
+  who can dispatch work and read PII).
+- `property_workspace.revoke` (drops a non-owner `property_workspace`
+  link — required for a client to switch agencies without the
+  outgoing agency's consent).
 
 The same rationale as existing money-routing gates: agents can
 draft, attach, and propose; humans decide who gets paid.
@@ -650,6 +657,11 @@ Appended to §10's catalog:
 - `shift_billing.resolved` (fires when a shift closes and the
   billing row is written; carries the `rate_source` so a dashboard
   can surface unpriced shifts).
+- `property_workspace.shared`, `property_workspace.revoked`
+  (fires when an owner workspace adds or removes another
+  workspace's link to one of its properties — agencies and
+  observers subscribe so their dashboards refresh without a
+  full reload).
 
 ## Audit actions added
 

@@ -1,4 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
+import WorkspaceSwitcher from "@/components/WorkspaceSwitcher";
 
 // Shared sidebar used by both ManagerLayout (`.desk__nav` inside
 // `.desk`) and EmployeeLayout (`.desk__nav` inside `.phone`, revealed
@@ -18,7 +19,7 @@ export interface SideNavLinkItem {
   type: "link";
   to: string;
   label: string;
-  matchPrefix?: string;
+  matchPrefix?: string | string[];
   phoneHidden?: boolean;
 }
 
@@ -58,6 +59,7 @@ export default function SideNav({
         <span className="desk__logo" aria-hidden="true">◈</span>
         <span className="desk__wordmark">crewday</span>
       </div>
+      <WorkspaceSwitcher />
       <nav className="desk__nav-group">
         {items.map((item, i) =>
           item.type === "section" ? (
@@ -100,7 +102,7 @@ export default function SideNav({
 
 interface NavItemProps {
   to: string;
-  matchPrefix?: string;
+  matchPrefix?: string | string[];
   phoneHidden?: boolean;
   children: React.ReactNode;
   onClick?: () => void;
@@ -108,7 +110,10 @@ interface NavItemProps {
 
 function NavItem({ to, matchPrefix, phoneHidden, children, onClick }: NavItemProps) {
   const { pathname } = useLocation();
-  const active = matchPrefix ? pathname.startsWith(matchPrefix) : pathname === to;
+  const prefixes = matchPrefix
+    ? Array.isArray(matchPrefix) ? matchPrefix : [matchPrefix]
+    : null;
+  const active = prefixes ? prefixes.some((p) => pathname.startsWith(p)) : pathname === to;
   return (
     <NavLink
       to={to}

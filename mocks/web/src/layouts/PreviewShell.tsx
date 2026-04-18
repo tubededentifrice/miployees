@@ -33,7 +33,11 @@ export default function PreviewShell() {
   const switchRole = (r: typeof role) => {
     setRole(r);
     if (!stayOnRoleSwitch) {
-      navigate(r === "employee" ? "/today" : "/dashboard");
+      const next =
+        r === "employee" ? "/today"
+        : r === "client" ? "/portfolio"
+        : "/dashboard";
+      navigate(next);
     }
   };
 
@@ -58,6 +62,13 @@ export default function PreviewShell() {
             onClick={() => switchRole("manager")}
           >
             Manager
+          </button>
+          <button
+            type="button"
+            className={"pill" + (!roleNeutral && role === "client" ? " pill--active" : "")}
+            onClick={() => switchRole("client")}
+          >
+            Client
           </button>
           <button
             type="button"

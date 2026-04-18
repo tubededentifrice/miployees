@@ -3,7 +3,7 @@
 // layer serializes via dataclasses.asdict, so dates arrive as ISO-8601
 // strings and enums as their literal string values.
 
-export type Role = "employee" | "manager";
+export type Role = "employee" | "manager" | "client";
 export type Theme = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";
 
@@ -22,6 +22,26 @@ export interface Property {
   country: string;
   locale: string;
   settings_override: Record<string, unknown>;
+  /** §22 — when set, the property is billed to that organization. */
+  client_org_id: string | null;
+  /** §22 — owner-of-record (a real human, not just a workspace). */
+  owner_user_id: string | null;
+}
+
+// §02 — `property_workspace` junction. A property can belong to many
+// workspaces; `membership_role` says how the workspace relates to it.
+export type MembershipRole =
+  | "owner_workspace"
+  | "managed_workspace"
+  | "observer_workspace";
+
+export interface PropertyWorkspace {
+  property_id: string;
+  workspace_id: string;
+  membership_role: MembershipRole;
+  added_at: string;
+  added_by_user_id: string | null;
+  added_via: "user" | "agent" | "system";
 }
 
 export interface Employee {
@@ -462,6 +482,137 @@ export interface Workspace {
   default_locale: string;
 }
 
+// §22 — counterparty of the workspace. Either a paying client, a
+// supplier of workers, or both (one row, role flags).
+export interface Organization {
+  id: string;
+  name: string;
+  workspace_id: string;
+  is_client: boolean;
+  is_supplier: boolean;
+  legal_name: string | null;
+  default_currency: string;
+  tax_id: string | null;
+  contacts: { label: string; name: string; email: string; phone_e164: string; role: string }[];
+  notes: string | null;
+  default_pay_destination_stub: string | null;
+  portal_user_id: string | null;
+}
+
+export interface ClientRate {
+  id: string;
+  client_org_id: string;
+  work_role_id: string;
+  hourly_cents: number;
+  currency: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+export interface ClientUserRate {
+  id: string;
+  client_org_id: string;
+  user_id: string;
+  hourly_cents: number;
+  currency: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+export interface ShiftBilling {
+  id: string;
+  shift_id: string;
+  client_org_id: string;
+  user_id: string;
+  currency: string;
+  billable_minutes: number;
+  hourly_cents: number;
+  subtotal_cents: number;
+  rate_source: "client_user_rate" | "client_rate" | "unpriced";
+  rate_source_id: string | null;
+  work_engagement_id: string;
+}
+
+export type WorkOrderState =
+  | "draft" | "quoted" | "accepted" | "in_progress"
+  | "completed" | "cancelled" | "invoiced" | "paid";
+
+export interface WorkOrder {
+  id: string;
+  property_id: string;
+  title: string;
+  state: WorkOrderState;
+  assigned_user_id: string | null;
+  currency: string;
+  client_org_id: string | null;
+  asset_id: string | null;
+  description: string | null;
+  accepted_quote_id: string | null;
+  created_at: string | null;
+  requested_by_user_id: string | null;
+}
+
+export interface QuoteLine {
+  kind: string;
+  description: string;
+  quantity: number;
+  unit: string;
+  unit_price_cents: number;
+  total_cents: number;
+}
+
+export interface Quote {
+  id: string;
+  work_order_id: string;
+  submitted_by_user_id: string;
+  currency: string;
+  subtotal_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  status: "draft" | "submitted" | "accepted" | "rejected" | "superseded" | "expired";
+  lines: QuoteLine[];
+  valid_until: string | null;
+  submitted_at: string | null;
+  decided_at: string | null;
+  decided_by_user_id: string | null;
+  decision_note: string | null;
+  work_engagement_id: string | null;
+}
+
+export interface VendorInvoice {
+  id: string;
+  currency: string;
+  subtotal_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  billed_at: string;
+  status: "draft" | "submitted" | "approved" | "rejected" | "paid" | "voided";
+  work_order_id: string | null;
+  property_id: string | null;
+  vendor_user_id: string | null;
+  vendor_work_engagement_id: string | null;
+  vendor_organization_id: string | null;
+  due_on: string | null;
+  payout_destination_stub: string | null;
+  lines: QuoteLine[];
+  submitted_at: string | null;
+  approved_at: string | null;
+  decided_by_user_id: string | null;
+  paid_at: string | null;
+  paid_by_user_id: string | null;
+  decision_note: string | null;
+}
+
+// §02 — workspaces the current user has access to, with the
+// highest-privilege grant role they hold there. Returned by /me so
+// the workspace switcher can render without a second call.
+export interface AvailableWorkspace {
+  workspace: Workspace;
+  grant_role: GrantRole | null;
+  binding_org_id: string | null;
+  source: "workspace_grant" | "property_grant" | "org_grant" | "work_engagement";
+}
+
 export interface RoleGrant {
   id: string;
   user_id: string;
@@ -540,6 +691,53 @@ export interface Webhook {
   active: boolean;
   last_delivery_status: number;
   last_delivery_at: string;
+}
+
+// §03 API tokens — three kinds. The wire shape is a single type
+// because the list endpoint mixes them (for managers) and the /me
+// endpoint filters to `personal` only.
+export type ApiTokenKind = "scoped" | "delegated" | "personal";
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  kind: ApiTokenKind;
+  /** `mip_<key_id>` — the public half of the token. Full secret
+   *  only returned once at creation time via `ApiTokenCreated`. */
+  prefix: string;
+  /** Scopes requested. Empty for delegated tokens. */
+  scopes: string[];
+  /** Creator for scoped; subject for personal; delegator for
+   *  delegated. Same column, populated from the session. */
+  created_by_user_id: string;
+  created_by_display: string;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  /** Truncated to /24 (v4) or /64 (v6) per §15. */
+  last_used_ip: string | null;
+  last_used_path: string | null;
+  revoked_at: string | null;
+  note: string | null;
+  ip_allowlist: string[];
+}
+
+export interface ApiTokenCreated {
+  token: ApiToken;
+  /** The `mip_<key_id>_<secret>` plaintext. Shown once. */
+  plaintext: string;
+  /** Example curl for the first scope granted. */
+  curl_example: string;
+}
+
+export interface ApiTokenAuditEntry {
+  at: string;
+  method: string;
+  path: string;
+  status: number;
+  ip: string;
+  user_agent: string;
+  correlation_id: string;
 }
 
 export type ChatChannelKind = "offapp_whatsapp" | "offapp_telegram";
@@ -673,6 +871,14 @@ export interface Me {
   now: string;
   user_id: string | null;
   agent_approval_mode: AgentApprovalMode;
+  /** §02 — active workspace context for the current request. */
+  current_workspace_id: string;
+  /** §02 — workspaces the user can switch into. */
+  available_workspaces: AvailableWorkspace[];
+  /** §22 — when the active grant on `current_workspace_id` is a
+   *  client grant, the org(s) the user is bound to. Drives the
+   *  client portal's "billed to me" filter. */
+  client_binding_org_ids: string[];
 }
 
 export interface HistoryPayload {

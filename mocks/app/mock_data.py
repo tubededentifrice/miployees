@@ -664,6 +664,44 @@ class Webhook:
 
 
 @dataclass
+class ApiToken:
+    """§03 API token, in all three kinds: scoped / delegated / personal.
+
+    The wire shape mirrors ``web/src/types/api.ts::ApiToken``. This mock
+    elides the argon2id hash (real server stores ``secret_hash`` +
+    ``hash_params``) and keeps only the public half (``prefix``) plus
+    the bookkeeping columns the UI renders.
+    """
+
+    id: str
+    name: str
+    kind: Literal["scoped", "delegated", "personal"]
+    prefix: str
+    scopes: list[str]
+    created_by_user_id: str
+    created_by_display: str
+    created_at: datetime
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    last_used_ip: str | None
+    last_used_path: str | None
+    revoked_at: datetime | None
+    note: str | None
+    ip_allowlist: list[str]
+
+
+@dataclass
+class ApiTokenAuditEntry:
+    at: datetime
+    method: str
+    path: str
+    status: int
+    ip: str
+    user_agent: str
+    correlation_id: str
+
+
+@dataclass
 class Message:
     id: str
     from_: str
@@ -1221,6 +1259,14 @@ ROLE_GRANTS: list[RoleGrant] = [
     # below).
     RoleGrant("rg-elodie-manager-bernard", "u-elodie", "workspace", "ws-bernard",
               "manager", started_on=date(2024, 1, 1)),
+    # Élodie also holds an observer grant on CleanCo so the agency
+    # she contracts with for cleaning Apt 3B is visible from her own
+    # dashboard. Read-only — she does not dispatch CleanCo's workers,
+    # she only audits the work CleanCo bills her for. This makes the
+    # workspace switcher non-trivial for the manager persona too.
+    RoleGrant("rg-elodie-observer-cleanco", "u-elodie", "workspace", "ws-cleanco",
+              "client", binding_org_id="org-bernard-cleanco",
+              started_on=date(2024, 6, 1), granted_by_user_id="u-julie"),
     # Maria, Arun, Ben, Ana, Sam hold worker grants on ws-bernard.
     RoleGrant("rg-maria-worker", "u-maria", "workspace", "ws-bernard",
               "worker", started_on=date(2024, 3, 1), granted_by_user_id="u-elodie"),
@@ -1602,6 +1648,7 @@ USER_WORKSPACES: list[UserWorkspace] = [
     # Derived junction; real system recomputes this from ROLE_GRANTS +
     # WORK_ENGAGEMENTS + PROPERTY_WORKSPACES. Seeded here for the UI.
     UserWorkspace("u-elodie",  "ws-bernard", "workspace_grant"),
+    UserWorkspace("u-elodie",  "ws-cleanco", "workspace_grant"),  # client grant on CleanCo
     UserWorkspace("u-maria",   "ws-bernard", "workspace_grant"),
     UserWorkspace("u-arun",    "ws-bernard", "workspace_grant"),
     UserWorkspace("u-ben",     "ws-bernard", "workspace_grant"),
@@ -2113,6 +2160,148 @@ WEBHOOKS: list[Webhook] = [
 ]
 
 
+# §03 API tokens. A realistic mix for the mock: two scoped workspace
+# tokens (one fresh, one near expiry), one delegated token backing
+# the manager chat agent, one revoked scoped token still on the list
+# so the UI can show a "revoked" chip, plus two PATs that only
+# surface on /me for their respective subjects (Maria's task printer,
+# Élodie's pay-review script). Managers see the four workspace rows;
+# each user sees only their own PATs.
+API_TOKENS: list[ApiToken] = [
+    ApiToken(
+        id="tok-1", name="nightly-scheduler", kind="scoped",
+        prefix="mip_01HS8WR2ZQ",
+        scopes=["tasks:read", "tasks:write", "stays:read"],
+        created_by_user_id="u-elodie", created_by_display="Élodie Bernard",
+        created_at=datetime(2026, 1, 14, 9, 12, 0),
+        expires_at=datetime(2027, 1, 14, 0, 0, 0),
+        last_used_at=datetime(2026, 4, 18, 3, 0, 12),
+        last_used_ip="198.51.100.0/24",
+        last_used_path="POST /api/v1/tasks",
+        revoked_at=None,
+        note="Hermes scheduler, runs 03:00 UTC every night",
+        ip_allowlist=["198.51.100.0/24"],
+    ),
+    ApiToken(
+        id="tok-2", name="finance-readonly", kind="scoped",
+        prefix="mip_01HKQ7F4NB",
+        scopes=["payroll:read", "expenses:read"],
+        created_by_user_id="u-elodie", created_by_display="Élodie Bernard",
+        created_at=datetime(2025, 10, 2, 15, 30, 0),
+        expires_at=datetime(2026, 5, 2, 0, 0, 0),
+        last_used_at=datetime(2026, 4, 17, 8, 2, 4),
+        last_used_ip="203.0.113.0/24",
+        last_used_path="GET /api/v1/payroll/periods",
+        revoked_at=None,
+        note="Accountant's read-only export script (expires in 2 weeks)",
+        ip_allowlist=[],
+    ),
+    ApiToken(
+        id="tok-3", name="desk-sidebar-agent", kind="delegated",
+        prefix="mip_01HS4M0G3P",
+        scopes=[],
+        created_by_user_id="u-elodie", created_by_display="Élodie Bernard",
+        created_at=datetime(2026, 3, 19, 11, 48, 0),
+        expires_at=datetime(2026, 4, 18, 11, 48, 0),
+        last_used_at=datetime(2026, 4, 18, 10, 2, 11),
+        last_used_ip="100.72.198.118/24",
+        last_used_path="POST /api/v1/agent/manager/message",
+        revoked_at=None,
+        note="Embedded chat agent (auto-rotated on next login)",
+        ip_allowlist=[],
+    ),
+    ApiToken(
+        id="tok-4", name="ops-bot-legacy", kind="scoped",
+        prefix="mip_01HG4PJXKA",
+        scopes=["tasks:read"],
+        created_by_user_id="u-elodie", created_by_display="Élodie Bernard",
+        created_at=datetime(2025, 6, 1, 12, 0, 0),
+        expires_at=datetime(2026, 6, 1, 0, 0, 0),
+        last_used_at=datetime(2026, 2, 14, 22, 1, 0),
+        last_used_ip="192.0.2.0/24",
+        last_used_path="GET /api/v1/tasks",
+        revoked_at=datetime(2026, 2, 15, 9, 4, 0),
+        note="Revoked after the host was decommissioned",
+        ip_allowlist=[],
+    ),
+    # Personal access tokens. Only visible to the subject on /me;
+    # the manager /tokens page must filter these out.
+    ApiToken(
+        id="tok-pat-maria", name="kitchen-printer", kind="personal",
+        prefix="mip_01HV3Z8Q8K",
+        scopes=["me.tasks:read", "me.shifts:read"],
+        created_by_user_id="u-maria", created_by_display="Maria Alvarez",
+        created_at=datetime(2026, 4, 2, 18, 21, 0),
+        expires_at=datetime(2026, 7, 1, 0, 0, 0),
+        last_used_at=datetime(2026, 4, 18, 6, 5, 48),
+        last_used_ip="192.0.2.0/24",
+        last_used_path="GET /api/v1/me/tasks",
+        revoked_at=None,
+        note="Raspberry Pi next to the coffee machine — prints today's tasks at 06:00",
+        ip_allowlist=[],
+    ),
+    ApiToken(
+        id="tok-pat-elodie", name="pay-review-laptop", kind="personal",
+        prefix="mip_01HV51R2PD",
+        scopes=["me.expenses:read", "me.shifts:read"],
+        created_by_user_id="u-elodie", created_by_display="Élodie Bernard",
+        created_at=datetime(2026, 3, 30, 9, 10, 0),
+        expires_at=datetime(2026, 6, 30, 0, 0, 0),
+        last_used_at=None,
+        last_used_ip=None,
+        last_used_path=None,
+        revoked_at=None,
+        note="Notebook I keep for the weekly pay check",
+        ip_allowlist=[],
+    ),
+]
+
+
+API_TOKEN_AUDIT: dict[str, list[ApiTokenAuditEntry]] = {
+    "tok-1": [
+        ApiTokenAuditEntry(datetime(2026, 4, 18, 3, 0, 12), "GET",
+                           "/api/v1/tasks?assignee_id=u-maria", 200,
+                           "198.51.100.0/24", "hermes/0.12", "req-0bf1a9e3"),
+        ApiTokenAuditEntry(datetime(2026, 4, 18, 3, 0, 14), "POST",
+                           "/api/v1/tasks", 201,
+                           "198.51.100.0/24", "hermes/0.12", "req-0bf1a9e4"),
+        ApiTokenAuditEntry(datetime(2026, 4, 17, 3, 0, 11), "GET",
+                           "/api/v1/tasks?assignee_id=u-maria", 200,
+                           "198.51.100.0/24", "hermes/0.12", "req-0bee71a9"),
+        ApiTokenAuditEntry(datetime(2026, 4, 16, 3, 0, 18), "POST",
+                           "/api/v1/tasks", 201,
+                           "198.51.100.0/24", "hermes/0.12", "req-0bdc4321"),
+    ],
+    "tok-2": [
+        ApiTokenAuditEntry(datetime(2026, 4, 17, 8, 2, 4), "GET",
+                           "/api/v1/payroll/periods", 200,
+                           "203.0.113.0/24", "python-requests/2.32", "req-0bea1188"),
+        ApiTokenAuditEntry(datetime(2026, 4, 10, 8, 1, 2), "GET",
+                           "/api/v1/expenses?status=approved", 200,
+                           "203.0.113.0/24", "python-requests/2.32", "req-0b5e0f22"),
+    ],
+    "tok-3": [
+        ApiTokenAuditEntry(datetime(2026, 4, 18, 10, 2, 11), "POST",
+                           "/api/v1/agent/manager/message", 200,
+                           "100.72.198.118/24", "crewday-web/1.0", "req-0bf24c10"),
+    ],
+    "tok-4": [
+        ApiTokenAuditEntry(datetime(2026, 2, 15, 9, 4, 0), "GET",
+                           "/api/v1/tasks", 401,
+                           "192.0.2.0/24", "curl/8.6", "req-09a10011"),
+    ],
+    "tok-pat-maria": [
+        ApiTokenAuditEntry(datetime(2026, 4, 18, 6, 5, 48), "GET",
+                           "/api/v1/me/tasks", 200,
+                           "192.0.2.0/24", "crewday-py/0.1", "req-0bf1f912"),
+        ApiTokenAuditEntry(datetime(2026, 4, 17, 6, 5, 42), "GET",
+                           "/api/v1/me/tasks", 200,
+                           "192.0.2.0/24", "crewday-py/0.1", "req-0bee6880"),
+    ],
+    "tok-pat-elodie": [],
+}
+
+
 # ── Asset type catalog (18 pre-seeded) ──────────────────────────────
 
 ASSET_TYPES: list[AssetType] = [
@@ -2475,6 +2664,26 @@ ORGANIZATIONS: list[Organization] = [
         ],
         notes="Billing entity for Vincent Dupont. NET-30. Villa du Lac + Seaside Apt.",
         portal_user_id="u-vincent",
+    ),
+    # Bernard family is a CleanCo client too — they contract CleanCo
+    # for cleaning Apt 3B. Lives in CleanCo's workspace; Élodie holds
+    # a `client` grant on ws-cleanco bound to this org so she can audit
+    # what CleanCo bills her family without managing CleanCo's roster.
+    Organization(
+        "org-bernard-cleanco", "Bernard family",
+        workspace_id="ws-cleanco",
+        is_client=True,
+        legal_name="Bernard household",
+        default_currency="EUR",
+        tax_id="FR12 345 678 901",
+        contacts=[
+            {"label": "Primary", "name": "Élodie Bernard",
+             "email": "elodie.bernard@example.com",
+             "phone_e164": "+33 6 11 22 33 44",
+             "role": "owner"},
+        ],
+        notes="Bernard family billing entity — separate from `org-dupont` which lives in ws-bernard's own scope.",
+        portal_user_id="u-elodie",
     ),
 ]
 
@@ -3300,6 +3509,10 @@ DEFAULT_EMPLOYEE_USER_ID = "u-maria"
 DEFAULT_MANAGER_NAME = "Élodie Bernard"
 DEFAULT_MANAGER_USER_ID = "u-elodie"
 DEFAULT_WORKSPACE_ID = "ws-bernard"
+# §22 — Vincent Dupont is the demo client. Holds a `client` grant on
+# CleanCo's workspace bound to his org `org-dupont-vincent`, and is
+# also the owner_user of Villa du Lac + Seaside Apt.
+DEFAULT_CLIENT_USER_ID = "u-vincent"
 
 
 # ── v1 helpers ──────────────────────────────────────────────────────
@@ -3357,6 +3570,62 @@ def workspaces_for_property(pid: str) -> list[PropertyWorkspace]:
 
 def workspace_by_id(wsid: str) -> Workspace | None:
     return next((w for w in WORKSPACES if w.id == wsid), None)
+
+
+def properties_for_workspace(wsid: str) -> list[Property]:
+    """All properties linked to `wsid` via the `property_workspace`
+    junction (§02 multi-belonging). Includes properties the workspace
+    owns, manages, or merely observes.
+    """
+    pids = {pw.property_id for pw in PROPERTY_WORKSPACES if pw.workspace_id == wsid}
+    return [p for p in PROPERTIES if p.id in pids]
+
+
+def organization_by_id(oid: str) -> Organization | None:
+    return next((o for o in ORGANIZATIONS if o.id == oid), None)
+
+
+def work_order_by_id(woid: str) -> WorkOrder | None:
+    return next((w for w in WORK_ORDERS if w.id == woid), None)
+
+
+def workspaces_for_user(uid: str) -> list[dict[str, Any]]:
+    """Workspaces the user has access to, with their grant role.
+
+    Resolution mirrors the production rule (§02): a user "belongs" to
+    a workspace iff they hold an active grant on it (workspace-scope
+    or via a property in `property_workspace`). For the mock we read
+    `USER_WORKSPACES` (the materialised junction) and decorate each
+    row with the highest-privilege `grant_role` the user holds there.
+    """
+    rank = {"manager": 4, "worker": 3, "client": 2, "guest": 1}
+    rows: list[dict[str, Any]] = []
+    grants_by_ws: dict[str, list[RoleGrant]] = {}
+    for g in role_grants_for_user(uid):
+        if g.scope_kind == "workspace":
+            grants_by_ws.setdefault(g.scope_id, []).append(g)
+    seen: set[str] = set()
+    for uw in USER_WORKSPACES:
+        if uw.user_id != uid or uw.workspace_id in seen:
+            continue
+        ws = workspace_by_id(uw.workspace_id)
+        if ws is None:
+            continue
+        seen.add(uw.workspace_id)
+        ws_grants = grants_by_ws.get(uw.workspace_id, [])
+        grant_role = None
+        binding_org_id = None
+        if ws_grants:
+            best = max(ws_grants, key=lambda g: rank.get(g.grant_role, 0))
+            grant_role = best.grant_role
+            binding_org_id = best.binding_org_id
+        rows.append({
+            "workspace": ws,
+            "grant_role": grant_role,
+            "binding_org_id": binding_org_id,
+            "source": uw.source,
+        })
+    return rows
 
 
 # ── Derived field back-fill ─────────────────────────────────────────

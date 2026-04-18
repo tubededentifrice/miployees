@@ -143,9 +143,16 @@ asset/<id>                     asset_types
 documents                      inventory
 pay                            expenses
 approvals                      audit
-webhooks                       llm
-settings
+webhooks                       tokens
+llm                            settings
 ```
+
+- `/tokens` — admin surface for workspace API tokens (scoped and
+  delegated; §03). Gated on `api_tokens.manage`. Personal access
+  tokens (§03) are **not** listed here — they live on `/me` under
+  the "Personal access tokens" panel, revocable only by the
+  subject. Each token row expands inline to show its per-token
+  request log (method, path, status, IP prefix, correlation id).
 
 ### Workspace switcher
 
@@ -389,8 +396,71 @@ than adding to this list:
   lockstep. Deep-linking, NavLink construction, and
   `fetchJson<T>` URL building will all gain a workspace-slug
   parameter at that point.
-- **Self-serve signup + workspace switcher.** `/signup`,
-  `/signup/verify`, `/select-workspace`, and the user-menu
-  "Switch workspace" action are specified (§03, §14 "Workspace
-  switcher") but not yet in the mocks. Same timing as the path-
-  prefix migration above.
+- **Self-serve signup.** `/signup`, `/signup/verify`, and
+  `/select-workspace` are specified (§03) but not yet in the
+  mocks. Same timing as the path-prefix migration above.
+
+### Workspace switcher (mocks parity)
+
+The shared `<SideNav />` renders a chip immediately under the brand
+row that lists every workspace the current user has an active
+grant on (workspace-scope `role_grant` rows or transitively via
+`property_workspace`). The chip shows the active workspace's
+display name and the user's grant role on it (`Manager`,
+`Worker`, `Client`); clicking it opens a menu of the alternates.
+
+- **Cookie-backed.** The selected workspace lives in
+  `crewday_workspace`; the server is authoritative. `POST
+  /workspaces/switch/{wsid}` sets the cookie. The mock honours the
+  same cookie everywhere `current_workspace_id(request)` is read.
+- **Hidden when single-workspace.** The chip does not render when
+  the user has only one workspace, so the default tenant case
+  stays uncluttered.
+- **Cache invalidation.** Switching workspaces drops every cached
+  TanStack Query entry — every query is potentially scoped to the
+  previous tenant.
+
+This is the mock-side stand-in for the future `/w/<slug>/...`
+addressing scheme (§01); the URL path itself remains
+single-workspace and unprefixed in the mocks until the real
+routing middleware lands (§19 Phase 1).
+
+### Property "Sharing & client" tab
+
+`/property/{id}` carries a "Sharing & client" tab in addition to
+Overview, Areas, Stays, Assets, Instructions, Closures, and
+Settings. It surfaces the multi-belonging model from §02 + §04:
+
+- **Memberships table** — every workspace linked to the property
+  via `property_workspace`, with its `membership_role`
+  (Owner / Managed / Observer) and the date the link was added.
+- **Billing client card** — when `property.client_org_id` is set,
+  the linked organization's name, legal name, tax ID, currency,
+  and role flags. Empty state when null.
+- **Owner of record** — a display-only line for `owner_user_id`
+  when set (the natural person behind the owner workspace).
+- **Invite / Revoke controls** — visible only when the active
+  workspace is the property's `owner_workspace`. "Invite as
+  agency" attaches a `managed_workspace` link; "Revoke" removes
+  any non-owner link. Both confirmations note that production
+  routes through the always-approval-gated set in §22.
+
+The Organizations page (`/organizations`) under ADMIN lists every
+organization in the active workspace, with a detail panel
+showing rate cards (`client_rate` / `client_user_rate`), recent
+`shift_billing` rows, and inbound / outbound `vendor_invoice`
+entries. Empty state guides the operator to "agency mode" via
+the property page.
+
+### Client portal shell (§22)
+
+The third role pill alongside Employee / Manager renders the
+**client portal** — a separate `ClientLayout` with a narrower
+nav: Properties (only those whose `client_org_id` matches one of
+the user's `binding_org_id`s on the active workspace), Billable
+hours (read-only `shift_billing` rollup), Quotes (with accept /
+reject controls — acceptance still routes through the unconditionally
+approval-gated set in §22 in production; the mock applies it
+in-memory), Invoices (read-only `vendor_invoice` list, no mark-paid
+control). The agent sidebar is intentionally not mounted here:
+clients don't drive the crewday agent in v1.

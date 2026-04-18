@@ -29,7 +29,7 @@ import json
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable
+from typing import Any, AsyncIterator, Iterable, Literal
 
 from fastapi import Body, FastAPI, Request, Response
 from fastapi.responses import (
@@ -55,7 +55,8 @@ app = FastAPI(title="crewday mocks", docs_url=None, redoc_url=None, openapi_url=
 ROLE_COOKIE = "crewday_role"
 THEME_COOKIE = "crewday_theme"
 AGENT_COLLAPSED_COOKIE = "crewday_agent_collapsed"
-VALID_ROLES = {"employee", "manager"}
+WORKSPACE_COOKIE = "crewday_workspace"
+VALID_ROLES = {"employee", "manager", "client"}
 VALID_THEMES = {"light", "dark", "system"}
 
 
@@ -67,6 +68,22 @@ def current_role(request: Request) -> str:
 def current_theme(request: Request) -> str:
     t = request.cookies.get(THEME_COOKIE)
     return t if t in VALID_THEMES else "system"
+
+
+def current_workspace_id(request: Request) -> str:
+    """Active workspace from cookie; falls back to the role-default.
+
+    Workers default to Bernard, the client persona defaults to CleanCo
+    (where Vincent's `client` grant lives, §22), managers stay on
+    Bernard. The cookie is set by `POST /workspaces/switch/{wsid}`.
+    """
+    cookie_val = request.cookies.get(WORKSPACE_COOKIE)
+    if cookie_val and md.workspace_by_id(cookie_val) is not None:
+        return cookie_val
+    role = current_role(request)
+    if role == "client":
+        return "ws-cleanco"
+    return md.DEFAULT_WORKSPACE_ID
 
 
 # ── JSON encoding helpers ─────────────────────────────────────────────
@@ -192,6 +209,22 @@ def switch_role(role: str) -> Response:
         return JSONResponse({"ok": False}, status_code=400)
     resp = JSONResponse({"ok": True, "role": role})
     resp.set_cookie(ROLE_COOKIE, role, max_age=60 * 60 * 24 * 30, samesite="lax")
+    # Switching role pivots the active workspace to a sensible default
+    # so the next page load lands in a workspace the persona can see.
+    if role == "client":
+        resp.set_cookie(WORKSPACE_COOKIE, "ws-cleanco", max_age=60 * 60 * 24 * 30, samesite="lax")
+    elif role == "manager":
+        resp.set_cookie(WORKSPACE_COOKIE, md.DEFAULT_WORKSPACE_ID, max_age=60 * 60 * 24 * 30, samesite="lax")
+    return resp
+
+
+@app.post("/workspaces/switch/{wsid}")
+@app.get("/workspaces/switch/{wsid}")
+def switch_workspace(wsid: str) -> Response:
+    if md.workspace_by_id(wsid) is None:
+        return JSONResponse({"ok": False, "error": "unknown_workspace"}, status_code=404)
+    resp = JSONResponse({"ok": True, "workspace_id": wsid})
+    resp.set_cookie(WORKSPACE_COOKIE, wsid, max_age=60 * 60 * 24 * 30, samesite="lax")
     return resp
 
 
@@ -234,14 +267,30 @@ def agent_sidebar_set(state: str) -> Response:
 # ══════════════════════════════════════════════════════════════════════
 
 def current_user_id(request: Request) -> str:
-    """Resolve the signed-in user's ULID from the role cookie (§03, §11)."""
-    return md.DEFAULT_MANAGER_USER_ID if current_role(request) == "manager" else md.DEFAULT_EMPLOYEE_USER_ID
+    """Resolve the signed-in user's ULID from the role cookie (§03, §11).
+
+    The `client` persona maps to Vincent Dupont — the v1 example client
+    user (§22) — so demo state immediately reflects a real client grant.
+    """
+    role = current_role(request)
+    if role == "manager":
+        return md.DEFAULT_MANAGER_USER_ID
+    if role == "client":
+        return md.DEFAULT_CLIENT_USER_ID
+    return md.DEFAULT_EMPLOYEE_USER_ID
 
 
 @app.get("/api/v1/me")
 def api_me(request: Request) -> Response:
     emp = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
     me_user = md.user_by_id(current_user_id(request))
+    wsid = current_workspace_id(request)
+    available = md.workspaces_for_user(current_user_id(request))
+    binding_org_ids = sorted({
+        g.binding_org_id for g in md.role_grants_for_user(current_user_id(request))
+        if g.scope_kind == "workspace" and g.scope_id == wsid
+        and g.grant_role == "client" and g.binding_org_id
+    })
     return ok({
         "role": current_role(request),
         "theme": current_theme(request),
@@ -252,6 +301,9 @@ def api_me(request: Request) -> Response:
         "now": md.NOW,
         "user_id": me_user.id if me_user else None,
         "agent_approval_mode": me_user.agent_approval_mode if me_user else "strict",
+        "current_workspace_id": wsid,
+        "available_workspaces": available,
+        "client_binding_org_ids": binding_org_ids,
     })
 
 
@@ -510,13 +562,29 @@ async def _save_pref(request: Request, scope_kind: str, scope_id: str) -> Respon
 
 
 @app.get("/api/v1/properties")
-def api_properties() -> Response:
+def api_properties(request: Request, workspace_id: str = "") -> Response:
+    """List properties visible from the active (or requested) workspace.
+
+    Multi-belonging: a property is "visible" from a workspace iff a
+    `property_workspace` row exists linking the two (§02). The
+    `?workspace_id=` query param overrides the cookie context for
+    cross-workspace queries (e.g. an agency dashboard listing a
+    client's portfolio).
+    """
+    wsid = workspace_id or current_workspace_id(request)
+    if wsid:
+        return ok(md.properties_for_workspace(wsid))
     return ok(md.PROPERTIES)
 
 
 @app.get("/api/v1/properties/{pid}")
-def api_property(pid: str) -> Response:
+def api_property(pid: str, request: Request) -> Response:
     prop = md.property_by_id(pid)
+    if prop is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    memberships = md.workspaces_for_property(pid)
+    client_org = md.organization_by_id(prop.client_org_id) if prop.client_org_id else None
+    workspaces = [md.workspace_by_id(m.workspace_id) for m in memberships]
     return ok({
         "property": prop,
         "property_tasks": [t for t in md.TASKS if t.property_id == pid],
@@ -527,6 +595,12 @@ def api_property(pid: str) -> Response:
         "lifecycle_rules": md.lifecycle_rules_for_property(pid),
         "assets": md.assets_for_property(pid),
         "asset_documents": md.documents_for_property(pid),
+        # §02 + §22 — multi-belonging surface.
+        "memberships": memberships,
+        "membership_workspaces": [w for w in workspaces if w is not None],
+        "client_org": client_org,
+        "owner_user": md.user_by_id(prop.owner_user_id) if prop.owner_user_id else None,
+        "active_workspace_id": current_workspace_id(request),
     })
 
 
@@ -1031,11 +1105,221 @@ def api_property_workspaces(property_id: str = "", workspace_id: str = "") -> Re
 
 
 @app.get("/api/v1/organizations")
-def api_organizations(workspace_id: str = "") -> Response:
-    rows = md.ORGANIZATIONS
-    if workspace_id:
-        rows = [o for o in rows if o.workspace_id == workspace_id]
+def api_organizations(request: Request, workspace_id: str = "") -> Response:
+    wsid = workspace_id or current_workspace_id(request)
+    rows = [o for o in md.ORGANIZATIONS if not wsid or o.workspace_id == wsid]
     return ok(rows)
+
+
+@app.get("/api/v1/organizations/{oid}")
+def api_organization(oid: str) -> Response:
+    org = md.organization_by_id(oid)
+    if org is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    properties_billed = [p for p in md.PROPERTIES if p.client_org_id == oid]
+    rates = [r for r in md.CLIENT_RATES if r.client_org_id == oid]
+    user_rates = [r for r in md.CLIENT_USER_RATES if r.client_org_id == oid]
+    billings = [b for b in md.SHIFT_BILLINGS if b.client_org_id == oid]
+    invoices_to = [i for i in md.VENDOR_INVOICES
+                   if i.vendor_organization_id == oid
+                   or (i.work_order_id and md.work_order_by_id(i.work_order_id)
+                       and md.work_order_by_id(i.work_order_id).client_org_id == oid)]
+    invoices_from = [i for i in md.VENDOR_INVOICES if i.vendor_organization_id == oid]
+    portal_user = md.user_by_id(org.portal_user_id) if org.portal_user_id else None
+    return ok({
+        "organization": org,
+        "properties_billed": properties_billed,
+        "client_rates": rates,
+        "client_user_rates": user_rates,
+        "recent_shift_billings": billings[-10:],
+        "vendor_invoices_billed_to": invoices_to,
+        "vendor_invoices_billed_from": invoices_from,
+        "portal_user": portal_user,
+    })
+
+
+@app.get("/api/v1/role_grants")
+def api_role_grants(
+    request: Request,
+    user_id: str = "",
+    workspace_id: str = "",
+    binding_org_id: str = "",
+    grant_role: str = "",
+) -> Response:
+    rows = md.ROLE_GRANTS
+    if user_id:
+        rows = [r for r in rows if r.user_id == user_id]
+    if workspace_id:
+        rows = [r for r in rows if r.scope_kind == "workspace" and r.scope_id == workspace_id]
+    if binding_org_id:
+        rows = [r for r in rows if r.binding_org_id == binding_org_id]
+    if grant_role:
+        rows = [r for r in rows if r.grant_role == grant_role]
+    rows = [r for r in rows if r.revoked_at is None]
+    return ok(rows)
+
+
+@app.get("/api/v1/client_rates")
+def api_client_rates(client_org_id: str = "") -> Response:
+    rows = md.CLIENT_RATES
+    if client_org_id:
+        rows = [r for r in rows if r.client_org_id == client_org_id]
+    return ok(rows)
+
+
+@app.get("/api/v1/client_user_rates")
+def api_client_user_rates(client_org_id: str = "") -> Response:
+    rows = md.CLIENT_USER_RATES
+    if client_org_id:
+        rows = [r for r in rows if r.client_org_id == client_org_id]
+    return ok(rows)
+
+
+@app.get("/api/v1/shift_billings")
+def api_shift_billings(
+    client_org_id: str = "",
+    user_id: str = "",
+    work_engagement_id: str = "",
+) -> Response:
+    rows = md.SHIFT_BILLINGS
+    if client_org_id:
+        rows = [r for r in rows if r.client_org_id == client_org_id]
+    if user_id:
+        rows = [r for r in rows if r.user_id == user_id]
+    if work_engagement_id:
+        rows = [r for r in rows if r.work_engagement_id == work_engagement_id]
+    return ok(rows)
+
+
+@app.get("/api/v1/work_orders")
+def api_work_orders(
+    request: Request,
+    workspace_id: str = "",
+    property_id: str = "",
+    client_org_id: str = "",
+) -> Response:
+    wsid = workspace_id or current_workspace_id(request)
+    rows = list(md.WORK_ORDERS)
+    if wsid:
+        # A work_order is "in" a workspace iff its property is linked
+        # to that workspace via property_workspace (§02 multi-belonging).
+        ws_props = {pw.property_id for pw in md.PROPERTY_WORKSPACES if pw.workspace_id == wsid}
+        rows = [r for r in rows if r.property_id in ws_props]
+    if property_id:
+        rows = [r for r in rows if r.property_id == property_id]
+    if client_org_id:
+        rows = [r for r in rows if r.client_org_id == client_org_id]
+    return ok(rows)
+
+
+@app.get("/api/v1/work_orders/{woid}")
+def api_work_order(woid: str) -> Response:
+    wo = md.work_order_by_id(woid)
+    if wo is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    quotes = [q for q in md.QUOTES if q.work_order_id == woid]
+    invoices = [i for i in md.VENDOR_INVOICES if i.work_order_id == woid]
+    return ok({
+        "work_order": wo,
+        "property": md.property_by_id(wo.property_id),
+        "client_org": md.organization_by_id(wo.client_org_id) if wo.client_org_id else None,
+        "quotes": quotes,
+        "vendor_invoices": invoices,
+    })
+
+
+@app.get("/api/v1/quotes")
+def api_quotes(work_order_id: str = "") -> Response:
+    rows = md.QUOTES
+    if work_order_id:
+        rows = [q for q in rows if q.work_order_id == work_order_id]
+    return ok(rows)
+
+
+@app.get("/api/v1/vendor_invoices")
+def api_vendor_invoices(
+    request: Request,
+    workspace_id: str = "",
+    property_id: str = "",
+    client_org_id: str = "",
+    vendor_organization_id: str = "",
+    vendor_user_id: str = "",
+) -> Response:
+    wsid = workspace_id or current_workspace_id(request)
+    rows = list(md.VENDOR_INVOICES)
+    if wsid:
+        ws_props = {pw.property_id for pw in md.PROPERTY_WORKSPACES if pw.workspace_id == wsid}
+        ws_work_orders = {w.id for w in md.WORK_ORDERS if w.property_id in ws_props}
+        rows = [
+            r for r in rows
+            if (r.property_id and r.property_id in ws_props)
+            or (r.work_order_id and r.work_order_id in ws_work_orders)
+        ]
+    if property_id:
+        rows = [r for r in rows if r.property_id == property_id
+                or (r.work_order_id
+                    and md.work_order_by_id(r.work_order_id) is not None
+                    and md.work_order_by_id(r.work_order_id).property_id == property_id)]
+    if client_org_id:
+        rows = [r for r in rows
+                if (r.work_order_id and md.work_order_by_id(r.work_order_id) is not None
+                    and md.work_order_by_id(r.work_order_id).client_org_id == client_org_id)
+                or (r.property_id and md.property_by_id(r.property_id) is not None
+                    and md.property_by_id(r.property_id).client_org_id == client_org_id)]
+    if vendor_organization_id:
+        rows = [r for r in rows if r.vendor_organization_id == vendor_organization_id]
+    if vendor_user_id:
+        rows = [r for r in rows if r.vendor_user_id == vendor_user_id]
+    return ok(rows)
+
+
+# ── Multi-belonging mutations (stubbed — §22 share / revoke) ─────────
+# These are not the canonical wire shape; they exist so the mock UI
+# can demonstrate the "client invites agency" / "client switches
+# agency" flow. The production routes live under
+# `POST /properties/{id}/share` (§04 + §22) and gate through the
+# always-approval set on transfer.
+
+@app.post("/api/v1/property_workspaces/share")
+async def api_property_share(request: Request) -> Response:
+    body = await request.json()
+    pid = str(body.get("property_id") or "")
+    wsid = str(body.get("workspace_id") or "")
+    role = str(body.get("membership_role") or "managed_workspace")
+    if role not in {"managed_workspace", "observer_workspace"}:
+        return JSONResponse({"detail": "invalid_membership_role"}, status_code=422)
+    if md.property_by_id(pid) is None or md.workspace_by_id(wsid) is None:
+        return JSONResponse({"detail": "unknown_property_or_workspace"}, status_code=404)
+    existing = next((pw for pw in md.PROPERTY_WORKSPACES
+                     if pw.property_id == pid and pw.workspace_id == wsid), None)
+    if existing is not None:
+        existing.membership_role = role  # idempotent re-share
+        row = existing
+    else:
+        row = md.PropertyWorkspace(
+            property_id=pid, workspace_id=wsid, membership_role=role,
+            added_by_user_id=current_user_id(request),
+        )
+        md.PROPERTY_WORKSPACES.append(row)
+    hub.publish("property_workspace.shared", {"property_id": pid, "workspace_id": wsid, "membership_role": role})
+    return ok(row)
+
+
+@app.post("/api/v1/property_workspaces/revoke")
+async def api_property_revoke(request: Request) -> Response:
+    body = await request.json()
+    pid = str(body.get("property_id") or "")
+    wsid = str(body.get("workspace_id") or "")
+    rows = [pw for pw in md.PROPERTY_WORKSPACES
+            if pw.property_id == pid and pw.workspace_id == wsid]
+    if not rows:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    row = rows[0]
+    if row.membership_role == "owner_workspace":
+        return JSONResponse({"detail": "cannot_revoke_owner_workspace"}, status_code=409)
+    md.PROPERTY_WORKSPACES.remove(row)
+    hub.publish("property_workspace.revoked", {"property_id": pid, "workspace_id": wsid})
+    return ok({"ok": True})
 
 
 # `/api/v1/managers` — legacy alias. In v1 there is no `manager`
@@ -1324,6 +1608,196 @@ def api_audit() -> Response:
 @app.get("/api/v1/webhooks")
 def api_webhooks() -> Response:
     return ok(md.WEBHOOKS)
+
+
+# ── API tokens (§03) ──────────────────────────────────────────────
+# The mock treats create / revoke / rotate as presentational-only
+# (in-memory mutation). Personal access tokens are split off to the
+# /me/tokens path below so the manager /tokens page never shows them.
+
+def _token_by_id(tid: str) -> md.ApiToken | None:
+    return next((t for t in md.API_TOKENS if t.id == tid), None)
+
+
+def _curl_example(token: md.ApiToken, plaintext: str) -> str:
+    """Pick the first scope, suggest an endpoint the user would hit next."""
+    scope_to_path = {
+        "tasks:read": "/api/v1/tasks",
+        "tasks:write": "/api/v1/tasks",
+        "payroll:read": "/api/v1/payroll/periods",
+        "expenses:read": "/api/v1/expenses",
+        "stays:read": "/api/v1/stays",
+        "me.tasks:read": "/api/v1/me/tasks",
+        "me.shifts:read": "/api/v1/me/shifts",
+        "me.expenses:read": "/api/v1/me/expenses",
+        "me.expenses:write": "/api/v1/me/expenses",
+        "me.profile:read": "/api/v1/me",
+    }
+    path = scope_to_path.get(token.scopes[0] if token.scopes else "", "/api/v1/me") \
+        if token.kind != "delegated" else "/api/v1/me"
+    host = "https://dev.crewday.app"
+    return f"curl -sS -H 'Authorization: Bearer {plaintext}' {host}{path}"
+
+
+@app.get("/api/v1/auth/tokens")
+def api_tokens_list(request: Request) -> Response:
+    """List workspace tokens (scoped + delegated). PATs excluded."""
+    _ = current_user_id(request)  # manager-only in prod; mock is permissive
+    rows = [t for t in md.API_TOKENS if t.kind in ("scoped", "delegated")]
+    return ok(rows)
+
+
+@app.post("/api/v1/auth/tokens")
+def api_tokens_create(request: Request, payload: dict[str, Any] = Body(...)) -> Response:
+    uid = current_user_id(request)
+    user = md.user_by_id(uid)
+    display = user.display_name if user else "(unknown)"
+    name = str(payload.get("name") or "unnamed-token").strip()[:80]
+    scopes = list(payload.get("scopes") or [])
+    delegate = bool(payload.get("delegate"))
+    kind: Literal["scoped", "delegated", "personal"] = "delegated" if delegate else "scoped"
+    if any(s.startswith("me.") for s in scopes):
+        return JSONResponse({"detail": "me_scope_conflict",
+                             "message": "Workspace tokens cannot request me:* scopes. "
+                                        "Create a personal access token from /me instead."},
+                            status_code=422)
+    if kind == "scoped" and not scopes:
+        return JSONResponse({"detail": "scopes_required"}, status_code=422)
+    live = [t for t in md.API_TOKENS if t.kind in ("scoped", "delegated") and t.revoked_at is None]
+    if len(live) >= 50:
+        return JSONResponse({"detail": "too_many_workspace_tokens"}, status_code=422)
+    expires_at = payload.get("expires_at")
+    default_days = 30 if kind == "delegated" else 90
+    expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")).replace(tzinfo=None) \
+        if expires_at else datetime.now() + timedelta(days=default_days)
+    tok = md.ApiToken(
+        id=f"tok-{len(md.API_TOKENS) + 1}",
+        name=name,
+        kind=kind,
+        prefix=f"mip_{'0' * 10}{len(md.API_TOKENS) + 1:02d}",
+        scopes=[] if kind == "delegated" else scopes,
+        created_by_user_id=uid,
+        created_by_display=display,
+        created_at=datetime.now(),
+        expires_at=expires_dt,
+        last_used_at=None,
+        last_used_ip=None,
+        last_used_path=None,
+        revoked_at=None,
+        note=payload.get("note"),
+        ip_allowlist=list(payload.get("ip_allowlist") or []),
+    )
+    md.API_TOKENS.append(tok)
+    md.API_TOKEN_AUDIT.setdefault(tok.id, [])
+    plaintext = f"{tok.prefix}_{'x' * 52}"  # opaque 256-bit mock secret
+    hub.publish("api_token.created", {"id": tok.id, "kind": tok.kind})
+    return ok({"token": tok, "plaintext": plaintext,
+               "curl_example": _curl_example(tok, plaintext)}, status_code=201)
+
+
+@app.post("/api/v1/auth/tokens/{tid}/revoke")
+def api_tokens_revoke(tid: str) -> Response:
+    tok = _token_by_id(tid)
+    if tok is None or tok.kind == "personal":
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    if tok.revoked_at is None:
+        tok.revoked_at = datetime.now()
+        hub.publish("api_token.revoked", {"id": tok.id})
+    return ok(tok)
+
+
+@app.post("/api/v1/auth/tokens/{tid}/rotate")
+def api_tokens_rotate(tid: str) -> Response:
+    tok = _token_by_id(tid)
+    if tok is None or tok.kind == "personal" or tok.revoked_at is not None:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    plaintext = f"{tok.prefix}_{'y' * 52}"
+    hub.publish("api_token.rotated", {"id": tok.id})
+    return ok({"token": tok, "plaintext": plaintext,
+               "curl_example": _curl_example(tok, plaintext)})
+
+
+@app.get("/api/v1/auth/tokens/{tid}/audit")
+def api_tokens_audit(tid: str) -> Response:
+    tok = _token_by_id(tid)
+    if tok is None or tok.kind == "personal":
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    return ok(md.API_TOKEN_AUDIT.get(tid, []))
+
+
+# Personal access tokens — /me surface, `me:*` scopes only.
+@app.get("/api/v1/me/tokens")
+def api_me_tokens_list(request: Request) -> Response:
+    uid = current_user_id(request)
+    rows = [t for t in md.API_TOKENS
+            if t.kind == "personal" and t.created_by_user_id == uid]
+    return ok(rows)
+
+
+@app.post("/api/v1/me/tokens")
+def api_me_tokens_create(request: Request, payload: dict[str, Any] = Body(...)) -> Response:
+    uid = current_user_id(request)
+    user = md.user_by_id(uid)
+    display = user.display_name if user else "(unknown)"
+    name = str(payload.get("name") or "personal-token").strip()[:80]
+    scopes = list(payload.get("scopes") or [])
+    if not scopes:
+        return JSONResponse({"detail": "scopes_required"}, status_code=422)
+    if not all(s.startswith("me.") for s in scopes):
+        return JSONResponse({"detail": "me_scope_conflict",
+                             "message": "Personal access tokens only accept me:* scopes."},
+                            status_code=422)
+    own = [t for t in md.API_TOKENS
+           if t.kind == "personal" and t.created_by_user_id == uid and t.revoked_at is None]
+    if len(own) >= 5:
+        return JSONResponse({"detail": "too_many_personal_tokens"}, status_code=422)
+    expires_at = payload.get("expires_at")
+    expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")).replace(tzinfo=None) \
+        if expires_at else datetime.now() + timedelta(days=90)
+    tok = md.ApiToken(
+        id=f"tok-pat-{uid}-{len(md.API_TOKENS) + 1}",
+        name=name,
+        kind="personal",
+        prefix=f"mip_{'0' * 10}{len(md.API_TOKENS) + 1:02d}",
+        scopes=scopes,
+        created_by_user_id=uid,
+        created_by_display=display,
+        created_at=datetime.now(),
+        expires_at=expires_dt,
+        last_used_at=None,
+        last_used_ip=None,
+        last_used_path=None,
+        revoked_at=None,
+        note=payload.get("note"),
+        ip_allowlist=[],
+    )
+    md.API_TOKENS.append(tok)
+    md.API_TOKEN_AUDIT.setdefault(tok.id, [])
+    plaintext = f"{tok.prefix}_{'z' * 52}"
+    hub.publish("api_token.created", {"id": tok.id, "kind": "personal"})
+    return ok({"token": tok, "plaintext": plaintext,
+               "curl_example": _curl_example(tok, plaintext)}, status_code=201)
+
+
+@app.post("/api/v1/me/tokens/{tid}/revoke")
+def api_me_tokens_revoke(tid: str, request: Request) -> Response:
+    uid = current_user_id(request)
+    tok = _token_by_id(tid)
+    if tok is None or tok.kind != "personal" or tok.created_by_user_id != uid:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    if tok.revoked_at is None:
+        tok.revoked_at = datetime.now()
+        hub.publish("api_token.revoked", {"id": tok.id})
+    return ok(tok)
+
+
+@app.get("/api/v1/me/tokens/{tid}/audit")
+def api_me_tokens_audit(tid: str, request: Request) -> Response:
+    uid = current_user_id(request)
+    tok = _token_by_id(tid)
+    if tok is None or tok.kind != "personal" or tok.created_by_user_id != uid:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    return ok(md.API_TOKEN_AUDIT.get(tid, []))
 
 
 @app.get("/api/v1/llm/assignments")
@@ -1816,6 +2290,36 @@ def api_approvals_decide(aid: str, decision: str) -> Response:
     md.APPROVALS[:] = [a for a in md.APPROVALS if a.id != aid]
     hub.publish("approval.decided", {"id": aid, "decision": decision})
     return ok({"ok": True, "id": aid, "decision": decision})
+
+
+@app.post("/api/v1/quotes/{qid}/{decision}")
+def api_quote_decide(qid: str, decision: str, request: Request) -> Response:
+    """Client- or owner-side decision on a quote (§22).
+
+    Acceptance is unconditionally approval-gated in production; this
+    mock accepts the click directly so the UI can show the resulting
+    state. Accepting also flips the parent work_order to `accepted`
+    and writes `accepted_quote_id`, mirroring the spec's transaction.
+    """
+    if decision not in {"accept", "reject"}:
+        return JSONResponse({"detail": "bad decision"}, status_code=400)
+    quote = next((q for q in md.QUOTES if q.id == qid), None)
+    if quote is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    quote.status = "accepted" if decision == "accept" else "rejected"
+    quote.decided_by_user_id = current_user_id(request)
+    quote.decided_at = md.NOW
+    if decision == "accept":
+        wo = md.work_order_by_id(quote.work_order_id)
+        if wo is not None:
+            wo.accepted_quote_id = quote.id
+            wo.state = "accepted"
+            for sibling in md.QUOTES:
+                if sibling.work_order_id == wo.id and sibling.id != quote.id and sibling.status == "submitted":
+                    sibling.status = "superseded"
+    hub.publish("quote." + ("accepted" if decision == "accept" else "rejected"),
+                {"id": quote.id, "work_order_id": quote.work_order_id})
+    return ok(quote)
 
 
 @app.post("/api/v1/agent/employee/message")
