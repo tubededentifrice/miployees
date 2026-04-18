@@ -62,6 +62,4 @@ export const qk = {
   chatChannelProviders: () => ["chat", "channels", "providers"] as const,
   agentPrefs: (scope: "workspace" | "property" | "me", id?: string) =>
     ["agent_preferences", scope, id ?? ""] as const,
-  agentPrefsRevisions: (scopeKind: string, scopeId: string) =>
-    ["agent_preferences", "revisions", scopeKind, scopeId] as const,
 } as const;

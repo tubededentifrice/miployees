@@ -478,13 +478,31 @@
 
 .form { display: flex; flex-direction: column; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
-.field input, .field textarea, .field select, .comment__compose textarea {
-  padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px;
-  background: var(--card); font: inherit; color: inherit;
+
+/* Form controls share the same card look — white fill, card border and
+   radius — so text inputs, selects and textareas read as "slotted into
+   the card." Any new control should extend this selector group rather
+   than roll its own background/border. */
+.field input, .field textarea, .field select,
+.comment__compose textarea,
+.agent-prefs__textarea,
+.me-chat-channels__field input {
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit; color: inherit;
   font-family: "Inter Tight", sans-serif;
 }
-.field textarea { resize: vertical; min-height: 48px; }
-.field input:focus, .field textarea:focus, .field select:focus {
+.field textarea,
+.comment__compose textarea,
+.agent-prefs__textarea {
+  resize: none; min-height: 44px; overflow-y: auto;
+}
+.field input:focus, .field textarea:focus, .field select:focus,
+.comment__compose textarea:focus,
+.agent-prefs__textarea:focus,
+.me-chat-channels__field input:focus {
   outline: 2px solid var(--moss); outline-offset: -1px;
 }
 .field--warn input,
@@ -1820,18 +1838,13 @@
   display: block; margin: 6px 0 4px;
   font-size: 12.5px; color: var(--ink-3); letter-spacing: 0.02em;
 }
+/* Inherits the shared form-control look above (card fill, card border,
+   10px radius). Keeps only the mono typography specific to the
+   agent-preferences editor. */
 .agent-prefs__textarea {
-  width: 100%; min-height: 180px;
+  width: 100%;
   font-family: var(--mono), ui-monospace, monospace;
   font-size: 13px; line-height: 1.5;
-  padding: 10px 12px;
-  background: var(--paper); color: var(--ink);
-  border: 1px solid var(--line); border-radius: 6px;
-  resize: vertical;
-}
-.agent-prefs__textarea:focus {
-  outline: none; border-color: var(--moss);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--moss) 20%, transparent);
 }
 .agent-prefs__meta {
   display: flex; justify-content: space-between; align-items: baseline;
@@ -1842,12 +1855,6 @@
 .agent-prefs__meta--rust { color: var(--rust); font-weight: 500; }
 .agent-prefs__actions {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-}
-.agent-prefs__note {
-  flex: 1 1 180px;
-  font-size: 13px; padding: 6px 10px;
-  border: 1px solid var(--line); border-radius: 6px;
-  background: var(--paper);
 }
 .agent-prefs__error {
   margin: 10px 0 0; padding: 8px 10px;
@@ -1861,21 +1868,6 @@
 }
 .agent-prefs__readonly-notice p { margin: 0 0 6px; font-size: 13.5px; }
 .agent-prefs__readonly-notice p:last-child { margin-bottom: 0; }
-.agent-prefs__revisions { margin-top: 14px; }
-.agent-prefs__revisions-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.agent-prefs__revision {
-  padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--paper-2);
-}
-.agent-prefs__revision-head {
-  display: flex; gap: 10px; align-items: center; margin-bottom: 6px; flex-wrap: wrap;
-}
-.agent-prefs__revision-body {
-  margin: 0; padding: 8px 10px;
-  background: var(--paper); border-radius: 4px;
-  font-family: var(--mono), ui-monospace, monospace;
-  font-size: 12.5px; line-height: 1.45; white-space: pre-wrap;
-}
 
 /* §23 — Chat gateway surfaces. Shared panel/table styling for the
    manager /chat-channels page and the /settings Chat gateway block,
@@ -1987,15 +1979,11 @@
   display: flex; flex-direction: column; gap: 4px;
   font-size: 12.5px; color: var(--ink-3);
 }
+/* Inputs here share the card-look form-control rules above. Font size
+   bumps to 15px for touch comfort; everything else is inherited. */
 .me-chat-channels__field input {
-  font-size: 15px; padding: 9px 10px;
-  border: 1px solid var(--line); border-radius: 6px;
-  background: var(--paper); color: var(--ink);
+  font-size: 15px;
   min-height: 44px; /* §14 accessibility — 44×44 tap target */
-}
-.me-chat-channels__field input:focus {
-  outline: none; border-color: var(--moss);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--moss) 20%, transparent);
 }
 .me-chat-channels__actions {
   display: flex; gap: 8px; flex-wrap: wrap;

@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import AutoGrowTextarea from "@/components/AutoGrowTextarea";
 import type {
   AgentPreference,
-  AgentPreferenceRevisionsPayload,
   AgentPreferenceScope,
 } from "@/types/api";
 
@@ -41,12 +41,19 @@ function useTokenCount(text: string): { count: number; ready: boolean } {
 // system prompt. Three layers (workspace / property / user); this
 // component edits a single layer and is reused by SettingsPage,
 // PropertyDetailPage, and the worker "Me" page.
+//
+// The server still records a revision history on every save (§02);
+// it just isn't surfaced in this UI — read it via the CLI or the
+// REST endpoint if you need audit context.
+
+type Variant = "panel" | "phone";
 
 interface Props {
   scope: AgentPreferenceScope;
   scopeId?: string;     // omitted for workspace + me
   title: string;
   subtitle: string;
+  variant?: Variant;
 }
 
 function endpointFor(scope: AgentPreferenceScope, scopeId?: string): string {
@@ -60,7 +67,9 @@ function saveKey(scope: AgentPreferenceScope, scopeId?: string) {
     scope === "user" ? qk.agentPrefs("me") : qk.agentPrefs("workspace");
 }
 
-export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle }: Props) {
+export default function AgentPreferencesPanel({
+  scope, scopeId, title, subtitle, variant = "panel",
+}: Props) {
   const qc = useQueryClient();
   const key = saveKey(scope, scopeId);
   const q = useQuery({
@@ -69,9 +78,7 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
   });
 
   const [draft, setDraft] = useState<string>("");
-  const [note, setNote] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     if (q.data) setDraft(q.data.body_md);
@@ -81,13 +88,11 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
     mutationFn: (body_md: string) =>
       fetchJson<AgentPreference>(endpointFor(scope, scopeId), {
         method: "PUT",
-        body: { body_md, save_note: note || undefined },
+        body: { body_md },
       }),
     onSuccess: (next) => {
       qc.setQueryData(key, next);
-      setNote("");
       setError(null);
-      qc.invalidateQueries({ queryKey: qk.agentPrefsRevisions(scope, scopeId ?? (next.scope_id)) });
     },
     onError: (e: unknown) => {
       if (e instanceof ApiError && e.body && typeof e.body === "object") {
@@ -111,18 +116,30 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
   const { count: draftTokens, ready: tokReady } = useTokenCount(draft);
   const dirty = pref ? draft !== pref.body_md : false;
 
+  const wrapperClass =
+    variant === "phone" ? "phone__section agent-prefs" : "panel agent-prefs";
+  const headingId = `agent-prefs-${scope}-${scopeId ?? "self"}`;
+  const textareaId = `agent-prefs-body-${scope}-${scopeId ?? "self"}`;
+
+  const heading =
+    variant === "phone" ? (
+      <h2 className="section-title" id={headingId}>{title}</h2>
+    ) : (
+      <header className="panel__head"><h2 id={headingId}>{title}</h2></header>
+    );
+
   if (q.isPending) {
     return (
-      <section className="panel agent-prefs">
-        <header className="panel__head"><h2>{title}</h2></header>
+      <section className={wrapperClass}>
+        {heading}
         <p className="muted">Loading…</p>
       </section>
     );
   }
   if (!pref) {
     return (
-      <section className="panel agent-prefs">
-        <header className="panel__head"><h2>{title}</h2></header>
+      <section className={wrapperClass}>
+        {heading}
         <p className="muted">Failed to load preferences.</p>
       </section>
     );
@@ -133,10 +150,8 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
   const counterTone = hardOver ? "rust" : softOver ? "sand" : "moss";
 
   return (
-    <section className="panel agent-prefs" aria-labelledby={`agent-prefs-${scope}-${scopeId ?? "self"}`}>
-      <header className="panel__head">
-        <h2 id={`agent-prefs-${scope}-${scopeId ?? "self"}`}>{title}</h2>
-      </header>
+    <section className={wrapperClass} aria-labelledby={headingId}>
+      {heading}
       <p className="muted">{subtitle}</p>
 
       <div className="agent-prefs__banner" role="note">
@@ -148,15 +163,15 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
 
       {pref.writable ? (
         <>
-          <label className="agent-prefs__label" htmlFor={`agent-prefs-body-${scope}-${scopeId ?? "self"}`}>
+          <label className="agent-prefs__label" htmlFor={textareaId}>
             Guidance (Markdown)
           </label>
-          <textarea
-            id={`agent-prefs-body-${scope}-${scopeId ?? "self"}`}
+          <AutoGrowTextarea
+            id={textareaId}
             className="agent-prefs__textarea"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            rows={10}
+            maxHeight={600}
             spellCheck
           />
           <div className={`agent-prefs__meta agent-prefs__meta--${counterTone}`}>
@@ -172,24 +187,12 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
             </span>
           </div>
           <div className="agent-prefs__actions">
-            <input
-              className="agent-prefs__note"
-              placeholder="Optional save note (why this change)"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-            />
             <button
               className="btn btn--moss"
               disabled={!dirty || hardOver || save.isPending}
               onClick={() => save.mutate(draft)}
             >
               {save.isPending ? "Saving…" : "Save"}
-            </button>
-            <button
-              className="btn btn--ghost"
-              onClick={() => setShowHistory((s) => !s)}
-            >
-              {showHistory ? "Hide history" : "Revisions"}
             </button>
           </div>
           {error && <p className="agent-prefs__error">{error}</p>}
@@ -202,7 +205,7 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
             page from doubling as a browsing surface for casual observers.
           </p>
           <p className="muted">
-            Read the raw Markdown (and revision history) via{" "}
+            Read the raw Markdown via{" "}
             <code className="inline-code">crewday agent-prefs show {scope}
               {scopeId ? " " + scopeId : ""}</code>{" "}
             or <code className="inline-code">GET /api/v1/agent_preferences/
@@ -214,58 +217,6 @@ export default function AgentPreferencesPanel({ scope, scopeId, title, subtitle 
           </p>
         </div>
       )}
-
-      {showHistory && pref.writable && (
-        <RevisionsList
-          scope={scope}
-          scopeId={scopeId ?? pref.scope_id}
-          onRestore={(body) => setDraft(body)}
-        />
-      )}
     </section>
-  );
-}
-
-function RevisionsList({
-  scope, scopeId, onRestore,
-}: {
-  scope: AgentPreferenceScope;
-  scopeId: string;
-  onRestore: (body: string) => void;
-}) {
-  const q = useQuery({
-    queryKey: qk.agentPrefsRevisions(scope, scopeId),
-    queryFn: () =>
-      fetchJson<AgentPreferenceRevisionsPayload>(
-        `/api/v1/agent_preferences/revisions/${scope}/${scopeId}`,
-      ),
-  });
-
-  if (q.isPending) return <p className="muted">Loading history…</p>;
-  if (!q.data) return <p className="muted">No history available.</p>;
-  if (q.data.revisions.length === 0) return <p className="muted">No prior revisions yet.</p>;
-
-  return (
-    <div className="agent-prefs__revisions">
-      <h3 className="section-title section-title--sm">Revisions</h3>
-      <ol className="agent-prefs__revisions-list">
-        {q.data.revisions.slice().reverse().map((r) => (
-          <li key={r.revision_number} className="agent-prefs__revision">
-            <div className="agent-prefs__revision-head">
-              <strong>#{r.revision_number}</strong>
-              <span className="muted">{new Date(r.saved_at).toLocaleString()}</span>
-              {r.save_note && <span className="muted">— {r.save_note}</span>}
-              <button
-                className="btn btn--ghost btn--sm"
-                onClick={() => onRestore(r.body_md)}
-              >
-                Copy into editor
-              </button>
-            </div>
-            <pre className="agent-prefs__revision-body">{r.body_md || "(empty)"}</pre>
-          </li>
-        ))}
-      </ol>
-    </div>
   );
 }

@@ -2,9 +2,12 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
-import { Loading } from "@/components/common";
+import { fmtDate, fmtTime } from "@/lib/dates";
+import { cap } from "@/lib/strings";
+import { Chip, Loading } from "@/components/common";
 import AgentApprovalModePanel from "@/components/AgentApprovalModePanel";
 import AgentPreferencesPanel from "@/components/AgentPreferencesPanel";
+import ChatChannelsMeCard from "@/components/ChatChannelsMeCard";
 import type { Leave, Me } from "@/types/api";
 
 interface LeavesPayload {
@@ -33,26 +36,6 @@ const DAYS: [string, string][] = [
   ["sat", "Sat"],
   ["sun", "Sun"],
 ];
-
-function hhmm(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function dmon(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
-
-function dmonyr(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
 
 export default function MePage() {
   const me = useQuery({
@@ -89,6 +72,7 @@ export default function MePage() {
 
   return (
     <>
+      {/* — Identity — */}
       <section className="phone__section phone__section--hero">
         <div className="me-greet">
           <span className="me-greet__hello">Hi, {firstName}</span>
@@ -103,99 +87,38 @@ export default function MePage() {
             <h2 className="profile-card__name">{employee.name}</h2>
             <div className="profile-card__roles">
               {employee.roles.map((r) => (
-                <span key={r} className="chip chip--ghost chip--sm">{r}</span>
+                <Chip key={r} tone="ghost" size="sm">{r}</Chip>
               ))}
             </div>
             <div className="profile-card__meta">
-              Started {dmonyr(employee.started_on)} · {employee.phone}
+              Started{" "}
+              {fmtDate(employee.started_on, "en-GB", {
+                day: "2-digit",
+                month: "short",
+                year: "numeric",
+              })}{" "}
+              · {employee.phone}
             </div>
           </div>
         </div>
       </section>
 
+      {/* — Work & schedule — */}
       <section className="phone__section">
         <h2 className="section-title">Shift</h2>
         <Link to="/shifts" className="stack-row">
           <div>
             <strong>
               {employee.clocked_in_at
-                ? "On shift since " + hhmm(employee.clocked_in_at)
+                ? "On shift since " + fmtTime(employee.clocked_in_at)
                 : "Not clocked in"}
             </strong>
             <div className="stack-row__sub">View history →</div>
           </div>
-          <span
-            className={
-              "chip chip--sm chip--" + (employee.clocked_in_at ? "moss" : "ghost")
-            }
-          >
+          <Chip tone={employee.clocked_in_at ? "moss" : "ghost"} size="sm">
             {employee.clocked_in_at ? "Active" : "Off"}
-          </span>
+          </Chip>
         </Link>
-      </section>
-
-      <section className="phone__section">
-        <h2 className="section-title">History</h2>
-        <Link to="/history" className="stack-row">
-          <div>
-            <strong>Past tasks, chats, expenses, leaves</strong>
-            <div className="stack-row__sub">Browse what's been wrapped up →</div>
-          </div>
-          <span className="chip chip--ghost chip--sm">View</span>
-        </Link>
-      </section>
-
-      <section className="phone__section">
-        <h2 className="section-title">My leave</h2>
-        <ul className="task-list">
-          {leaves.length === 0 ? (
-            <li className="empty-state empty-state--quiet">No leave on file.</li>
-          ) : (
-            leaves.map((lv) => (
-              <li key={lv.id} className="stack-row">
-                <div>
-                  <strong>
-                    {dmon(lv.starts_on)} → {dmon(lv.ends_on)}
-                  </strong>
-                  <div className="stack-row__sub">
-                    {cap(lv.category)} · {lv.note}
-                  </div>
-                </div>
-                <span
-                  className={
-                    "chip chip--sm chip--" + (lv.approved_at ? "moss" : "sand")
-                  }
-                >
-                  {lv.approved_at ? "Approved" : "Pending"}
-                </span>
-              </li>
-            ))
-          )}
-        </ul>
-        <button className="btn btn--ghost" type="button">+ Request leave</button>
-      </section>
-
-      <section className="phone__section">
-        <h2 className="section-title">Language</h2>
-        <div className="stack-row">
-          <div>
-            <strong>{langLabel}</strong>
-            <div className="stack-row__sub">
-              Used for the agent, digests and reminders.
-            </div>
-          </div>
-          <button type="button" className="btn btn--ghost btn--sm">Change</button>
-        </div>
-      </section>
-
-      <AgentApprovalModePanel variant="phone" />
-
-      <section className="phone__section">
-        <AgentPreferencesPanel
-          scope="user"
-          title="My agent preferences"
-          subtitle="Private to you. Written in plain language; sent to your chat agent on every turn."
-        />
       </section>
 
       <section className="phone__section">
@@ -211,7 +134,7 @@ export default function MePage() {
                 : "Clock-in disabled for your account"}
             </div>
           </div>
-          <span className={"chip chip--sm chip--" + clockChip}>{employee.clock_mode}</span>
+          <Chip tone={clockChip} size="sm">{employee.clock_mode}</Chip>
         </div>
       </section>
 
@@ -241,6 +164,58 @@ export default function MePage() {
       </section>
 
       <section className="phone__section">
+        <h2 className="section-title">My leave</h2>
+        <ul className="task-list">
+          {leaves.length === 0 ? (
+            <li className="empty-state empty-state--quiet">No leave on file.</li>
+          ) : (
+            leaves.map((lv) => (
+              <li key={lv.id} className="stack-row">
+                <div>
+                  <strong>
+                    {fmtDate(lv.starts_on)} → {fmtDate(lv.ends_on)}
+                  </strong>
+                  <div className="stack-row__sub">
+                    {cap(lv.category)} · {lv.note}
+                  </div>
+                </div>
+                <Chip tone={lv.approved_at ? "moss" : "sand"} size="sm">
+                  {lv.approved_at ? "Approved" : "Pending"}
+                </Chip>
+              </li>
+            ))
+          )}
+        </ul>
+        <button className="btn btn--ghost" type="button">+ Request leave</button>
+      </section>
+
+      {/* — Agent — */}
+      <AgentApprovalModePanel variant="phone" />
+
+      <AgentPreferencesPanel
+        scope="user"
+        variant="phone"
+        title="My agent preferences"
+        subtitle="Private to you. Written in plain language; sent to your chat agent on every turn."
+      />
+
+      <ChatChannelsMeCard me={me.data} />
+
+      {/* — Settings — */}
+      <section className="phone__section">
+        <h2 className="section-title">Language</h2>
+        <div className="stack-row">
+          <div>
+            <strong>{langLabel}</strong>
+            <div className="stack-row__sub">
+              Used for the agent, digests and reminders.
+            </div>
+          </div>
+          <button type="button" className="btn btn--ghost btn--sm">Change</button>
+        </div>
+      </section>
+
+      <section className="phone__section">
         <h2 className="section-title">Passkeys</h2>
         <ul className="task-list">
           <li className="stack-row">
@@ -252,6 +227,18 @@ export default function MePage() {
           </li>
         </ul>
         <button className="btn btn--moss" type="button">+ Register another device</button>
+      </section>
+
+      {/* — History (link out) — */}
+      <section className="phone__section">
+        <h2 className="section-title">History</h2>
+        <Link to="/history" className="stack-row">
+          <div>
+            <strong>Past tasks, chats, expenses, leaves</strong>
+            <div className="stack-row__sub">Browse what's been wrapped up →</div>
+          </div>
+          <Chip tone="ghost" size="sm">View</Chip>
+        </Link>
       </section>
     </>
   );
