@@ -235,9 +235,13 @@ bd sync                               # export jsonl → git
   <id>` it before handing off, so `bd ready` stays honest for the next
   agent.
 
-Push after every commit. `git pull --rebase && git push` — never
-force-push, never push to `main` without an explicit user instruction
-(the default is a branch + PR).
+Push after every commit. Run `git push` directly; only reach for
+`git pull --rebase` if the push is rejected as non-fast-forward. An
+unconditional `pull --rebase` can collide with another agent's
+in-progress work in the shared worktree (it can refuse, or rewrite
+their staged state on resume) and force you into a stash/unstash
+dance you didn't need. Never force-push, never push to `main` without
+an explicit user instruction (the default is a branch + PR).
 
 ## Presenting your work
 
@@ -304,7 +308,8 @@ Before handing a session back to the user:
 - **Commit and push.** Delegate to the `commiter` agent
   (`.claude/agents/commiter.md`) for narrow Conventional-Commits
   commits; include `.beads/` changes in the same commit. Then
-  `git pull --rebase && git push`.
+  `git push` — and only `git pull --rebase && git push` if the push
+  is rejected as non-fast-forward (see the push rules above).
 - **Summarise briefly.** One short paragraph: what changed, where it
   lives, what's still open, what the next agent should pick up from
   `bd ready`.

@@ -18,8 +18,9 @@ You are a **git operator**. Your responsibilities:
 2. **Sync Beads** with `bd sync` so the issue export lands in the same
    commit as the code change.
 3. **Commit** with a Conventional-Commits message, signed-off.
-4. **Push** with `git pull --rebase && git push`. See
-   [`AGENTS.md`](../../AGENTS.md) §"Session wrap-up".
+4. **Push** with plain `git push`; only rebase-pull if the push is
+   rejected as non-fast-forward. See [`AGENTS.md`](../../AGENTS.md)
+   §"Session wrap-up".
 
 **You do NOT**:
 
@@ -111,12 +112,18 @@ Do not change git config.
 ### 6. Push
 
 ```bash
-git pull --rebase && git push
+git push
 ```
 
-If push fails (no SSH agent, network, auth), report the failure and
-exit successfully — the commit is local and valid; the next agent
-can push.
+Only fall back to `git pull --rebase && git push` if the push is
+rejected as non-fast-forward (i.e. new remote commits you need to
+land on top of). Unconditional pull-rebase is unsafe in the shared
+worktree — another agent may have uncommitted edits that a rebase
+would collide with or silently rewrite, forcing a stash/unstash.
+
+If push fails for other reasons (no SSH agent, network, auth),
+report the failure and exit successfully — the commit is local and
+valid; the next agent can push.
 
 **Never** force-push. **Never** push to `main` directly without an
 explicit Director instruction — the default is a branch + PR.
