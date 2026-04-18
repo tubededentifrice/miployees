@@ -4,7 +4,8 @@
 // strings and enums as their literal string values.
 
 export type Role = "employee" | "manager";
-export type Theme = "light" | "dark";
+export type Theme = "light" | "dark" | "system";
+export type ResolvedTheme = "light" | "dark";
 
 export type PropertyColor = "moss" | "sky" | "rust";
 export type PropertyKind = "str" | "vacation" | "residence" | "mixed";

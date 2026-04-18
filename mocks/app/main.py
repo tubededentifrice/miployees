@@ -2,7 +2,8 @@
 
 Presentational only. Mutations are in-memory. A `role` cookie picks
 employee vs manager; `/switch/<role>` toggles. `theme` cookie picks
-light vs dark; `/theme/toggle` flips.
+light / dark / system; `/theme/set/<value>` stores it and
+`/theme/toggle` cycles light→dark→system.
 
 This module exposes:
 
@@ -11,7 +12,8 @@ This module exposes:
   dataclasses. No Jinja templates anywhere.
 - `/events` — Server-Sent Events stream emitting deterministic mock
   events so the SPA can prove its SSE + invalidation wiring.
-- `/switch/<role>`, `/theme/toggle`, `/agent/sidebar/<state>` —
+- `/switch/<role>`, `/theme/toggle`, `/theme/set/<value>`,
+  `/agent/sidebar/<state>` —
   cookie-setting endpoints preserved for atomicity (the server is
   authoritative for the preference cookie).
 - SPA catch-all — any other GET falls through to
@@ -54,7 +56,7 @@ ROLE_COOKIE = "crewday_role"
 THEME_COOKIE = "crewday_theme"
 AGENT_COLLAPSED_COOKIE = "crewday_agent_collapsed"
 VALID_ROLES = {"employee", "manager"}
-VALID_THEMES = {"light", "dark"}
+VALID_THEMES = {"light", "dark", "system"}
 
 
 def current_role(request: Request) -> str:
@@ -64,7 +66,7 @@ def current_role(request: Request) -> str:
 
 def current_theme(request: Request) -> str:
     t = request.cookies.get(THEME_COOKIE)
-    return t if t in VALID_THEMES else "light"
+    return t if t in VALID_THEMES else "system"
 
 
 # ── JSON encoding helpers ─────────────────────────────────────────────
@@ -191,9 +193,20 @@ def switch_role(role: str) -> Response:
 @app.post("/theme/toggle")
 @app.get("/theme/toggle")
 def theme_toggle(request: Request) -> Response:
-    new_theme = "dark" if current_theme(request) == "light" else "light"
+    cur = current_theme(request)
+    new_theme = "dark" if cur == "light" else "system" if cur == "dark" else "light"
     resp = JSONResponse({"ok": True, "theme": new_theme})
     resp.set_cookie(THEME_COOKIE, new_theme, max_age=60 * 60 * 24 * 365, samesite="lax")
+    return resp
+
+
+@app.post("/theme/set/{value}")
+@app.get("/theme/set/{value}")
+def theme_set(value: str) -> Response:
+    if value not in VALID_THEMES:
+        return JSONResponse({"ok": False}, status_code=400)
+    resp = JSONResponse({"ok": True, "theme": value})
+    resp.set_cookie(THEME_COOKIE, value, max_age=60 * 60 * 24 * 365, samesite="lax")
     return resp
 
 

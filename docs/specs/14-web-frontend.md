@@ -22,8 +22,13 @@ accessibility / performance / PWA gates.
   Alpine, no Vue. Tokens live in `mocks/web/src/styles/tokens.css`;
   global rules in `globals.css`; semantic class names only (see
   AGENTS.md).
-- **Manual dark-mode toggle** via `[data-theme="dark"]` on `<html>`,
-  persisted per user. Light is primary.
+- **Light / dark / system theme.** Preference is one of `light`,
+  `dark`, or `system` (tracks the OS `prefers-color-scheme`), persisted
+  per user on the `crewday_theme` cookie. The resolved value is
+  applied via `[data-theme="light"|"dark"]` on `<html>` and `<body>`,
+  and mirrored to `color-scheme` so native scrollbars and form
+  controls stay theme-consistent. Light is primary; a segmented
+  control on `/me` is the authoritative surface for the preference.
 - **Progressive enhancement.** Passkey ceremonies and camera capture
   require JavaScript; task reading degrades gracefully without it.
 - **Offline-first PWA** for workers — today's tasks and a completion

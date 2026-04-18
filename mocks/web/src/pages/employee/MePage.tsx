@@ -7,6 +7,7 @@ import { cap } from "@/lib/strings";
 import { Chip, Loading } from "@/components/common";
 import AgentApprovalModePanel from "@/components/AgentApprovalModePanel";
 import AgentPreferencesPanel from "@/components/AgentPreferencesPanel";
+import AppearancePanel from "@/components/AppearancePanel";
 import ChatChannelsMeCard from "@/components/ChatChannelsMeCard";
 import type { Leave, Me } from "@/types/api";
 
@@ -180,6 +181,8 @@ export default function MePage() {
         </ul>
         <button className="btn btn--ghost" type="button">+ Request leave</button>
       </section>
+
+      <AppearancePanel />
 
       <AgentApprovalModePanel />
 

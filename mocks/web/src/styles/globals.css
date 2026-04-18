@@ -49,6 +49,10 @@
 }
 .pill--active { background: #fff; color: var(--moss); border-color: #fff; font-weight: 600; }
 .pill--ghost { border-color: rgba(255,255,255,0.22); padding: 4px 10px; }
+.preview-banner__theme {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px 8px; min-width: 30px; line-height: 1;
+}
 
 /* ══════════════════════════════════════════════════════════════
    EMPLOYEE (phone) layout.
@@ -1847,6 +1851,31 @@
 .agent-mode-choice__desc {
   margin: 0; color: var(--ink-2); font-size: 12.5px; line-height: 1.4;
 }
+
+/* §14 — Appearance picker (light / dark / system) on /me. Shares the
+   visual language of .agent-mode-choice but lays out horizontally at
+   desktop so the three-way choice reads as a segmented control. */
+.theme-choices {
+  display: grid; gap: 8px; margin: 12px 0 0; padding: 0; border: 0;
+  grid-template-columns: repeat(3, 1fr);
+}
+@media (max-width: 520px) { .theme-choices { grid-template-columns: 1fr; } }
+.theme-choice {
+  display: flex; gap: 10px; align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--card);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.theme-choice:hover { background: var(--paper-2); }
+.theme-choice--selected { border-color: var(--moss); background: var(--moss-soft); }
+.theme-choice__input { margin: 0; }
+.theme-choice__icon { flex: 0 0 auto; color: var(--ink-2); }
+.theme-choice__body { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.theme-choice__body strong { color: var(--ink); font-size: 14px; }
+.theme-choice__body .muted { font-size: 12px; }
 
 /* §11 — Agent preferences editor. Reused at workspace / property / user
    layers; visuals are deliberately plain so it reads like a drafting

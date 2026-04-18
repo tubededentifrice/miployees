@@ -5,6 +5,7 @@
 
 :root,
 [data-theme="light"] {
+  color-scheme: light;
   --paper:       #FAF7F2;
   --paper-2:     #F3ECE0;
   --paper-3:     #EBE1D0;
@@ -32,6 +33,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --paper:       #151310;
   --paper-2:     #1E1A14;
   --paper-3:     #27211A;

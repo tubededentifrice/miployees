@@ -25,7 +25,8 @@ export function readRoleCookie(): Role {
 
 export function readThemeCookie(): Theme {
   const t = readCookie(THEME_COOKIE);
-  return t === "dark" ? "dark" : "light";
+  if (t === "dark" || t === "light" || t === "system") return t;
+  return "system";
 }
 
 // Tri-state: explicit "collapsed" / "open" / no-preference. The server
@@ -62,8 +63,8 @@ export function persistRole(role: Role): void {
     .catch(() => { /* preferences are best-effort */ });
 }
 
-export function persistTheme(): void {
-  fetch("/theme/toggle", { method: "POST", credentials: "same-origin", keepalive: true })
+export function persistTheme(theme: Theme): void {
+  fetch("/theme/set/" + theme, { method: "POST", credentials: "same-origin", keepalive: true })
     .catch(() => { /* best-effort */ });
 }
 

@@ -1,4 +1,5 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Monitor, Moon, Sun } from "lucide-react";
 import { useRole } from "@/context/RoleContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useBannerHeightVar } from "@/lib/useBannerHeightVar";
@@ -8,26 +9,36 @@ import { useBannerHeightVar } from "@/lib/useBannerHeightVar";
 // tree root (not per-page) so navigation doesn't flicker.
 export default function PreviewShell() {
   const { role, setRole } = useRole();
-  const { theme, toggle } = useTheme();
+  const { theme, resolved, toggle } = useTheme();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   useBannerHeightVar();
 
+  // Pages that don't render role-specific content: pill clicks should
+  // still navigate (so they have a visible effect), but neither pill
+  // should display as active while the user is here. Public auth flows
+  // are role-agnostic AND should keep the user in place.
+  const roleNeutral =
+    pathname === "/styleguide" ||
+    pathname === "/login" ||
+    pathname === "/recover" ||
+    pathname.startsWith("/enroll/") ||
+    pathname.startsWith("/guest/");
+  const stayOnRoleSwitch =
+    pathname === "/login" ||
+    pathname === "/recover" ||
+    pathname.startsWith("/enroll/") ||
+    pathname.startsWith("/guest/");
+
   const switchRole = (r: typeof role) => {
     setRole(r);
-    const stay =
-      pathname === "/styleguide" ||
-      pathname === "/login" ||
-      pathname === "/recover" ||
-      pathname.startsWith("/enroll/") ||
-      pathname.startsWith("/guest/");
-    if (!stay) {
+    if (!stayOnRoleSwitch) {
       navigate(r === "employee" ? "/today" : "/dashboard");
     }
   };
 
   return (
-    <div className="surface" data-role={role} data-theme={theme}>
+    <div className="surface" data-role={role} data-theme={resolved}>
       <img src="/grain.svg" alt="" aria-hidden="true" className="grain" />
 
       <div className="preview-banner">
@@ -36,25 +47,32 @@ export default function PreviewShell() {
         <nav className="preview-banner__switch" aria-label="Preview controls">
           <button
             type="button"
-            className={"pill" + (role === "employee" ? " pill--active" : "")}
+            className={"pill" + (!roleNeutral && role === "employee" ? " pill--active" : "")}
             onClick={() => switchRole("employee")}
           >
             Employee
           </button>
           <button
             type="button"
-            className={"pill" + (role === "manager" ? " pill--active" : "")}
+            className={"pill" + (!roleNeutral && role === "manager" ? " pill--active" : "")}
             onClick={() => switchRole("manager")}
           >
             Manager
           </button>
           <button
             type="button"
-            className="pill pill--ghost"
-            aria-label="Toggle theme"
+            className="pill pill--ghost preview-banner__theme"
+            aria-label={"Theme: " + theme + " (click to cycle)"}
+            title={"Theme: " + theme}
             onClick={toggle}
           >
-            {theme === "dark" ? "☀" : "☾"}
+            {theme === "light" ? (
+              <Sun size={14} aria-hidden="true" />
+            ) : theme === "dark" ? (
+              <Moon size={14} aria-hidden="true" />
+            ) : (
+              <Monitor size={14} aria-hidden="true" />
+            )}
           </button>
           <Link to="/styleguide" className="pill pill--ghost">§ styleguide</Link>
         </nav>
