@@ -425,6 +425,9 @@ time.
 | paid_by_user_id        | ULID FK? | owner/manager who marked it paid                                 |
 | paid_reference         | text?    | bank reference, free-form                                        |
 | attachment_file_ids    | ULID[]   | PDF / photo of the worker's invoice                              |
+| proof_of_payment_file_ids | ULID[] | client-uploaded evidence that they paid (wire receipt, screenshot, bank notice). See "Proof of payment" below. |
+| reminder_last_sent_at  | tstz?    | updated each time the invoice-reminder worker emits a nudge; null = never reminded |
+| reminder_next_due_at   | tstz?    | worker-computed next firing from the cascade setting; cleared on `paid` / `voided` |
 | llm_autofill_json      | jsonb?   | see §09 expense autofill; shape is the same, vendor field refers to biller |
 | autofill_confidence_overall | numeric? |                                                             |
 | created_at/updated_at  | tstz     |                                                                  |
@@ -496,6 +499,87 @@ differences:
   is distinct from `approved` so the workspace can track an
   account-payable queue.
 
+### Proof of payment (client upload)
+
+When a workspace is a **client** on a vendor_invoice (either the
+workspace itself is the billing target, or a client user holds a
+`role_grants(grant_role='client', binding_org_id=<biller-org>)`
+grant), the payer records that they paid by uploading one or more
+files to `proof_of_payment_file_ids`.
+
+- **Action.** `vendor_invoice.upload_proof` — see §05 action
+  catalog. Allowed subjects: the biller-side workspace's owners and
+  managers; on the client side, any user with a `client` grant that
+  resolves to this invoice (workspace-scope `binding_org_id` match,
+  or property-scope grant on the invoice's property). Agents may
+  submit on behalf of the delegating user; this is **not**
+  approval-gated (no money routing), but it emits
+  `vendor_invoice.proof_uploaded` so owners/managers see it.
+- **Shape.** Each file is a row in the shared `file` table (§02);
+  `proof_of_payment_file_ids` holds the reference ids. Multiple
+  proofs are allowed (two wire transfers → two files) and additive;
+  a previously uploaded proof cannot be removed by the uploader —
+  only workspace owners/managers may prune via
+  `vendor_invoice.remove_proof` (logged, not approval-gated; kept
+  to recover from accidental wrong-file uploads).
+- **Relationship to `paid`.** Uploading proof does **not**
+  automatically flip the invoice to `paid` — the owner/manager who
+  controls payment reconciliation still triggers
+  `vendor_invoice.mark_paid` after reconciling against their bank
+  feed. Proof upload is a *signal*, not a state change. The
+  owner/manager UI shows a "Proof uploaded · awaiting
+  reconciliation" badge on invoices with proof but `status <>
+  paid`.
+- **Retention.** Proof files inherit the workspace's
+  `files.retention_years` setting (§15) and are kept at least as
+  long as the invoice row itself; a soft-deleted invoice retains
+  its proofs.
+
+### Payment-due reminders
+
+Vendor invoices in `status = approved` automatically remind the
+payer on a cadence resolved through the settings cascade (§02).
+Reminders are **not** a new channel — they ride the existing
+agent-message delivery chain in §10 (SSE → push → WhatsApp → email).
+
+**Cascade keys (scope `W/P`):**
+
+| key                              | default        | semantics                                                                                       |
+|----------------------------------|----------------|-------------------------------------------------------------------------------------------------|
+| `invoice_reminders.enabled`      | `true`         | master toggle                                                                                   |
+| `invoice_reminders.offsets_days` | `[-3, 1, 7]`   | list of integer offsets from `due_on`; negative = before due date, positive = after (overdue)   |
+| `invoice_reminders.stop_after_days` | `30`        | stop reminding after `due_on + N days`; the invoice is escalated to the owner/manager instead   |
+
+A property-level setting (`property.settings_override_json`)
+overrides the workspace default. Individual invoices carry no
+reminder config — operators who want to silence one invoice set
+`status = voided` or flip `invoice_reminders.enabled = false` at
+property scope.
+
+**Worker job (`send_invoice_reminders`, hourly).** For each
+`vendor_invoice` with `status = approved` and
+`reminder_next_due_at <= now`:
+
+1. Look up the recipient (the client user on the client side — first
+   active `role_grants(grant_role='client', binding_org_id=<this
+   org>)` within the workspace; or the workspace's
+   owners/managers if the biller is the workspace).
+2. Build the reminder payload (`invoice_id`, `due_on`,
+   `total_cents`, `currency`, offset phase: `upcoming | due_today |
+   overdue`).
+3. Hand to the agent-message delivery worker (§10) — the fallback
+   chain picks the right channel per recipient.
+4. Update `reminder_last_sent_at = now` and recompute
+   `reminder_next_due_at` as the next entry in `offsets_days`
+   after now, or null if past `stop_after_days`.
+5. On `stop_after_days` exhaustion, fire
+   `vendor_invoice.reminder_exhausted` (webhook + owner/manager
+   digest item).
+
+**Events.** `vendor_invoice.reminder_sent`,
+`vendor_invoice.reminder_exhausted`, `vendor_invoice.proof_uploaded`
+are appended to §10's webhook catalog.
+
 ### Relationship to payroll engagements
 
 A **payroll** work_engagement (default `engagement_kind`)
@@ -559,6 +643,83 @@ what was quoted vs. what was billed.
 Mirrors §13 conventions: `crewday exports client_billable
 --client ... --from ... --to ...` and `crewday exports
 work_orders ...`.
+
+## `property_workspace_invite`
+
+Adding a `managed_workspace` or `observer_workspace` link on a
+property is **never one-sided**. The owner workspace creates an
+**invite**; the target workspace's owners must accept before the
+`property_workspace` row is materialised. The same flow runs in
+reverse — a client workspace inviting an agency to manage a villa
+uses the identical entity — so neither party can drag the other
+into a managed relationship by fiat.
+
+| field                 | type      | notes                                                                                             |
+|-----------------------|-----------|---------------------------------------------------------------------------------------------------|
+| id                    | ULID PK   |                                                                                                   |
+| token                 | text      | URL-safe opaque token (32 bytes, base32); the invite link embeds this. Unique across the deployment. |
+| from_workspace_id     | ULID FK   | the inviting workspace (must hold `owner_workspace` on the property at invite time)               |
+| property_id           | ULID FK   | the property being shared                                                                         |
+| to_workspace_id       | ULID FK?  | optional pre-addressed recipient (the target workspace). Null = open invite, first workspace to claim wins (subject to a short-lived lease, see below). |
+| proposed_membership_role | text   | `managed_workspace \| observer_workspace`                                                          |
+| initial_share_settings_json | jsonb | snapshot of the PII widening the inviter is offering — at minimum `{share_guest_identity: bool}` (see §15). Materialised onto the resulting `property_workspace` row if accepted. |
+| state                 | text      | `pending \| accepted \| rejected \| revoked \| expired`                                            |
+| created_by_user_id    | ULID FK   | must be a member of `owners` on `from_workspace_id`                                               |
+| created_at            | tstz      |                                                                                                   |
+| expires_at            | tstz      | default `created_at + 14 days`                                                                    |
+| decided_at            | tstz?     |                                                                                                   |
+| decided_by_user_id    | ULID FK?  | member of `owners` on the accepting workspace (or the revoking party on `from_workspace_id`)      |
+| decision_note_md      | text?     |                                                                                                   |
+
+**Actions** (added to the §05 catalog):
+
+- `property_workspace_invite.create` — inviter-side; requires
+  `owners` membership on `from_workspace_id`. Unconditionally
+  approval-gated (§11) — an agent may draft but a human authorises
+  the share.
+- `property_workspace_invite.accept` — recipient-side; requires
+  `owners` membership on the accepting workspace. Unconditionally
+  approval-gated. Resolves to a new `property_workspace` row with
+  `membership_role = proposed_membership_role`,
+  `share_guest_identity = initial_share_settings_json.share_guest_identity`.
+- `property_workspace_invite.reject` — recipient-side; writes
+  `state = rejected` with an optional note. Not approval-gated.
+- `property_workspace_invite.revoke` — inviter-side; same authority
+  as `.create`. Writes `state = revoked` (only while
+  `state = pending`).
+
+**Shareable link (no account yet).** The invite's `token` is the
+primary handle; the UI exposes the resulting URL
+(`<host>/invites/<token>`) as copy-paste-and-share. The recipient
+can receive it via WhatsApp, email, SMS, carrier pigeon — the
+surface the inviter uses is up to them, and the token carries no
+standing authority until an authenticated user on the accepting
+side opens it. Hitting the URL:
+
+- Prompts for workspace login if the visitor has no session.
+- Shows a detail page (property name, inviting workspace name +
+  slug, proposed role, PII widening, expiry).
+- Offers **Accept** / **Reject** buttons, gated on the visiting
+  user being an `owners` member of a candidate accepting workspace
+  (they pick from their workspaces if they have more than one).
+- Open invites (`to_workspace_id IS NULL`) allow any workspace
+  whose owners the inviter authorised; acceptance takes a short
+  lease (the first accept wins, a second accept inside the same
+  transaction returns `409 invite_already_accepted`).
+
+**Reverse direction.** When a client wants to invite their agency,
+the flow is identical — the client workspace plays inviter and the
+agency workspace plays recipient. Since the invite is keyed on
+`from_workspace_id + property_id`, and `from_workspace_id` must
+hold `owner_workspace` on that property at invite time, the
+structure is fully symmetric.
+
+**Audit and webhooks.**
+`property_workspace_invite.{created,accepted,rejected,revoked,expired}`
+are appended to the §10 webhook catalog. Expiry is driven by a
+daily worker that flips `state = expired` and fires the webhook.
+The resulting `property_workspace` row (on accept) still emits the
+existing `property_workspace.shared` event so dashboards refresh.
 
 ## Client surface (client login)
 
@@ -630,13 +791,25 @@ Appended to §11 "Always-gated (not configurable)":
 - `work_engagement.set_engagement_kind` (when switching *to* or
   *from* `payroll`, because it moves the engagement between pay
   pipelines)
-- `property_workspace.share` (adds a `managed_workspace` or
-  `observer_workspace` link on a property — same gate as adding
-  a manager grant on the workspace because it materially widens
-  who can dispatch work and read PII).
+- `property_workspace_invite.create` (proposes a new
+  `managed_workspace` or `observer_workspace` link — same gate as
+  adding a manager grant because it materially widens who can
+  dispatch work and read PII).
+- `property_workspace_invite.accept` (the other side of the same
+  decision — accepting liability for dispatching work or observing
+  at a property is a human call).
 - `property_workspace.revoke` (drops a non-owner `property_workspace`
   link — required for a client to switch agencies without the
   outgoing agency's consent).
+
+Not approval-gated (agent may draft and submit without a human
+confirmation card, but every write is still audited):
+
+- `vendor_invoice.upload_proof` — uploading evidence of payment is
+  a signal, not a money-routing decision.
+- `property_workspace_invite.reject` and `.revoke` — both walk a
+  relationship *back* and so don't expose either party to new
+  liabilities.
 
 The same rationale as existing money-routing gates: agents can
 draft, attach, and propose; humans decide who gets paid.
@@ -653,10 +826,18 @@ Appended to §10's catalog:
 - `quote.submitted`, `quote.accepted`, `quote.rejected`,
   `quote.superseded`.
 - `vendor_invoice.submitted`, `vendor_invoice.approved`,
-  `vendor_invoice.rejected`, `vendor_invoice.paid`.
+  `vendor_invoice.rejected`, `vendor_invoice.paid`,
+  `vendor_invoice.proof_uploaded`,
+  `vendor_invoice.reminder_sent`,
+  `vendor_invoice.reminder_exhausted`.
 - `shift_billing.resolved` (fires when a shift closes and the
   billing row is written; carries the `rate_source` so a dashboard
   can surface unpriced shifts).
+- `property_workspace_invite.created`,
+  `property_workspace_invite.accepted`,
+  `property_workspace_invite.rejected`,
+  `property_workspace_invite.revoked`,
+  `property_workspace_invite.expired`.
 - `property_workspace.shared`, `property_workspace.revoked`
   (fires when an owner workspace adds or removes another
   workspace's link to one of its properties — agencies and
@@ -670,7 +851,9 @@ Appended to §10's catalog:
 `.update`; `work_order.create`, `.state_change`,
 `.accept_quote`; `quote.submit`, `.accept`, `.reject`,
 `.supersede`; `vendor_invoice.submit`, `.approve`, `.reject`,
-`.mark_paid`.
+`.mark_paid`, `.upload_proof`, `.remove_proof`,
+`.reminder_sent`; `property_workspace_invite.create`,
+`.accept`, `.reject`, `.revoke`, `.expired`.
 
 ## Out of scope (v1)
 

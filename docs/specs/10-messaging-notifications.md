@@ -66,8 +66,12 @@ receive `locale` in their Jinja context. Formatting helpers
 | anomaly detected (§11)         | owners and managers                  | opt-out       |
 | availability override pending  | owners and managers                  | yes           |
 | pre-arrival task unassigned    | owners and managers                  | yes           |
+| task primary unavailable       | owners and managers                  | yes           |
 | holiday schedule impact        | affected users                       | opt-out       |
 | agent approval pending         | owners and managers                  | yes           |
+| invoice reminder               | client user (biller's client grant) or billing workspace's owners/managers | opt-out (per `invoice_reminders.enabled` cascade setting, §22) |
+| invoice reminder exhausted     | owners and managers of the billing workspace | yes    |
+| property_workspace invite      | owners of the recipient workspace (if addressed) or the invite link's opener | yes |
 
 Opt-outs are per-person, per-category, via a signed unsubscribe link
 in the footer of each email. Required emails (security-relevant, or
@@ -313,7 +317,7 @@ work_engagement.*    created, updated, archived, reinstated,
                      engagement_kind_changed
 task.*               created, assigned, updated, started, completed,
                      complete_superseded, skipped, cancelled, overdue,
-                     unassigned_pre_arrival
+                     unassigned_pre_arrival, primary_unavailable
 task_comment.*       created
 stay.*               created, updated, upcoming, in_house, checked_out,
                      cancelled, conflict
@@ -349,8 +353,10 @@ client_rate.*        created, updated, archived
 work_order.*         created, state_changed, accept_quote,
                      cancelled, deleted
 quote.*              submitted, accepted, rejected, superseded
-vendor_invoice.*     submitted, approved, rejected, paid, voided
+vendor_invoice.*     submitted, approved, rejected, paid, voided,
+                     proof_uploaded, reminder_sent, reminder_exhausted
 shift_billing.*      resolved
+property_workspace_invite.* created, accepted, rejected, revoked, expired
 agent_preference.*   updated, cleared  (§11)
 exchange_rate.*      refreshed, failed, overridden  (§09)
 ```

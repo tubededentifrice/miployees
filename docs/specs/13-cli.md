@@ -379,13 +379,56 @@ crewday deploy                          # HTTP-backed deployment-admin group
                                         # auth: passkey session or deployment-scope token
                                         # — see also 'crewday admin' below for host-CLI-only verbs
   me                                    # caller identity + deployment capabilities
-  llm assignments list
-  llm assignments set <capability> --model google/gemma-4-31b-it [--provider openrouter]
-  llm providers list
-  llm providers set <key> --url <u> --api-key-env OPENROUTER_API_KEY
-  llm pricing show
-  llm pricing reload
-  llm calls list [--capability] [--from] [--to] [--follow]
+  # Providers
+  llm provider list
+  llm provider show <id>
+  llm provider create --name <n> --type openrouter|openai_compatible|fake \
+                      [--endpoint <url>] [--api-key-ref <envelope:...>] \
+                      [--default-model <id>] [--priority <n>] [--disabled]
+  llm provider edit <id> [--name] [--endpoint] [--default-model] [--priority] [--enable|--disable]
+  llm provider rotate-key <id>          # prompts for the new key on stdin; no plaintext in argv
+  llm provider delete <id>              # refuses if a provider-model still points at it
+  # Models
+  llm model list [--vendor] [--capability <tag>]
+  llm model show <id>
+  llm model create --canonical <name> --display <n> --vendor <v> \
+                   --capabilities chat,vision,json_mode,... \
+                   [--context-window <n>] [--max-output-tokens <n>] \
+                   [--price-source openrouter|none]
+  llm model edit <id> [--display] [--capabilities] [--price-source] [--price-source-model-id]
+  llm model delete <id>
+  # Provider × Model
+  llm provider-model list [--provider <id>] [--model <id>]
+  llm provider-model create --provider <id> --model <id> --api-model-id <s> \
+                            [--input-per-million <d>] [--output-per-million <d>] \
+                            [--reasoning-effort low|medium|high] \
+                            [--no-system-prompt] [--no-temperature] \
+                            [--price-source-override openrouter|none]
+  llm provider-model edit <id> [...]
+  llm provider-model delete <id>
+  # Assignments (priority-ordered chain per capability)
+  llm assignment list [--capability]
+  llm assignment add <capability> --provider-model <id> [--priority <n>] \
+                                  [--max-tokens] [--temperature] [--extra @params.json]
+  llm assignment edit <id> [...]
+  llm assignment reorder <capability> <id1> <id2> <id3> ...   # left-to-right = priority 0,1,2
+  llm assignment delete <id>
+  # Capability inheritance
+  llm inheritance list
+  llm inheritance set <child-capability> --inherits-from <parent-capability>
+  llm inheritance clear <child-capability>
+  # Prompt library (hash-self-seeding; see §11)
+  llm prompt list                       # capability, version, customised? y/n
+  llm prompt show <id>                  # body + default_hash
+  llm prompt edit <id> --body @prompt.md [--note "..."]
+  llm prompt revisions <id>
+  llm prompt reset-to-default <id>
+  # Pricing
+  llm sync-pricing [--dry-run]          # triggers the OpenRouter sync on demand
+  # Call feed
+  llm calls list [--capability] [--provider-model] [--assignment] \
+                 [--from] [--to] [--fallback-attempts-gt 0] [--follow]
+  llm calls raw <call-id>               # prints raw_response_json if unexpired
   usage summary [--window 30d]
   usage workspaces [--over <pct>] [--paused]
   usage workspaces set-cap <ws-id> --cap-usd <value> [--note "..."]
@@ -455,8 +498,11 @@ intentionally separate groups with different security models.
 
 `crewday admin` keeps its existing host-CLI-only verb list
 (`init`, `recover`, `rotate-root-key`, `backup`, `restore`,
-`purge`, `budget set-cap`, `budget reload-pricing`,
+`purge`, `budget set-cap`, `llm sync-pricing`,
 `workspace create`, `workspace trust`, `settings set`, `version`).
+The earlier `budget reload-pricing` verb is retired — pricing lives
+in the DB now (§11 "Price sync"), and the host-CLI sync helper is
+`crewday admin llm sync-pricing`.
 These verbs have no HTTP route and cannot be agent-invoked — the
 approval pipeline (§11) does not apply. They survive precisely
 because some operations must require shell access to the

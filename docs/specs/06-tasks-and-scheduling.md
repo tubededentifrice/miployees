@@ -42,13 +42,65 @@ their bundles.
 | listed_property_ids            | ULID[]    |                                       |
 | area_scope                     | enum      | `any | one | listed | derived`        |
 | listed_area_ids                | ULID[]    |                                       |
-| checklist_template_json        | jsonb     | list of checklist items w/ optional guest_visible |
+| checklist_template_json        | jsonb     | list of checklist items; see "Checklist template shape" below |
 | photo_evidence                 | enum      | `disabled | optional | required`      |
 | linked_instruction_ids         | ULID[]    | §07                                   |
 | priority                       | enum      | `low | normal | high | urgent`        |
 | inventory_consumption_json     | jsonb     | SKU → qty expected, see §08           |
 | llm_hints_md                   | text      | free text to help agents understand intent |
 | deleted_at                     | tstz?     |                                       |
+
+### Checklist template shape
+
+`checklist_template_json` is a JSON array of items. Each item is:
+
+```json
+{
+  "key": "clean_fridge",
+  "text": "Clean the fridge",
+  "required": true,
+  "guest_visible": false,
+  "rrule": "FREQ=MONTHLY;BYMONTHDAY=1",
+  "dtstart_local": "2026-01-01"
+}
+```
+
+Field semantics:
+
+- **`key`** — stable per-template slug (unique within the template's
+  checklist). Used by §21 `asset_action.checklist_item_key` and by
+  reports so two revisions of the same item stay identifiable across
+  edits.
+- **`text`**, **`required`**, **`guest_visible`** — as on
+  `task_checklist_item` (see "Checklist items" below).
+- **`rrule`** (optional, RFC 5545) — calendar-anchored recurrence
+  filter. When present, the item is materialised onto a generated
+  task **only** if the task's `scheduled_for_local.date()` is an
+  occurrence of this RRULE (evaluated in the property timezone).
+  When absent, the item is always materialised. This lets one
+  "home maintenance" template carry "wipe counters (every visit)",
+  "clean fridge (monthly)", and "replace air-purifier filter (every
+  6 months)" as siblings, instead of splitting into three schedules.
+- **`dtstart_local`** (optional, ISO-8601 date) — anchor for the
+  RRULE. Resolution when null: (1) the schedule's `dtstart_local`
+  if the task was generated from a schedule; (2) the stay's
+  `check_in_at` (property-local) for stay-lifecycle tasks; (3) the
+  template's `created_at` otherwise.
+
+**Ad-hoc tasks always include every item**, regardless of RRULE —
+the RRULE filter applies only when the materialising path has a
+stable calendar anchor (a schedule or a stay). Items materialised
+from an RRULE-filtered template carry the same text and `required`
+flags as the template line; the RRULE is a **visibility filter**,
+not a per-item state machine. A task whose generated date matches
+no item's RRULE still materialises (with only the no-RRULE items,
+if any); the task is not itself skipped.
+
+**Authoring UI (§14).** The template editor exposes two views:
+*Simple* (checkbox + `required` + "appears every N occurrences /
+every N weeks / monthly / …") that compiles to an RRULE, and
+*Advanced* (raw RRULE field with a live "next 8 occurrences"
+preview). Behaviour is identical; both write the same RRULE string.
 
 ## Schedule
 
@@ -63,7 +115,8 @@ these times". Stored as RFC 5545 RRULE plus a property-local timezone.
 | template_id        | ULID FK |                                             |
 | property_id        | ULID FK |                                             |
 | area_id            | ULID FK?|                                             |
-| default_assignee   | ULID FK?| user — see assignment logic                 |
+| default_assignee   | ULID FK?| primary user — see assignment logic         |
+| backup_assignee_user_ids | ULID[] | ordered fallback list used when the primary is unavailable; see "Assignment algorithm" below. Empty by default. |
 | rrule              | text    | RFC 5545, e.g. `FREQ=WEEKLY;BYDAY=MO,TH`    |
 | dtstart_local      | timestamp | local time (property tz)                  |
 | duration_minutes   | int     |                                             |
@@ -239,9 +292,15 @@ applies to a user if `holiday.country IS NULL` (workspace-wide) OR
 Given a new task with `expected_role_id` and `property_id` (and
 `unit_id` if stay-lifecycle task):
 
-1. If the task has `schedule.default_assignee`, check availability
-   using the precedence stack above. If available, assign. If not,
-   fall through to candidate search.
+1. **Primary + ordered backups.** If the task has
+   `schedule.default_assignee`, walk the list
+   `[default_assignee, *backup_assignee_user_ids]` in order. For each
+   candidate, check availability using the precedence stack above.
+   Assign the **first available** candidate. Record the chosen
+   position on the task's audit event (`task.assigned` payload:
+   `assignment_source = primary | backup[N] | candidate_pool`) so the
+   owner/manager can see at a glance that e.g. the backup was used.
+   If none of the listed users is available, fall through to step 2.
 2. Else: candidates = users who:
     - have a `user_work_role` with `role_id = expected_role_id`,
     - whose `property_work_role_assignment` covers `property_id` (or
@@ -249,13 +308,26 @@ Given a new task with `expected_role_id` and `property_id` (and
     - **are available** on `scheduled_for_local` per the availability
       precedence stack (checking leave, overrides, holidays, weekly
       pattern).
+    Exclude any user already tried via step 1 (they were unavailable).
 3. If exactly one candidate, assign them.
 4. If more than one candidate:
     - Prefer the user with the **fewest tasks** in the 7-day window
       around `scheduled_for_local` at the same property.
     - Break ties by rotation: pick the user whose last task at this
       property is the oldest.
-5. If zero candidates, leave unassigned; surface in the daily digest.
+5. If zero candidates, leave unassigned; surface in the daily digest
+   and emit `task.primary_unavailable` (when step 1 was attempted but
+   no listed user was available) or `task.unassigned` (when the
+   candidate pool was empty from the start) so the agency manager can
+   react before the SLA is breached.
+
+**Backup list validation.** Every user in
+`backup_assignee_user_ids` must hold a `user_work_role` compatible
+with the schedule's `expected_role_id` at the schedule's workspace
+at write time; the write returns 422 `error =
+"backup_invalid_work_role"` otherwise. Archived users are filtered
+silently at assignment time but left on the list so the schedule is
+self-describing; the editor UI flags them as inactive.
 
 Owners, managers, and agents can always override. Auto-assignment is
 a tiebreaker, not a policy.
@@ -266,12 +338,14 @@ When assigning a `before_checkin` lifecycle task:
 
 1. Compute ideal date = `checkin_date - offset_days` (from
    `offset_hours` in the lifecycle rule, converted to days).
-2. Run the assignment algorithm for that date.
+2. Run the assignment algorithm for that date — primary + backups
+   first (step 1 of "Assignment algorithm" above), then the generic
+   candidate pool.
 3. If zero candidates available on ideal date:
    - Try `ideal_date - 1 day`, then `-2 days`, etc.
    - Stop at `max_advance_days` (from the lifecycle rule, default 3).
    - At each candidate date, run the full availability precedence
-     stack.
+     stack, re-walking primary + backups before the pool.
 4. If a slot is found: assign and set `scheduled_for_local` to the
    pulled-back date (within the user's available hours).
 5. If no slot found within the window: create the task at the ideal
@@ -521,6 +595,20 @@ parent task is not yet terminal. An item row is also created when an
 agent uses the NL-intake flow and the resolved template has checklist
 entries.
 
+**Seeding is RRULE-filtered.** At task generation, the bundle/schedule
+worker expands `task_template.checklist_template_json` into
+`task_checklist_item` rows by evaluating each item's optional
+`rrule` against the task's `scheduled_for_local.date()` (see "Checklist
+template shape" above). Items whose RRULE does not match on that date
+are **not** inserted for this task. Items with no RRULE are always
+inserted. Ad-hoc tasks (no parent schedule, no stay bundle) insert
+every item regardless of RRULE — the RRULE is a calendar filter, and
+ad-hoc tasks have no stable calendar anchor.
+
+A manager editing a task after generation may add an item that was
+filtered out (the filter is a one-shot at generation; manually added
+items never consult the RRULE afterwards).
+
 ## Evidence
 
 Photos, optional notes, and — for backwards compatibility with the
@@ -720,17 +808,46 @@ The existing `generate_task_occurrences` worker is extended:
 For each stay with `status IN (tentative, confirmed)` and
 `check_in_at` within the scheduling horizon:
 
-1. Evaluate all active `stay_lifecycle_rules` matching the property
-   (and unit, if rule is unit-scoped) and `guest_kind`.
-2. For `after_checkout` rules: generate bundle at checkout time
-   (existing turnover behavior).
-3. For `before_checkin` rules:
+1. For **each workspace linked to the stay's property** via
+   `property_workspace` (§02), evaluate that workspace's active
+   `stay_lifecycle_rules` independently. Each linked workspace
+   (`owner_workspace`, `managed_workspace`, `observer_workspace`)
+   runs its own rule set, creates its own `stay_task_bundle` rows,
+   and tags the resulting tasks with its own `workspace_id`. An
+   `observer_workspace` only generates bundles if its rules
+   explicitly target the stay — no implicit turnover for
+   read-only observers. Rule evaluation is scoped to the linked
+   workspace: a rule authored in workspace A cannot see or
+   deduplicate against a rule authored in workspace B.
+2. Within each workspace, match rules on property (and unit, if
+   rule is unit-scoped) and `guest_kind`.
+3. For `after_checkout` rules: generate bundle at checkout time
+   (existing turnover behavior). **Duplicate coverage is
+   expected**: if workspace A ("family") and workspace B ("agency")
+   both define an `after_checkout` rule for the same unit, both
+   fire — family-ws gets a "post-stay owner walkthrough" bundle and
+   agency-ws gets a "dispatch maid" bundle. Each is visible only
+   inside its own workspace; the shared Property → Sharing tab
+   (§04) exposes cross-workspace bundle counts to users who have
+   access to more than one of the linked workspaces.
+4. For `before_checkin` rules:
    - Check `suppress_if_turnaround_under_hours`: if a preceding stay
      at the same unit has checkout within that window, skip this rule.
+     The suppression is **workspace-local** — workspace A's rules
+     don't suppress workspace B's.
    - Compute ideal `scheduled_for = checkin_at - offset_hours`.
    - Run assignment with pull-back logic.
-4. For `during_stay` rules: evaluate RRULE within stay bounds,
-   generate one task per occurrence.
+5. For `during_stay` rules: evaluate RRULE within stay bounds,
+   generate one task per occurrence, same workspace-independence
+   rule.
+
+**Stay visibility across workspaces.** Every linked workspace sees
+the stay's dates, unit, and `guest_kind` (that's what lets their
+rules fire). Further fields (guest name, contact, welcome-page
+personalisations) are gated by the PII boundary in §15
+"Cross-workspace visibility". The per-workspace setting
+`property_workspace.share_guest_identity` (default `false`) widens
+the boundary on shares authored by an `owner_workspace`.
 
 ### Default rules seeded for STR/vacation properties
 

@@ -571,6 +571,63 @@ Workers may originate tasks via `tasks.create` (§05) but the quick-add
 default is `is_personal = true` — sharing to team requires an explicit
 opt-out by the creator before submission.
 
+### Cross-workspace visibility (shared properties)
+
+A property may be linked to more than one workspace via
+`property_workspace` (§02, §04). A **non-owner** linked workspace
+(`managed_workspace` or `observer_workspace`) sees a deliberately
+narrower slice of the property's data than the owner workspace —
+the **operational minimum** needed to dispatch or observe work.
+
+The boundary is expressed by the
+`property_workspace.share_guest_identity` flag (default `false`;
+§02). When **false**, a non-owner workspace sees:
+
+- Property: `name`, `timezone`, `country`, address city/region
+  (not line1/line2/postal_code), `kind`.
+- Unit: `name`, `max_guests`, default check-in/check-out times.
+  Welcome-page fields (wifi password, door codes, house rules,
+  emergency contacts, local tips) are **hidden**.
+- Stay: `check_in_at`, `check_out_at`, `unit_id`, `guest_kind`,
+  `guest_count` (if set), `status`. **Hidden**: `guest_name`,
+  `guest_email`, `guest_phone_e164`, external channel id
+  (iCal UID), per-stay notes authored on the owner side,
+  welcome-page overrides.
+- Tasks, shifts, work_orders, quotes, vendor_invoices: only the
+  rows whose `workspace_id` matches the viewing workspace. A task
+  created by workspace A on the shared property is invisible to
+  workspace B.
+- Files (§02): a file is visible to a non-owner workspace only if
+  the file is attached to a row that workspace already sees under
+  the rules above.
+
+When **true** (the owner workspace explicitly widens the share on
+the invite, §22 `property_workspace_invite.initial_share_settings_json`),
+the guest identity fields (`guest_name`, `guest_email`,
+`guest_phone_e164`) and the welcome-page personalisations become
+visible to the non-owner workspace. Address line1/line2, iCal UID,
+and owner-side notes stay redacted in either case — the agency
+never needs the full street address to dispatch, and the iCal UID
+is a secret by virtue of being a direct-fetch URL.
+
+Implementation notes:
+
+- On Postgres, the narrowing is an RLS policy on each affected
+  table that joins `property_workspace` and selects fields
+  conditionally on `share_guest_identity`.
+- On SQLite (no RLS), the narrowing is enforced at the repository
+  layer: every query that resolves a row belonging to a non-owner
+  workspace passes through a `redact_for_cross_workspace(row,
+  viewer_workspace_id)` filter that blanks the hidden fields and
+  returns `null` for entire hidden files.
+- The cross-tenant regression test (§"Cross-tenant regression
+  test") is extended with a *cross-workspace* case: workspace B
+  MUST NOT see guest name on a stay authored in workspace A
+  unless `share_guest_identity = true`, on either backend.
+- Audit rows (`audit_log`) written in workspace A are visible only
+  to workspace A — audit never crosses workspace boundaries,
+  regardless of `share_guest_identity`.
+
 ## Off-app channel privacy (WhatsApp / SMS)
 
 When off-app adapters are eventually enabled, WhatsApp and SMS

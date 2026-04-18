@@ -65,6 +65,10 @@ export const qk = {
   clientRates: (clientOrgId?: string) => ["client_rates", clientOrgId ?? "all"] as const,
   propertyWorkspaces: (propertyId?: string, workspaceId?: string) =>
     ["property_workspaces", propertyId ?? "all", workspaceId ?? "all"] as const,
+  propertyWorkspaceInvites: (propertyId?: string, direction: "in" | "out" | "any" = "out") =>
+    ["property_workspace_invites", propertyId ?? "all", direction] as const,
+  propertyWorkspaceInvite: (tokenOrId: string) =>
+    ["property_workspace_invite", tokenOrId] as const,
   permissionGroups: (scopeKind?: string, scopeId?: string) =>
     ["permission_groups", scopeKind ?? "all", scopeId ?? "all"] as const,
   permissionGroupMembers: (gid: string) => ["permission_group_members", gid] as const,
@@ -83,10 +87,9 @@ export const qk = {
   adminWorkspaces: () => ["admin", "workspaces"] as const,
   adminUsageSummary: () => ["admin", "usage", "summary"] as const,
   adminUsageWorkspaces: () => ["admin", "usage", "workspaces"] as const,
-  adminLlmAssignments: () => ["admin", "llm", "assignments"] as const,
+  adminLlmGraph: () => ["admin", "llm", "graph"] as const,
   adminLlmCalls: () => ["admin", "llm", "calls"] as const,
-  adminLlmProviders: () => ["admin", "llm", "providers"] as const,
-  adminLlmPricing: () => ["admin", "llm", "pricing"] as const,
+  adminLlmPrompts: () => ["admin", "llm", "prompts"] as const,
   adminChatProviders: () => ["admin", "chat", "providers"] as const,
   adminChatOverrides: () => ["admin", "chat", "overrides"] as const,
   adminSignup: () => ["admin", "signup"] as const,

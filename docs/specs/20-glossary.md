@@ -243,6 +243,33 @@ fix the offender.
   (`membership_role = 'owner_workspace'`). Other workspaces that
   share the property are `managed_workspace` or `observer_workspace`.
   See §02.
+- **Property workspace invite.** A `property_workspace_invite` row
+  (§22) that proposes a new `managed_workspace` or
+  `observer_workspace` link on a property. The owner workspace
+  creates it; the recipient workspace's owners accept or reject.
+  No `property_workspace` row is materialised without acceptance,
+  so both parties consent. The invite's token can be shared
+  out-of-band (WhatsApp, email, copy-paste URL); the accepting
+  user authenticates when they open the link. Reverse direction
+  (client invites agency) uses the same entity.
+- **Backup assignee.** On `schedule.backup_assignee_user_ids`, an
+  ordered fallback list the assignment algorithm tries before the
+  generic candidate pool when the primary is unavailable. See §06
+  "Assignment algorithm".
+- **Proof of payment.** Files uploaded against a `vendor_invoice`
+  by the payer (`vendor_invoice.proof_of_payment_file_ids`, §22)
+  to evidence that a payment was made. It does not flip the
+  invoice to `paid` — reconciliation against the biller's bank
+  feed is still done by a workspace owner/manager.
+- **Invoice reminder.** An out-of-band nudge sent to the payer of
+  an unpaid `vendor_invoice` at offsets configured by
+  `invoice_reminders.offsets_days` (workspace + property cascade
+  setting, §22). Rides the existing agent-message delivery chain
+  (SSE → push → WhatsApp → email, §10).
+- **Cross-workspace PII boundary.** The default redaction applied
+  by §15 "Cross-workspace visibility" to a property's data when
+  it is viewed from a non-owner linked workspace. Widened on a
+  per-share basis by `property_workspace.share_guest_identity`.
 - **Passkey.** WebAuthn platform or roaming authenticator credential.
 - **Permission group.** A named set of users that can appear as
   the subject of a `permission_rule`. Workspace- or
@@ -536,11 +563,49 @@ fix the offender.
   error until older calls age out of the window. Adjusted only by the
   operator via `crewday admin budget set-cap` — no HTTP surface; see
   §11 "Workspace usage budget".
-- **Pricing table.** `app/config/llm_pricing.yml`; per-model USD cost
-  per 1k input and output tokens. Loaded at process start; hot-
-  reloadable via `crewday admin budget reload-pricing`. Free-tier
-  models (`:free` suffix on OpenRouter) price at zero. An unknown
-  model_id prices at zero and logs a WARNING every call. See §11.
+- **Pricing source.** DB-authoritative per-million-token prices on
+  `llm_provider_model.input_cost_per_million` / `.output_cost_per_million`.
+  Kept current by the weekly `sync_llm_pricing` worker job that pulls
+  from OpenRouter (extensible to other sources). Admin pins a row via
+  `price_source_override = 'none'`. Free-tier models (`:free` suffix
+  on OpenRouter) price at zero. Unknown `api_model_id` at call time
+  falls back to (0, 0) and logs a WARNING every call. See §11 "Price
+  sync"; the on-disk `llm_pricing.yml` from earlier drafts is
+  retired.
+- **LLM provider.** One `llm_provider` row per upstream service. Fields:
+  `provider_type ∈ {openrouter, openai_compatible, fake}`, endpoint,
+  envelope-stored API key, default model, rate limits. Deployment-
+  scope; edited from `/admin/llm` or `crewday deploy llm provider …`.
+  See §11 "Provider / model / provider-model registry".
+- **LLM model.** One `llm_model` row per provider-agnostic model
+  (e.g. `google/gemma-3-27b-it`). Carries the `capabilities` array
+  (chat, vision, audio_input, reasoning, function_calling, json_mode,
+  streaming) that assignment-time validation checks against the
+  capability's `required_capabilities`. See §11.
+- **LLM provider-model.** The `llm_provider_model` join between
+  provider and model — where `api_model_id`, per-million pricing,
+  per-combo overrides, and the per-row price-source pin live. Same
+  canonical model can be priced and tuned differently across
+  providers. See §11.
+- **LLM assignment chain.** The priority-ordered list of
+  `llm_assignment` rows bound to a capability. The client walks the
+  chain on retryable failures; `fallback_attempts` on `llm_call`
+  records how deep the chain was traversed before success. See §11
+  "Model assignment".
+- **Capability inheritance.** One row in `llm_capability_inheritance`
+  names a parent capability whose assignment chain and prompt
+  template serve the child when the child has none of its own. v1
+  ships one row: `chat.admin → chat.manager`. See §11.
+- **Prompt library.** DB-backed system-prompt store
+  (`llm_prompt_template`) with full version history
+  (`llm_prompt_template_revision`). Uses **hash-self-seeding**: code
+  default seeds the row, unmodified prompts auto-upgrade when code
+  changes, admin-customised prompts are preserved. Edited from the
+  `/admin/llm` "Prompts" slide-over. See §11 "Prompt library".
+- **Raw-response debug log.** Optional un-redacted provider body on
+  `llm_call.raw_response_json` with a TTL (7 days by default) swept
+  by a worker. Replaces the Redis-backed fj2 debug log — everything
+  in the DB, no extra service. Gated by `deployment.llm.view`.
 - **Free-tier model.** An OpenRouter model whose id ends in `:free`.
   Priced at zero in the pricing table; still metered for telemetry.
   Default for every live capability on the demo deployment (§24).

@@ -39,9 +39,35 @@ export interface PropertyWorkspace {
   property_id: string;
   workspace_id: string;
   membership_role: MembershipRole;
+  share_guest_identity: boolean;
+  invite_id: string | null;
   added_at: string;
   added_by_user_id: string | null;
-  added_via: "user" | "agent" | "system";
+  added_via: "invite_accept" | "system" | "seed";
+}
+
+export type PropertyWorkspaceInviteState =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "revoked"
+  | "expired";
+
+export interface PropertyWorkspaceInvite {
+  id: string;
+  token: string;
+  from_workspace_id: string;
+  property_id: string;
+  to_workspace_id: string | null;
+  proposed_membership_role: "managed_workspace" | "observer_workspace";
+  initial_share_settings: { share_guest_identity: boolean };
+  state: PropertyWorkspaceInviteState;
+  created_by_user_id: string;
+  created_at: string;
+  expires_at: string;
+  decided_at: string | null;
+  decided_by_user_id: string | null;
+  decision_note_md: string | null;
 }
 
 export interface Employee {
@@ -76,6 +102,26 @@ export interface ChecklistItem {
   label: string;
   done?: boolean;
   guest_visible?: boolean;
+  // §06 "Checklist template shape": per-item RRULE filter.
+  // Populated when the item is a materialised instance of a template
+  // item that carried an RRULE.
+  key?: string;
+  required?: boolean;
+  rrule?: string | null;
+  dtstart_local?: string | null;
+}
+
+// §06 Task template checklist shape — authoring-side shape carried on
+// task_template.checklist_template_json items. Distinct from the
+// runtime per-task row: this is the template rule, including the
+// optional RRULE filter.
+export interface ChecklistTemplateItem {
+  key: string;
+  text: string;
+  required: boolean;
+  guest_visible?: boolean;
+  rrule?: string | null;
+  dtstart_local?: string | null;
 }
 
 export interface Task {
@@ -342,6 +388,7 @@ export interface Schedule {
   property_id: string;
   rrule_human: string;
   default_assignee_id: string | null;
+  backup_assignee_user_ids: string[];
   duration_minutes: number;
   active_from: string;
   paused: boolean;
@@ -419,6 +466,148 @@ export interface LLMCall {
   cost_cents: number;
   latency_ms: number;
   status: "ok" | "error" | "redacted_block";
+  // §11 "Cost tracking" — chain metadata; nullable on legacy rows.
+  assignment_id?: string | null;
+  provider_model_id?: string | null;
+  prompt_template_id?: string | null;
+  prompt_version?: number | null;
+  fallback_attempts?: number;
+  raw_response_available?: boolean;
+}
+
+// §11 — provider / model / provider-model graph shapes.
+
+export type LlmProviderType = "openrouter" | "openai_compatible" | "fake";
+export type LlmApiKeyStatus = "present" | "missing" | "rotating";
+export type LlmPriceSource = "openrouter" | "manual" | "";
+export type LlmPriceSourceOverride = "" | "none" | "openrouter";
+export type LlmReasoningEffort = "" | "low" | "medium" | "high";
+
+export interface LlmProvider {
+  id: string;
+  name: string;
+  provider_type: LlmProviderType;
+  endpoint: string;
+  api_key_ref: string | null;
+  api_key_status: LlmApiKeyStatus;
+  default_model: string | null;
+  requests_per_minute: number;
+  timeout_s: number;
+  priority: number;
+  is_enabled: boolean;
+  provider_model_count: number;
+}
+
+export interface LlmModel {
+  id: string;
+  canonical_name: string;
+  display_name: string;
+  vendor: string;
+  capabilities: string[];
+  context_window: number | null;
+  max_output_tokens: number | null;
+  price_source: LlmPriceSource;
+  price_source_model_id: string | null;
+  is_active: boolean;
+  notes: string | null;
+  provider_model_count: number;
+}
+
+export interface LlmProviderModel {
+  id: string;
+  provider_id: string;
+  model_id: string;
+  api_model_id: string;
+  input_cost_per_million: number;
+  output_cost_per_million: number;
+  max_tokens_override: number | null;
+  temperature_override: number | null;
+  supports_system_prompt: boolean;
+  supports_temperature: boolean;
+  reasoning_effort: LlmReasoningEffort;
+  price_source_override: LlmPriceSourceOverride;
+  price_last_synced_at: string | null;
+  is_enabled: boolean;
+}
+
+export interface LlmAssignment {
+  id: string;
+  capability: string;
+  description: string;
+  priority: number;
+  provider_model_id: string;
+  max_tokens: number | null;
+  temperature: number | null;
+  extra_api_params: Record<string, unknown>;
+  required_capabilities: string[];
+  is_enabled: boolean;
+  last_used_at: string | null;
+  spend_usd_30d: number;
+  calls_30d: number;
+}
+
+export interface LlmCapabilityEntry {
+  key: string;
+  description: string;
+  required_capabilities: string[];
+}
+
+export interface LlmCapabilityInheritance {
+  capability: string;
+  inherits_from: string;
+}
+
+export interface LlmAssignmentIssue {
+  assignment_id: string;
+  capability: string;
+  missing_capabilities: string[];
+}
+
+export interface LlmPromptTemplate {
+  id: string;
+  capability: string;
+  name: string;
+  version: number;
+  is_active: boolean;
+  is_customised: boolean;
+  default_hash: string;
+  updated_at: string;
+  revisions_count: number;
+  preview: string;
+}
+
+export interface LlmGraphPayload {
+  providers: LlmProvider[];
+  models: LlmModel[];
+  provider_models: LlmProviderModel[];
+  capabilities: LlmCapabilityEntry[];
+  inheritance: LlmCapabilityInheritance[];
+  assignments: LlmAssignment[];
+  assignment_issues: LlmAssignmentIssue[];
+  totals: {
+    spend_usd_30d: number;
+    calls_30d: number;
+    provider_count: number;
+    model_count: number;
+    capability_count: number;
+    unassigned_capabilities: string[];
+  };
+}
+
+export interface LlmSyncPricingResult {
+  started_at: string;
+  deltas: {
+    provider_model_id: string;
+    api_model_id: string;
+    input_before: number;
+    input_after: number;
+    output_before: number;
+    output_after: number;
+    status: "updated" | "unchanged" | "pinned" | "error";
+  }[];
+  updated: number;
+  skipped: number;
+  errors: number;
 }
 
 // §11 — Workspace usage budget (manager-visible shape).
@@ -601,6 +790,10 @@ export interface VendorInvoice {
   paid_at: string | null;
   paid_by_user_id: string | null;
   decision_note: string | null;
+  // §22 Proof of payment + reminders
+  proof_of_payment_file_ids: string[];
+  reminder_last_sent_at: string | null;
+  reminder_next_due_at: string | null;
 }
 
 // §02 — workspaces the current user has access to, with the
@@ -924,23 +1117,6 @@ export interface AdminUsageSummary {
   workspace_count: number;
   paused_workspaces: number;
   per_capability: { capability: string; spend_usd_30d: number; calls_30d: number }[];
-}
-
-export interface AdminLlmProvider {
-  key: string;
-  label: string;
-  url: string;
-  api_key_env: string;
-  status: "connected" | "error" | "not_configured";
-  last_check_at: string | null;
-  fallback: boolean;
-}
-
-export interface AdminLlmPricingRow {
-  model_id: string;
-  input_per_1k_usd: number;
-  output_per_1k_usd: number;
-  is_free_tier: boolean;
 }
 
 export interface AdminChatProviderCredential {

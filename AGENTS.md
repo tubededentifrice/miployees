@@ -175,6 +175,7 @@ live in the skill files themselves.
 | `/gap-finder` | Pre-implementation walk of a spec section, filing Beads tasks for gaps — `.claude/skills/gap-finder/` |
 | `/director` | Top-level planning across specs / modules — `.claude/skills/director/` |
 | `/beads` | Create well-formed Beads tasks from a prompt — `.claude/skills/beads/` |
+| `/frontend-design:frontend-design` | **Mandatory** before any frontend change under `mocks/web/` (or future `app/web/`) — distinctive, production-grade UI, no AI-slop aesthetics |
 | `/ai-slop` | Strip AI-generated noise from a branch before it ships — `.claude/commands/ai-slop.md` |
 | `/update-openapi` | After any change under `app/api/` |
 | `/bump-deps` | Periodic dependency bump (uv + Python + JS tooling) |

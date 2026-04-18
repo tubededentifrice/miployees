@@ -69,16 +69,36 @@ workspaces"), with one of three `membership_role` values:
 Workers, shifts, work orders, and vendor invoices written under any
 linked workspace carry that workspace's `workspace_id` forward, so
 payroll, billing, and audit history stay separated even when several
-teams share the same villa. Switching the agency that manages a
-property is a `property_workspace` revoke + insert (subject to the
-approval-gated list in §22), and the client's `owner_workspace`
-link is what makes that revoke possible without the agency's
-consent.
+teams share the same villa. Similarly, stay lifecycle rules fire
+**per linked workspace** (§06 "Bundle generation logic") — each
+workspace evaluates its own rules against the shared stay and
+writes bundles tagged to itself. Duplicate coverage is expected
+and not deduplicated: an owner workspace's "post-stay walkthrough"
+and an agency workspace's "dispatch maid" both fire on the same
+checkout without coordinating.
+
+Switching the agency that manages a property is a
+`property_workspace.revoke` (approval-gated, §22) followed by a
+fresh `property_workspace_invite` (§22) to the new agency; the
+client's `owner_workspace` link is what makes the revoke possible
+without the outgoing agency's consent.
+
+**PII boundary on shared properties.** By default a non-owner
+linked workspace (`managed_workspace` / `observer_workspace`)
+sees only the operational minimum — unit, dates, `guest_kind`,
+tasks and evidence it authored itself — and not the guest name,
+contact, or welcome-page personalisations. The owner workspace
+may widen this per share via
+`property_workspace.share_guest_identity`, which it sets when it
+issues the invite (§22). Full boundary rules live in §15
+"Cross-workspace visibility".
 
 The web UI surfaces this on a per-property "Sharing & client" tab
-(§14): list of memberships, the linked client organization, and
-"Invite as agency" / "Revoke" controls visible only to members of
-the owner workspace.
+(§14): list of memberships, the linked client organization,
+pending invites, and the "Invite workspace" / "Revoke" controls
+visible only to members of the owner workspace. Creating an
+invite yields a shareable URL that the owner can copy and send
+through any channel (WhatsApp, email, in person).
 
 ### `address_json` canonical shape
 

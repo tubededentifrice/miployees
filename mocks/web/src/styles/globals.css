@@ -3305,3 +3305,246 @@
   border-bottom: 1px dashed var(--line);
 }
 .table__link:hover { color: var(--moss); border-bottom-color: var(--moss); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * §11 — Admin LLM graph page (providers → models → assignments).
+ * Three-column board with cross-column hover highlighting and a
+ * prompt-library slide-over.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+.llm-graph-alert {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.llm-graph-alert code { font-size: 12.5px; margin: 0 4px; }
+.llm-graph-alert__sub { margin-top: 4px; color: var(--ink-3); font-size: 12.5px; }
+.llm-graph-alert--warn { border-color: var(--sand, #c89a4a); background: var(--sand-soft, #faf2e4); }
+.llm-graph-alert--error { border-color: var(--rust); background: var(--rust-soft); }
+.llm-graph-alert--info { border-color: var(--sky, #9bb8d9); background: var(--sky-soft, #eaf2fb); }
+
+.llm-graph {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 56px;
+  row-gap: 10px;
+  margin: 16px 0 24px;
+}
+.llm-graph__col-header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 0 4px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.llm-graph__col-title { font-size: 12.5px; }
+.llm-graph__col-count {
+  font-size: 12px; font-weight: 500; color: var(--ink-3);
+  padding: 1px 8px; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
+}
+.llm-graph__col {
+  display: flex; flex-direction: column; gap: 10px;
+  min-height: 140px;
+}
+
+.llm-graph-node {
+  position: relative;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  cursor: pointer;
+  transition: opacity 120ms ease, border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+.llm-graph-node:hover {
+  border-color: var(--moss);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02), 0 0 0 1px var(--moss-soft) inset;
+}
+.llm-graph-node.is-linked {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+}
+.llm-graph-node.is-active {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+  box-shadow: 0 0 0 2px var(--moss) inset;
+}
+.llm-graph-node.is-dim { opacity: 0.35; }
+
+.llm-graph-node__head {
+  display: flex; align-items: center; gap: 8px; justify-content: space-between;
+  margin-bottom: 4px;
+}
+.llm-graph-node__name {
+  font-weight: 600; color: var(--ink-1); font-size: 14.5px;
+  word-break: break-word;
+}
+.llm-graph-node__vendor {
+  font-size: 11.5px; color: var(--ink-3);
+  padding: 1px 7px; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
+}
+.llm-graph-node__type {
+  font-size: 12px; color: var(--ink-2);
+  padding: 1px 8px; border-radius: 4px; background: var(--card); border: 1px solid var(--line);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.llm-graph-node__meta {
+  font-size: 12.5px; color: var(--ink-2);
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-top: 2px;
+}
+.llm-graph-node__endpoint { font-size: 12px; color: var(--ink-3); }
+.llm-graph-node__tags {
+  margin-top: 8px;
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.llm-graph-node__foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 10px;
+  font-size: 12px; color: var(--ink-2);
+}
+.llm-graph-node__inherits {
+  margin-top: 6px; font-size: 12px; color: var(--ink-2);
+}
+
+/* Assignment chain nested inside a capability node. */
+.llm-graph-chain {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.llm-graph-chain__rung {
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  font-size: 12.5px;
+  transition: opacity 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.llm-graph-chain__rung:hover {
+  border-color: var(--moss);
+  border-style: solid;
+}
+.llm-graph-chain__rung.is-primary {
+  border-style: solid;
+}
+.llm-graph-chain__rung.is-dim { opacity: 0.4; }
+.llm-graph-chain__rung.is-error {
+  border-color: var(--rust);
+  background: var(--rust-soft);
+}
+.llm-graph-chain__prio {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--ink-2);
+  text-align: center;
+  padding: 1px 4px; border-radius: 4px;
+  background: var(--paper); border: 1px solid var(--line);
+}
+.llm-graph-chain__rung.is-primary .llm-graph-chain__prio {
+  color: #fff; background: var(--moss); border-color: var(--moss);
+}
+.llm-graph-chain__model { word-break: break-all; }
+.llm-graph-chain__provider { font-size: 11.5px; white-space: nowrap; }
+.llm-graph-chain__spend { font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+
+/* Prompt-library slide-over. */
+.llm-prompt-drawer-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(24, 28, 32, 0.38);
+  display: flex; justify-content: flex-end;
+  z-index: 60;
+}
+.llm-prompt-drawer {
+  width: min(560px, 100%);
+  height: 100%;
+  background: var(--paper);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  box-shadow: -8px 0 30px rgba(0, 0, 0, 0.08);
+}
+.llm-prompt-drawer__head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--line);
+}
+.llm-prompt-drawer__hint {
+  padding: 12px 18px 0;
+  font-size: 13px;
+}
+.llm-prompt-list {
+  list-style: none; margin: 0; padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+  overflow-y: auto;
+}
+.llm-prompt-list__item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--card);
+}
+.llm-prompt-list__head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.llm-prompt-list__name { font-weight: 600; color: var(--ink-1); font-size: 13.5px; }
+.llm-prompt-list__ver { font-size: 11.5px; }
+.llm-prompt-list__preview {
+  margin: 0;
+  font-size: 12.5px; color: var(--ink-2);
+  line-height: 1.45;
+}
+.llm-prompt-list__foot {
+  margin-top: 8px;
+  display: flex; gap: 12px; font-size: 11.5px;
+}
+
+@media (max-width: 960px) {
+  .llm-graph {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+  .llm-graph__col-header { padding-top: 12px; }
+}
+
+/* SVG edge layer that connects providers → models → assignment rungs.
+ * The `.llm-graph` becomes the positioning context; the SVG overlays
+ * the whole grid and ignores pointer events. */
+.llm-graph { position: relative; }
+.llm-graph__edges {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+}
+.llm-graph__col-header,
+.llm-graph__col {
+  position: relative; z-index: 1;
+}
+
+.llm-graph__edge {
+  fill: none;
+  stroke: var(--ink-3, #8a8679);
+  stroke-width: 1.5;
+  stroke-opacity: 0.55;
+  transition: stroke 120ms ease, stroke-width 120ms ease, stroke-opacity 120ms ease;
+}
+.llm-graph__edge.is-linked {
+  stroke: var(--moss);
+  stroke-width: 2.25;
+  stroke-opacity: 1;
+}
+.llm-graph__edge.is-dim { stroke-opacity: 0.1; }
+.llm-graph__edge.is-error {
+  stroke: var(--rust);
+  stroke-dasharray: 4 3;
+  stroke-opacity: 0.85;
+}

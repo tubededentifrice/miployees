@@ -364,14 +364,59 @@ Authorisation accepts two principals only:
 GET    /admin/api/v1/me                              # deployment-admin caller's identity + capabilities
 GET    /admin/api/v1/me/admins                       # listing of deployment admins & groups
 
-# LLM (moved from per-workspace /w/<slug>/llm; see §11)
-GET    /admin/api/v1/llm/assignments
-PUT    /admin/api/v1/llm/assignments/{capability}
-GET    /admin/api/v1/llm/providers                   # configured providers (OpenRouter, optional fallback)
-PUT    /admin/api/v1/llm/providers/{key}             # update provider URL + rotate API key
-GET    /admin/api/v1/llm/pricing                     # current pricing table snapshot
-POST   /admin/api/v1/llm/pricing/reload              # hot-reload app/config/llm_pricing.yml
+# LLM graph (moved from per-workspace /w/<slug>/llm; see §11)
+# Everything deployment-scope; gated by deployment.llm.{view,edit}.
+
+# Providers — the upstream services we call.
+GET    /admin/api/v1/llm/providers                   # list; shape per §11 llm_provider
+POST   /admin/api/v1/llm/providers                   # create
+GET    /admin/api/v1/llm/providers/{id}
+PUT    /admin/api/v1/llm/providers/{id}              # edit (no key rotation)
+DELETE /admin/api/v1/llm/providers/{id}              # refuses if any enabled provider-model points at it
+PUT    /admin/api/v1/llm/providers/{id}/key          # rotate API key; interactive-session-only (§11)
+
+# Models — provider-agnostic catalogue.
+GET    /admin/api/v1/llm/models                      # list; includes capabilities[]
+POST   /admin/api/v1/llm/models                      # create
+GET    /admin/api/v1/llm/models/{id}
+PUT    /admin/api/v1/llm/models/{id}
+DELETE /admin/api/v1/llm/models/{id}                 # refuses if any provider-model references it
+
+# Provider × model — pricing + per-combo overrides live here.
+GET    /admin/api/v1/llm/provider-models             # list; filters ?provider_id= / ?model_id=
+POST   /admin/api/v1/llm/provider-models             # create
+GET    /admin/api/v1/llm/provider-models/{id}
+PUT    /admin/api/v1/llm/provider-models/{id}
+DELETE /admin/api/v1/llm/provider-models/{id}        # refuses if any enabled assignment references it
+
+# Assignments — priority-ordered chain per capability.
+GET    /admin/api/v1/llm/assignments                 # grouped by capability
+POST   /admin/api/v1/llm/assignments                 # add a rung to a chain
+GET    /admin/api/v1/llm/assignments/{id}
+PUT    /admin/api/v1/llm/assignments/{id}            # edit max_tokens/temperature/extra_api_params
+DELETE /admin/api/v1/llm/assignments/{id}
+PATCH  /admin/api/v1/llm/assignments/reorder         # body: [{capability, ids_in_priority_order: [...]}]
+
+# Capability inheritance.
+GET    /admin/api/v1/llm/capability-inheritance
+PUT    /admin/api/v1/llm/capability-inheritance/{capability}  # body: { inherits_from } ; 422 on cycle
+DELETE /admin/api/v1/llm/capability-inheritance/{capability}
+
+# Prompt library — hash-self-seeding; see §11 "Prompt library".
+GET    /admin/api/v1/llm/prompts                     # one row per capability, current active body
+GET    /admin/api/v1/llm/prompts/{id}                # full body + default_hash + is_customised flag
+PUT    /admin/api/v1/llm/prompts/{id}                # snapshot old body → revision; bump version
+GET    /admin/api/v1/llm/prompts/{id}/revisions      # full history
+POST   /admin/api/v1/llm/prompts/{id}/reset-to-default   # writes a revision containing the current code default
+
+# Pricing sync — replaces pricing/reload from earlier drafts.
+POST   /admin/api/v1/llm/sync-pricing                # trigger the OpenRouter sync; streams per-row deltas
+
+# Call feed — unchanged shape; writes from the new pipeline.
 GET    /admin/api/v1/llm/calls                       # deployment-wide call feed (ndjson + --follow)
+                                                     # filters: ?capability= / ?provider_model_id= / ?assignment_id= /
+                                                     # ?fallback_attempts_gt=0 (chain-walked calls only)
+GET    /admin/api/v1/llm/calls/{id}/raw              # raw_response_json if present + unexpired; 404 otherwise
 
 # Chat gateway (deployment-default provider; §23)
 GET    /admin/api/v1/chat/providers                  # deployment-default WhatsApp/Telegram providers — stubs only
@@ -742,10 +787,13 @@ inheritance). Cascade rules in §02 "Settings cascade".
 
 ### LLM and approvals
 
+LLM provider / model / assignment / prompt management **has moved**
+to the `/admin/api/v1/llm/*` deployment surface (see the admin
+section above). Workspace owners and managers keep the narrow usage
+surface and the approvals desk only:
+
 ```
-GET    /llm/assignments
-PUT    /llm/assignments/{capability}
-GET    /llm/calls                  # audit of prior calls
+GET    /llm/calls                  # workspace-scoped call feed (audit)
 GET    /approvals                  # agent_action rows; ?scope=desk|inline|me filters
 POST   /approvals/{id}/approve     # body: {note?}
 POST   /approvals/{id}/reject      # body: {note}
@@ -925,7 +973,25 @@ POST   /vendor_invoices/{id}/submit
 POST   /vendor_invoices/{id}/approve          # always approval-gated for agents; manager selects destination
 POST   /vendor_invoices/{id}/reject
 POST   /vendor_invoices/{id}/mark_paid        # always approval-gated for agents
+POST   /vendor_invoices/{id}/proof            # multipart; appends to proof_of_payment_file_ids — client or owner/manager
+DELETE /vendor_invoices/{id}/proof/{file_id}  # remove a proof file — owner/manager only
 POST   /vendor_invoices/autofill              # multipart/form-data; image in → structured JSON out
+
+# property_workspace invites (§22)
+POST   /property_workspace_invites            # inviter-side; body: {property_id, to_workspace_id?, proposed_membership_role, initial_share_settings_json, note_md?}
+GET    /property_workspace_invites            # list pending invites originated from this workspace (?state=…)
+GET    /property_workspace_invites/{id}       # inviter-side detail
+POST   /property_workspace_invites/{id}/revoke
+```
+
+**Invite token endpoints** (no `/w/<slug>/` prefix — the token is
+the identity). These extend the existing `/api/v1/invites/...`
+shape used by user-level invites:
+
+```
+GET    /api/v1/property_workspace_invites/{token}               # introspect (property, inviter workspace, role, expiry, share widening)
+POST   /api/v1/property_workspace_invites/{token}/accept        # body: {accepting_workspace_id}; user must be owners on that workspace
+POST   /api/v1/property_workspace_invites/{token}/reject        # body: {note_md?}
 ```
 
 ### Exports

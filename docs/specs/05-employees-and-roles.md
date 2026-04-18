@@ -389,6 +389,13 @@ Users whose grant in a scope is `client` see only:
   accept (gated — see §11) or reject.
 - Vendor invoices billed to them: full detail, including
   `payout_destination` redacted beyond last 4 IBAN digits (§15).
+  May upload proof-of-payment files against any invoice billed to
+  them (action `vendor_invoices.upload_proof`, §22). May **not**
+  mark an invoice paid — that remains an internal bookkeeping flag
+  of the billing workspace.
+- Invoice reminders reach them on the usual fallback chain (SSE →
+  push → WhatsApp → email, §10) per the `invoice_reminders.*`
+  cascade settings (§22). Reminders are opt-out per user.
 
 Clients never see:
 
@@ -517,6 +524,13 @@ configuration.
 | `vendor_invoices.submit`                | `workspace`, `property`        | `owners, managers`            | —  | §22 |
 | `vendor_invoices.approve`               | `workspace`, `property`        | `owners, managers`            | ✅ | §22 |
 | `vendor_invoices.approve_as_client`     | `workspace`, `property`        | `all_clients`                 | —  | §22 |
+| `vendor_invoices.upload_proof`          | `workspace`, `property`        | `owners, managers, all_clients` | — | §22 |
+| `vendor_invoices.remove_proof`          | `workspace`, `property`        | `owners, managers`            | —  | §22 |
+| `property_workspace_invite.create`      | `workspace`, `property`        | `owners, managers`            | —  | §22 |
+| `property_workspace_invite.accept`      | `workspace`                    | `owners, managers`            | —  | §22 |
+| `property_workspace_invite.reject`      | `workspace`                    | `owners, managers`            | —  | §22 |
+| `property_workspace_invite.revoke`      | `workspace`, `property`        | `owners, managers`            | —  | §22 |
+| `property_workspace.revoke`             | `workspace`, `property`        | `owners, managers`            | ✅ | §22 |
 | `messaging.comments.author_global`      | `workspace`, `property`        | `owners, managers, all_workers` | — | §10 |
 | `messaging.report_issue.triage`         | `workspace`, `property`        | `owners, managers`            | —  | §10 |
 | `agent_prefs.edit_workspace`            | `workspace`                    | `owners, managers`            | —  | §11 |

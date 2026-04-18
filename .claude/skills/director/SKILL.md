@@ -135,6 +135,28 @@ prompt: |
   Acceptance criteria: see bd-042
 ```
 
+### Frontend work — load `/frontend-design:frontend-design`
+
+Whenever a Coder task touches `mocks/web/` (or any future production
+frontend under `app/web/`), **explicitly instruct the Coder to load the
+`/frontend-design:frontend-design` skill** before writing code. The skill
+enforces a distinctive, production-grade aesthetic and keeps the UI from
+drifting into generic AI-looking output. Include the directive in the
+prompt:
+
+```
+Area: mocks/web/src/pages/admin
+Skill to load: /frontend-design:frontend-design  (mandatory for any
+  component / page / styling change — load it before writing code)
+Beads task: bd-071
+Test path: mocks/web (pnpm -C mocks/web typecheck && pnpm -C mocks/web build)
+Task: Redesign the LLM admin page per spec 11 §4
+```
+
+Apply the same directive when delegating to the Reviewer for frontend
+changes — they should reference the skill when judging aesthetic and
+component-quality decisions.
+
 ## Quick checklist
 
 Before delegating implementation:

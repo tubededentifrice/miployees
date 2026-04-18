@@ -331,13 +331,31 @@ inside the image (§24).
 
 ### GC and scheduled jobs on demo
 
-The following worker jobs run on demo in addition to the regular job
-set:
+The regular, non-demo job set (shared by recipes A / B / D) is:
+
+- `usage_rollup` — every 60 s; refreshes
+  `workspace_usage.cost_30d_usd` (§11 "Workspace usage budget").
+- `llm_raw_response_sweep` — every 60 minutes; nulls
+  `llm_call.raw_response_json` and `raw_response_expires_at` for rows
+  past their TTL (§11 "Cost tracking").
+- `sync_llm_pricing` — weekly (cron `0 3 * * 1` UTC); pulls per-
+  million token prices from OpenRouter into
+  `llm_provider_model.{input,output}_cost_per_million` per §11
+  "Price sync". No Redis, no external queue; runs in the same
+  `crewday-server worker` process as the other jobs.
+- `ical_poll`, `digest_compose`, `anomaly_detect`, `email_retry`,
+  `webhook_retry`, `approval_expire` — the rest of the standard
+  worker cadence, unchanged.
+
+The following jobs run on demo in addition to the regular set:
 
 - `demo_gc` — every 15 minutes; purges `demo_workspace` rows whose
   `expires_at < now()` and every dependent row via FK cascade.
 - `demo_usage_rollup` — every 60 s; refreshes the per-workspace
-  rolling 30-day cost aggregate (§11).
+  rolling 30-day cost aggregate (§11). Runs alongside the regular
+  `usage_rollup`; exists because the demo deployment counts against
+  the `CREWDAY_DEMO_GLOBAL_DAILY_USD_CAP` envelope (§11 "Demo mode
+  overrides") in addition to per-workspace caps.
 
 The following jobs are **disabled** on demo:
 
@@ -345,6 +363,8 @@ The following jobs are **disabled** on demo:
 - Daily digest composition and anomaly detection.
 - Email delivery retries (the Mailer is the null adapter).
 - Webhook delivery retries.
+- `sync_llm_pricing` — demo defaults to `:free` OpenRouter models
+  and the global daily cap; live pricing is not needed.
 
 ### Backup on demo
 

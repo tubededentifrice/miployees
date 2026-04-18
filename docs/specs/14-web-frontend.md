@@ -594,10 +594,25 @@ Settings. It surfaces the multi-belonging model from §02 + §04:
 - **Owner of record** — a display-only line for `owner_user_id`
   when set (the natural person behind the owner workspace).
 - **Invite / Revoke controls** — visible only when the active
-  workspace is the property's `owner_workspace`. "Invite as
-  agency" attaches a `managed_workspace` link; "Revoke" removes
-  any non-owner link. Both confirmations note that production
-  routes through the always-approval-gated set in §22.
+  workspace is the property's `owner_workspace`. "Invite
+  workspace" opens a dialog that collects the proposed role
+  (`managed` or `observer`), an optional target workspace (by
+  slug) for a pre-addressed invite, and a toggle for
+  `share_guest_identity` (off by default). Submitting creates a
+  `property_workspace_invite` (§22) and shows the resulting
+  invite URL with a **Copy link** control so the inviter can
+  share it through WhatsApp, email, or another channel; the
+  dialog also offers an "Email invite to owner of <to_workspace>"
+  shortcut for pre-addressed invites. "Revoke" removes any
+  non-owner `property_workspace` row; it is distinct from
+  revoking a pending invite. Both destructive paths route through
+  the always-approval-gated set in §22.
+- **Pending invites** — table of `property_workspace_invite` rows
+  this workspace originated but have not yet been accepted or
+  rejected. Each row offers **Copy link** and **Revoke**.
+  Invites inbound to this workspace appear on the workspace-level
+  inbox (`/inbox`) rather than the per-property page — the
+  accepting owner picks which workspace to accept into there.
 
 The Organizations page (`/organizations`) under ADMIN lists every
 organization in the active workspace, with a detail panel
@@ -616,5 +631,10 @@ hours (read-only `shift_billing` rollup), Quotes (with accept /
 reject controls — acceptance still routes through the unconditionally
 approval-gated set in §22 in production; the mock applies it
 in-memory), Invoices (read-only `vendor_invoice` list, no mark-paid
-control). The agent sidebar is intentionally not mounted here:
-clients don't drive the crewday agent in v1.
+control, **Upload proof** control on any invoice in `status =
+approved` that drops files into `proof_of_payment_file_ids`).
+Reminders (§22) follow the usual agent-message delivery chain;
+clients silence them by unbinding WhatsApp (§23) or toggling the
+per-workspace `invoice_reminders.enabled` setting if they are
+admin on their own workspace. The agent sidebar is intentionally
+not mounted here: clients don't drive the crewday agent in v1.

@@ -283,9 +283,9 @@ Classification, OCR, and detection capabilities do **not** receive
 preferences — they would be noise at best and harmful at worst:
 `expenses.autofill`, `voice.transcribe`, `anomaly.detect`,
 `chat.detect_language`, `chat.translate`. The capability catalog
-flag `receives_agent_preferences: true` on `model_assignment`
-makes this explicit and lets a workspace toggle the default for a
-given capability.
+flag `receives_agent_preferences: true` on `llm_assignment` (or on
+the capability's entry in the catalog) makes this explicit and lets
+a workspace toggle the default for a given capability.
 
 ### Property context resolution
 
@@ -411,17 +411,139 @@ should carry into its phrasing and its proposals, use
 preferences. The §14 editor explains this directly above the
 textarea.
 
-## Provider
+## Provider / model / provider-model registry
 
-- **Default:** OpenRouter — `https://openrouter.ai/api/v1/chat/
-  completions`.
-- **Default model:** `google/gemma-4-31b-it` (multimodal, per user).
-- **Key** stored in `secret_envelope` (§15). Never logged. Never sent
-  in audit JSON.
-- Optional: a **secondary** provider (OpenAI-compatible URL + key) for
-  fallback; the client round-robins on upstream 5xx.
-- Local providers (Ollama, vLLM) are **out of scope for v1** but the
-  provider adapter interface supports them.
+The LLM plumbing is a three-layer registry modelled on the pattern in
+[`micasa-dev/fj2`](https://github.com/micasa-dev/fj2)'s `llm_providers`
+app, adapted to crewday's FastAPI + SQLAlchemy stack and semantic-CSS
+front-end. All three tables are **deployment-scope**; workspaces never
+see these rows directly. Every table is edited from the `/admin/llm`
+graph (§ "LLM graph admin") or its CLI equivalents (§13).
+
+### `llm_provider`
+
+```
+llm_provider
+├── id                     ULID PK
+├── name                   text            -- display name; unique
+├── provider_type          text            -- openrouter | openai_compatible | fake
+├── api_endpoint           text?           -- overrides the type's default URL
+├── api_key_envelope_ref   text?           -- pointer into secret_envelope (§15); never the ciphertext
+├── default_model          text?           -- fallback model_id when an assignment lists none
+├── timeout_s              int             -- default 60
+├── requests_per_minute    int             -- default 60; enforced client-side
+├── priority               int             -- lower = tried first when a provider pool is probed
+├── is_enabled             bool
+├── created_at / updated_at
+└── updated_by_user_id     ULID?
+```
+
+- **Provider types shipped in v1:**
+  - `openrouter` — default; endpoint `https://openrouter.ai/api/v1`.
+  - `openai_compatible` — generic OpenAI-shaped HTTP. Covers
+    self-hosted gateways (Ollama, vLLM, LM Studio) and secondary
+    clouds behind OpenAI-shaped APIs. Requires `api_endpoint`.
+  - `fake` — in-process canned responses for tests and fixture-based
+    few-shot regressions. Never available in production.
+- A native Anthropic SDK adapter is **deferred** to a later version; v1
+  reaches Claude models (if an operator wants them) through OpenRouter.
+- `api_key_envelope_ref` holds an opaque reference (e.g.
+  `envelope:llm:openrouter:default`) that the server resolves through
+  `secret_envelope` (§15). The raw key is never returned by the API,
+  never logged, and never appears in `llm_call.*` payloads.
+- The deployment admin rotates keys with
+  `PUT /admin/api/v1/llm/providers/{id}/key`, which generates a new
+  envelope ciphertext and updates the ref atomically. This surface is
+  `interactive-session-only` (§ "Interactive-session-only endpoints").
+
+### `llm_model`
+
+Provider-agnostic metadata about a model. The same model (e.g.
+`google/gemma-3-27b-it`) may be offered by multiple providers.
+
+```
+llm_model
+├── id                     ULID PK
+├── canonical_name         text            -- unique; e.g. google/gemma-3-27b-it
+├── display_name           text
+├── vendor                 text            -- google | anthropic | openai | meta | mistral | qwen | other
+├── capabilities           jsonb           -- list[str]; see "Model capability tags" below
+├── context_window         int?
+├── max_output_tokens      int?
+├── is_active              bool
+├── price_source           text            -- '' | 'openrouter' | 'manual'; see "Price sync"
+├── price_source_model_id  text?           -- override the id used to look up pricing
+├── notes                  text?
+├── created_at / updated_at
+└── updated_by_user_id     ULID?
+```
+
+### Model capability tags
+
+Every `llm_model` row carries a `capabilities` array. Crewday's v1 set,
+chosen for the product's actual surface (no image generation, no
+dedicated embedding service yet, but audio-in is a real modality for
+`voice.transcribe`):
+
+| tag               | meaning                                                                        |
+|-------------------|--------------------------------------------------------------------------------|
+| `chat`            | Standard text chat / completion                                                |
+| `vision`          | Accepts image inputs (used by `expenses.autofill`, receipt OCR)                |
+| `audio_input`     | Accepts audio inputs directly (future voice capabilities; see `voice.transcribe`) |
+| `reasoning`       | Extended-thinking / reasoning models (o-series, GLM-4.6+, Qwen3-Thinking…)     |
+| `function_calling`| Native tool-call protocol                                                      |
+| `json_mode`       | Guaranteed JSON output via `response_format`                                   |
+| `streaming`       | Supports incremental token streaming                                           |
+
+`image_generation` and `embedding` are intentionally **not** in the v1
+set — neither capability has a shipping consumer in crewday. They join
+the list the day a consumer lands.
+
+Every crewday capability in the catalog below carries a
+`required_capabilities` list. Saving an `llm_assignment` whose
+`provider_model` resolves to a model missing one of the required tags
+returns `422 assignment_missing_capability` with the concrete diff.
+The `/admin/llm` graph renders the offending edge in red until the
+assignment is fixed. This is the server-side guard against the
+"assigned a text-only model to receipt OCR" foot-gun.
+
+### `llm_provider_model`
+
+The join between provider and model. Pricing and per-combo API tweaks
+live here, because the same canonical model can be priced and tuned
+differently across providers.
+
+```
+llm_provider_model
+├── id                         ULID PK
+├── provider_id                ULID FK llm_provider
+├── model_id                   ULID FK llm_model
+├── api_model_id               text            -- what the provider expects on the wire
+│                                              -- e.g. 'anthropic/claude-3-5-sonnet' on OpenRouter,
+│                                              -- 'claude-3-5-sonnet-20241022' on a native adapter
+├── input_cost_per_million     numeric(10,4)
+├── output_cost_per_million    numeric(10,4)
+├── fixed_cost_per_call_usd    numeric(10,4)?  -- reserved for future providers that bill per-call
+├── max_tokens_override        int?
+├── temperature_override       float?
+├── supports_system_prompt     bool            -- some reasoning models reject system prompts
+├── supports_temperature       bool            -- o-series models forbid temperature
+├── reasoning_effort           text?           -- '' | 'low' | 'medium' | 'high'
+├── extra_api_params           jsonb           -- catch-all for rare/new fields
+├── price_source_override      text?           -- '' | 'none' | 'openrouter' — per-row override of the model's price_source
+├── price_source_model_id_override text?
+├── price_last_synced_at       tstz?
+├── is_enabled                 bool
+├── created_at / updated_at
+└── UNIQUE(provider_id, model_id)
+```
+
+- `api_model_id` decouples the canonical model name from what the wire
+  expects (OpenRouter prefixes with a vendor, native SDKs don't).
+- `supports_temperature = false` makes the client strip the param
+  before the call. `supports_system_prompt = false` folds the system
+  prompt into the first user turn. These flags exist because they
+  matter in practice on o-series / reasoning-first models.
 
 ## Client abstraction
 
@@ -430,97 +552,332 @@ class LLMClient(Protocol):
     async def chat(
         self,
         *,
-        model: str,
+        capability: Capability,         -- the assignment resolver picks the chain
         messages: list[Message],
         images: list[ImageRef] = (),
+        audio: list[AudioRef] = (),
         tools: list[ToolDef] | None = None,
         response_format: ResponseFormat | None = None,
         max_output_tokens: int | None = None,
         correlation_id: str,
-        capability: Capability,
+        workspace_id: WorkspaceId | None = None,   -- for the 30-day envelope check
         budget: Budget | None = None,
     ) -> LLMResult: ...
 ```
 
+The caller passes a `capability` key, not a `model`. The client
+resolves the assignment chain for that capability (walking
+`llm_capability_inheritance` when needed), runs the workspace-
+envelope pre-flight (§ "Workspace usage budget"), and attempts each
+assignment in priority order until one succeeds or the chain is
+exhausted. Every attempt writes one `llm_call` row so the
+per-attempt cost, latency, and `finish_reason` are auditable even
+when a rung fails.
+
 `LLMResult` carries `text | tool_calls | structured`, `usage` (prompt
-+ completion token counts, dollar estimate), `model_used`, and a
++ completion token counts, dollar estimate), `model_used` (the
+`api_model_id` of the rung that succeeded), `assignment_id`,
+`fallback_attempts` (0 when the primary worked), and a
 `finish_reason`.
 
 ## Capability catalog
 
-Each feature names a **capability** key. The model assignment table
-maps capability → model. If a capability has no explicit mapping, the
-workspace default is used.
+Each feature names a **capability** key. The assignment table maps a
+capability → a priority-ordered chain of `llm_provider_model` rows (see
+"Model assignment" below). Every capability declares
+`required_capabilities` — the set of `llm_model.capabilities` tags any
+assigned model must carry. Attempting to assign a model that fails the
+check returns `422 assignment_missing_capability`.
 
-| capability key             | description                                                             |
-|----------------------------|-------------------------------------------------------------------------|
-| `tasks.nl_intake`          | Parse a free-text description into a task / template / schedule draft   |
-| `tasks.assist`             | Staff chat assistant: "what's next?", explain an instruction, etc.      |
-| `digest.manager`           | Morning owner/manager digest composition                                |
-| `digest.employee`          | Morning worker digest composition                                       |
-| `anomaly.detect`           | Compare recent completions to schedule and flag anomalies               |
-| `expenses.autofill`        | OCR + structure a receipt image                                         |
-| `instructions.draft`       | Suggest an instruction from a conversation with the owner/manager       |
-| `issue.triage`             | Classify severity/category of a user-reported issue                     |
-| `stay.summarize`           | Summarize a stay (for guest welcome blurb drafting)                     |
-| `voice.transcribe`         | Turn a voice note into text (for chat assistant / issue reports)        |
-| `chat.manager`             | Owner/manager-side embedded chat agent (§14 right sidebar)              |
-| `chat.employee`            | Worker-side embedded chat agent (§14 Chat tab)                          |
-| `chat.admin`               | Deployment-admin embedded chat agent (§14 `/admin` right sidebar)       |
-| `chat.compact`             | Summarise resolved topics in a chat thread (see "Conversation compaction") |
-| `chat.detect_language`     | Detect message language for auto-translation (§10, §18)                 |
-| `chat.translate`           | Translate a message into the workspace default language (§10, §18)      |
+| capability key         | description                                                                 | required_capabilities        |
+|------------------------|-----------------------------------------------------------------------------|------------------------------|
+| `tasks.nl_intake`      | Parse a free-text description into a task / template / schedule draft       | `chat`, `json_mode`          |
+| `tasks.assist`         | Staff chat assistant: "what's next?", explain an instruction, etc.          | `chat`                       |
+| `digest.manager`       | Morning owner/manager digest composition                                    | `chat`                       |
+| `digest.employee`      | Morning worker digest composition                                           | `chat`                       |
+| `anomaly.detect`       | Compare recent completions to schedule and flag anomalies                   | `chat`, `json_mode`          |
+| `expenses.autofill`    | OCR + structure a receipt image                                             | `vision`, `json_mode`        |
+| `instructions.draft`   | Suggest an instruction from a conversation with the owner/manager           | `chat`                       |
+| `issue.triage`         | Classify severity/category of a user-reported issue                         | `chat`, `json_mode`          |
+| `stay.summarize`       | Summarize a stay (for guest welcome blurb drafting)                         | `chat`                       |
+| `voice.transcribe`     | Turn a voice note into text (for chat assistant / issue reports)            | `audio_input`                |
+| `chat.manager`         | Owner/manager-side embedded chat agent (§14 right sidebar)                  | `chat`, `function_calling`   |
+| `chat.employee`        | Worker-side embedded chat agent (§14 Chat tab)                              | `chat`, `function_calling`   |
+| `chat.admin`           | Deployment-admin embedded chat agent (§14 `/admin` right sidebar)           | `chat`, `function_calling`   |
+| `chat.compact`         | Summarise resolved topics in a chat thread (see "Conversation compaction")  | `chat`                       |
+| `chat.detect_language` | Detect message language for auto-translation (§10, §18)                     | `chat`, `json_mode`          |
+| `chat.translate`       | Translate a message into the workspace default language (§10, §18)          | `chat`                       |
+
+The `required_capabilities` column lives in code — capabilities are a
+closed enum declared by the application, not workspace-configurable.
+Adding a new capability is a code change that writes both the row in
+this table and a seed assignment + prompt-template default.
 
 ## Model assignment
 
+An assignment binds a capability to one `llm_provider_model` at a given
+priority. A capability may carry **many** assignments, forming a
+priority-ordered **fallback chain** — the client walks the chain on
+retryable failures (upstream 5xx, 429, timeout, provider content
+refusal, transport error). This is the "proper failback between models"
+behaviour; fj2 ships the same shape under the name `LLMAssignment`.
+
 ```
-model_assignment
-├── capability                 # key above; unique
-├── provider                   # openrouter | other
-├── model_id                   # e.g. google/gemma-4-31b-it
-├── params_json                # temperature, top_p, etc.
-├── budget_json                # per-call max tokens, per-day USD cap, per-min req cap
-└── updated_at/updated_by
+llm_assignment
+├── id                          ULID PK
+├── capability                  text            -- key from the catalog above
+├── priority                    int             -- lower = tried first; 0 = primary
+├── provider_model_id           ULID FK llm_provider_model ON DELETE PROTECT
+├── max_tokens                  int?            -- overrides provider_model + model defaults
+├── temperature                 float?
+├── system_prompt_override      text?           -- rare one-off; prefer llm_prompt_template
+├── extra_api_params            jsonb           -- merged last, wins over provider_model params
+├── required_capabilities       jsonb           -- copied from the catalog; recomputed on save
+├── is_enabled                  bool
+├── last_used_at                tstz?
+├── created_at / updated_at
+├── updated_by_user_id          ULID?
+└── UNIQUE(capability, priority)
 ```
 
-Model assignments are **deployment-scope**: one row per
-capability, shared by every workspace on the deployment. A
-deployment admin edits the row from `/admin/llm` or via
-`PUT /admin/api/v1/llm/assignments/{capability}` (gated by
-`deployment.llm.edit`, §05). Workspace owners and managers no
-longer see an LLM page — spend visibility stays on `/settings`
-as the "Agent usage — N%" tile (see "Visible surfaces" below).
-Default row for every capability is seeded at first boot with
-Gemma 4 31B IT and sensible params. Budgets are soft — the
-system warns and stops calls when exceeded, with a clear
-message in the audit log.
+- The `UNIQUE(capability, priority)` constraint replaces the prior
+  `UNIQUE(capability)` rule — a capability can now have
+  `(priority=0, primary)`, `(priority=1, fallback)`, etc. Reordering is
+  a `PATCH /admin/api/v1/llm/assignments/reorder` bulk operation (the
+  CLI exposes `llm assignment reorder`).
+- **Retryable errors** that advance the chain: HTTP 5xx from the
+  provider, HTTP 429 (rate-limit), client-side timeout, transport
+  error, and provider-reported content refusal when `finish_reason` is
+  `safety` or equivalent. Explicit `budget_exceeded` from our own
+  envelope (§ "Workspace usage budget") does **not** advance — the
+  whole workspace is paused, no other assignment will help.
+- A chain exhausted with no success surfaces the **last** error to the
+  caller, with `X-LLM-Fallback-Attempts` echoing the number of models
+  tried. Capability callers degrade per § "Failure modes".
+- Per-call token caps move to `extra_api_params`; the existing
+  per-capability daily dollar caps are enforced on the `llm_call`
+  aggregate. The workspace envelope (§ "Workspace usage budget")
+  still runs **before** the chain is entered — once the envelope
+  blocks a workspace, no attempt leaves the client.
+- Capabilities without assignments fall back through **capability
+  inheritance** (below) before the call is considered unassigned. An
+  unassigned capability fails closed with
+  `503 capability_unassigned` and a `CRITICAL` audit row.
 
-### Capability defaults
+### Capability inheritance
 
-| capability            | recommended default model                          | rationale |
-|-----------------------|-----------------------------------------------------|-----------|
-| all                   | `google/gemma-4-31b-it`                            | per user  |
-| `expenses.autofill`   | `google/gemma-4-31b-it`                            | multimodal |
-| `voice.transcribe`    | (none out of box; capability off unless assigned)  | local speech-to-text deferred |
+Modelled on fj2's `LLMUseCaseInheritance`:
 
-Deployment admins may override any capability to a different model
-(e.g. Claude Haiku for digests, a cheaper Qwen for intake) without
-code changes. The override is deployment-wide — every workspace
-picks up the new assignment on the next call.
+```
+llm_capability_inheritance
+├── capability         text PK         -- child
+├── inherits_from      text            -- parent; must also be a key in the catalog
+└── created_at
+```
 
-## Prompting strategy
+The resolver walks children to parents: when `chat.admin` has no
+enabled assignments of its own, it falls through to `chat.manager`'s
+chain. Inheritance also applies to `llm_prompt_template` (below) — a
+child capability without a custom prompt uses the parent's. A cycle is
+rejected on save with `422 capability_inheritance_cycle`. Child
+assignments **override** the parent when present (not merged).
 
-- **System prompts** are versioned files under `app/prompts/*.md` with a
-  small Jinja2 header for injection. They are loaded once per process
-  and hot-swappable in dev.
+v1 seeds one inheritance row: `chat.admin → chat.manager`. Others
+stay flat so operators can reason about their chain in isolation;
+new ties are introduced surgically as sub-capabilities appear.
+
+### Capability defaults (seeds)
+
+At first boot the deployment is seeded with:
+
+| capability              | default `provider_model`                                                    | rationale |
+|-------------------------|-----------------------------------------------------------------------------|-----------|
+| all chat-kind           | OpenRouter × `google/gemma-3-27b-it` (priority 0)                           | Matches the user's Gemma pick. Multimodal, supports JSON mode. |
+| `expenses.autofill`     | OpenRouter × `google/gemma-3-27b-it` (priority 0)                           | Same model; `vision` tag drives OCR. |
+| `voice.transcribe`      | **No seed** — capability is disabled until an admin assigns an audio model  | No default audio-input model ships. |
+
+Deployment admins override any chain from `/admin/llm` without a
+redeploy. Overrides are deployment-wide.
+
+## Prompt library
+
+System prompts move from "files on disk" to a DB-backed library with
+**hash-self-seeding** — the pattern fj2 ships as `PromptTemplate`,
+adapted to crewday. Code still declares the default; the DB carries the
+operator's customization. The hash reconciles the two.
+
+```
+llm_prompt_template
+├── id                  ULID PK
+├── capability          text            -- one row per capability; unique while is_active
+├── name                text            -- human-readable, defaults to Title-Cased capability
+├── template            text            -- full prompt body, Jinja2-compatible
+├── version             int             -- auto-incremented
+├── is_active           bool
+├── default_hash        text(16)        -- sha256[:16] of the code default at the time of last seed
+├── notes               text?
+├── created_at / updated_at
+└── UNIQUE(capability) WHERE is_active = true
+
+llm_prompt_template_revision
+├── id                  ULID PK
+├── template_id         ULID FK llm_prompt_template
+├── version             int
+├── body                text
+├── notes               text?
+├── created_at
+├── created_by_user_id  ULID?
+└── UNIQUE(template_id, version)
+```
+
+### Self-seeding algorithm
+
+1. Code calls `get_active_prompt(capability, default=...)` once per
+   process for each capability it uses.
+2. No DB row yet → auto-create with `template = default`,
+   `default_hash = sha256(default)[:16]`, `version = 1`,
+   `is_active = true`.
+3. Row exists and `default_hash` matches the current code default →
+   return the stored body.
+4. Row exists with a different `default_hash`:
+   - If the stored `template` still hashes to `default_hash` (admin
+     never customised) → **auto-upgrade** the row: write the new
+     `template`, bump `version`, snapshot the old body into
+     `llm_prompt_template_revision`, set `default_hash` to the new
+     hash. The next call returns the upgraded body.
+   - If the stored `template` differs from `default_hash` (admin
+     customised) → **preserve** the admin version; only update
+     `default_hash` to the new baseline so future code changes can
+     compare against it. Emit a structured log
+     `prompt.customised_code_default_changed` with the capability.
+5. Admin edit via `PUT /admin/api/v1/llm/prompts/{id}` always
+   snapshots the old body into `..._revision`, bumps `version`, and
+   stores `default_hash` unchanged (the code default didn't move).
+
+This gives operators "edit the prompt in the admin UI, keep your
+customization across deploys" **and** "my unmodified prompts stay in
+sync with the code" simultaneously — the guarantee that made the fj2
+version worth porting.
+
+### Reset and history
+
+- `DELETE /admin/api/v1/llm/prompts/{id}` is disallowed; "reset to
+  default" is a `POST .../reset-to-default` that writes a new
+  revision containing the current code default and bumps the version.
+- `GET .../revisions` lists every past version with a diff-against-
+  current button (rendered client-side; the server only returns raw
+  bodies).
+- Revision retention follows `retention.llm_prompt_revisions_days`
+  (default 365) in the settings cascade (§02).
+
+### What does and does not go here
+
+Prompt templates carry only the **composition** prompt — the system
+message the model sees. They do **not** duplicate the `x-agent-confirm`
+card copy (§ "Action confirmation annotation" lives on the API route),
+the "Agent preferences" Markdown blobs (§ "Agent preferences" is a
+separate table, stacked at render time), or few-shot fixtures
+committed as test data. Prompts share the **same injection order**
+with preferences at render time:
+
+```
+<system prompt body from llm_prompt_template>
+<## Workspace preferences ...>
+<## Property preferences ...>
+<## Your preferences ...>
+<grounding observations / tool descriptors>
+```
+
+### Prompting strategy (unchanged)
+
 - **Schema-first outputs** wherever feasible: `response_format = json
-  schema` via OpenRouter (Gemma supports JSON mode). Callers validate
-  with Pydantic models and fail loudly on drift.
+  schema` through the OpenAI-compatible shape (`json_mode` capability
+  required). Callers validate with Pydantic models and fail loudly on
+  drift.
 - **Grounding context** is assembled from the database and passed as
   structured tool observations or system-message content, never as
   free text inside user messages.
 - **Few-shot** for stable shapes (expense OCR, task intake) committed
   as fixtures; `pytest` regressions run against them.
+
+## Price sync
+
+Pricing is DB-authoritative and syncs from OpenRouter on a schedule —
+the `app/config/llm_pricing.yml` file from earlier drafts is retired.
+
+- `llm_provider_model.input_cost_per_million` and `.output_cost_per_million`
+  are the only cost numbers the cost-tracker reads.
+- A worker job `sync_llm_pricing` runs **weekly** (cron
+  `0 3 * * 1` UTC), probes every enabled provider whose type matches a
+  known price source (v1: OpenRouter only), and updates the
+  per-million prices on any `llm_provider_model` where
+  `get_effective_price_source()` resolves to that source and
+  `price_source_override != 'none'`. Successful rows bump
+  `price_last_synced_at`.
+- Admins pin a row by setting `price_source_override = 'none'` — the
+  sync skips it, and the admin becomes the price authority for that
+  combo. The UI surfaces pinned rows with a small "manual" badge.
+- `crewday admin llm sync-pricing` triggers a sync from the host
+  shell, with the same plumbing as the scheduled job. It prints
+  per-row deltas and exits non-zero on any network error.
+- Missing prices (row present, price source returns nothing) log a
+  `WARNING` per call and keep the existing value. Unknown model IDs
+  at call time fall back to `(0.0, 0.0)` and log a `WARNING` per
+  call, as before.
+
+The sync job does **not** mutate the model registry — new models
+announced by OpenRouter do not auto-appear. Operators import models
+explicitly via `/admin/llm` or `crewday admin llm model create`. This
+keeps the model catalogue small and intentional.
+
+## LLM graph admin
+
+The `/admin/llm` page presents the registry as a three-column visual
+graph (providers → models → assignments), modelled on fj2's
+`admin/llm_graph/` interface. The tabular page from earlier drafts is
+retired.
+
+- **Column 1 — Providers.** One card per `llm_provider`; shows type,
+  endpoint host, enabled state, API-key status (present / missing /
+  rotating), and the count of attached provider-models. "Add provider"
+  opens the inline edit drawer.
+- **Column 2 — Models.** One card per `llm_model`; shows vendor,
+  capability tags as chips, context window, and the count of providers
+  offering the model. Cards carry a small modality icon bar
+  (text / vision / audio / reasoning).
+- **Column 3 — Assignments.** Grouped by capability. Each group is a
+  vertical stack of its priority chain, top-to-bottom = highest to
+  lowest priority. Drag within a group reorders priority (hits
+  `PATCH /admin/api/v1/llm/assignments/reorder`). Drag between groups
+  is disallowed (a row belongs to one capability).
+- **Hover and selection.**
+  - Hover a provider card → every model offered by that provider and
+    every assignment that resolves through it highlights; everything
+    else dims. Same for hover on a model or an assignment.
+  - Click any card → inline edit drawer on the right. Escape or
+    clicking the backdrop closes it.
+- **Validation feedback.**
+  - Capabilities with no enabled assignment chain render a red
+    "unassigned" pill at the top of their group.
+  - Assignments whose `provider_model` fails the
+    `required_capabilities` check render with a red outline and a
+    hover tooltip listing the missing tags.
+  - Pricing rows flagged `price_source_override = 'none'` show a
+    small "manual" chip; stale (`price_last_synced_at > 14 days` for
+    an unpinned row) show a "stale" chip.
+- **Prompt library** lives as a secondary action in the page header —
+  "Prompts" opens a slide-over with one row per capability, its
+  version, and whether it's currently customised (different body than
+  `default_hash`). Editing a prompt opens the revision history.
+- **Keyboard.** Global `/` focuses the filter input (filters every
+  column at once). `N` on a focused column opens "Add" for that
+  column. `Esc` closes the drawer. `j/k` navigates cards within a
+  column.
+
+Gated by `deployment.llm.view` (read) and `deployment.llm.edit`
+(write), §05. Workspace owners and managers never see this page — the
+settings tile on `/settings` keeps the existing "Agent usage — N%"
+summary only (§ "Visible surfaces").
 
 ## Redaction / PII
 
@@ -535,9 +892,56 @@ A redaction layer sits between the domain and the `LLMClient`:
 - Household can turn on **strict** mode, which adds a small local
   classifier step (deferred to a plug-in; not in v1 critical path).
 
-Every `llm_call` row stores both the **redacted** payload sent and
-the response received. Original values are never stored on `llm_call`.
-Retention: 90 days by default, configurable per workspace (§02).
+Every `llm_call` row stores the **redacted** payload sent and the
+response received. Original values are never stored on `llm_call`.
+
+```
+llm_call
+├── id                       ULID PK
+├── correlation_id           ULID                -- ties related calls across a logical operation
+├── workspace_id             ULID FK             -- for the rolling 30d envelope; null for deployment calls
+├── capability               text
+├── assignment_id            ULID FK llm_assignment ON DELETE SET NULL   -- which chain rung served the call
+├── provider_model_id        ULID FK llm_provider_model ON DELETE SET NULL
+├── prompt_template_id       ULID FK llm_prompt_template ON DELETE SET NULL
+├── prompt_version           int                                        -- snapshot at call time
+├── fallback_attempts        int                                        -- 0 = primary succeeded
+├── model_used               text                                       -- denormalised api_model_id
+├── input_tokens             int
+├── output_tokens            int
+├── latency_ms               int
+├── success                  bool
+├── finish_reason            text?                                      -- stop | length | safety | tool_call | error
+├── error_message            text?
+├── cost_usd                 numeric(10,6)
+├── redacted_prompt_json     jsonb                                      -- what left the client
+├── redacted_response_json   jsonb                                      -- what came back
+├── raw_response_json        jsonb?                                     -- un-redacted provider body; see below
+├── raw_response_expires_at  tstz?                                      -- short TTL; swept by worker
+├── actor_user_id            ULID FK users?
+├── agent_token_id           ULID FK api_token?
+└── created_at               tstz
+```
+
+Immutability: `llm_call` rows never update or delete in normal flow —
+inserts only. The only modification is the worker's nightly sweep
+that nulls out `raw_response_json` / `raw_response_expires_at` once
+the TTL passes.
+
+**`raw_response_json`** is the un-redacted provider body kept for
+debugging (inspecting tool-call traces, reasoning tokens, seeds,
+finish-reason edge cases). It is written only when the deployment
+setting `llm.keep_raw_responses = true` (default: true on dev, false
+on prod), the corresponding `raw_response_expires_at` defaults to
+`now() + 7 days`, and a worker sweep nulls both columns once the TTL
+passes. Accessing it requires `deployment.llm.view`; it never appears
+in workspace-scoped API responses. This replaces the Redis-backed
+debug log used in fj2 — everything lives in the DB with a TTL sweep,
+no extra service.
+
+**Retention:** `llm_call` itself keeps its redacted body for 90 days
+by default, configurable per workspace (§02). `raw_response_json` is
+separate, shorter-lived, and controlled by the settings above.
 
 ## Agent audit trail
 
@@ -800,9 +1204,12 @@ v1 members:
 - `crewday admin budget show` — prints the current cap, the rolling
   30-day cost, and the percent used for one workspace or all of
   them.
-- `crewday admin budget reload-pricing` — re-reads
-  `app/config/llm_pricing.yml` without restarting the process. Used
-  after bumping per-1k-token prices in a config change.
+- `crewday admin llm sync-pricing` — triggers the OpenRouter pricing
+  sync on demand (same plumbing as the weekly worker job in § "Price
+  sync"). Prints per-row deltas and exits non-zero on network error.
+  Replaces the earlier `budget reload-pricing` verb; the on-disk
+  `llm_pricing.yml` file is retired in favour of the DB
+  (`llm_provider_model.input_cost_per_million` etc).
 
 The agent-approval flow (§11) does not apply here because there is
 no request for the middleware to intercept. The operator audits
@@ -1034,25 +1441,25 @@ For users whose workspace / work-engagement settings enable chat.
 ## Cost tracking
 
 Every LLM call writes to `llm_call` with the provider's reported
-`usage.total_tokens` and an estimated USD cost from the **pricing
-table** (§ "Pricing table" below). The background worker aggregates
-these rows into the rolling meter used by the **workspace usage
-budget** (§ "Workspace usage budget" below) and into the per-capability
-daily breakdowns on the LLM settings page. The per-capability
-`model_assignment.budget_json` caps (per-call max tokens, per-day
-USD, per-minute reqs) are enforced in the client; the workspace
-rolling cap is enforced before that, as an envelope over every
-capability.
+`usage.total_tokens` and an estimated USD cost computed from the
+serving `llm_provider_model` row's per-million prices (§ "Price sync"
+keeps them current). The background worker aggregates these rows into
+the rolling meter used by the **workspace usage budget** (§ "Workspace
+usage budget" below) and into the per-capability daily breakdowns on
+the `/admin/llm` page. Per-call `max_tokens` caps live on the
+assignment / provider-model / model cascade; the workspace envelope is
+enforced before the client picks a chain rung, as an envelope over
+every capability.
 
 ## Workspace usage budget
 
-One layer above the existing per-capability `model_assignment.budget_json`
-caps: a **workspace-wide rolling dollar budget** that envelopes every
-LLM capability charged to the workspace. The per-capability caps stay
-— they remain useful to throttle a single noisy capability — but the
-product-level question "how much is this household spending on agents?"
-is answered by this envelope, and so is the "stop me before I
-overspend" guard.
+One layer above the per-capability daily dollar caps (enforced on the
+aggregated `llm_call` totals): a **workspace-wide rolling dollar
+budget** that envelopes every LLM capability charged to the workspace.
+The per-capability caps stay — they remain useful to throttle a single
+noisy capability — but the product-level question "how much is this
+household spending on agents?" is answered by this envelope, and so is
+the "stop me before I overspend" guard.
 
 ### Meter
 
@@ -1143,16 +1550,17 @@ the workspace id, the capability, and the projected overshoot.
 Refusals do not hit `audit_log` — they are operational telemetry, not
 state changes.
 
-### Pricing table
+### Pricing source
 
-Per-model USD cost per 1k input and output tokens, kept in a YAML
-file (`app/config/llm_pricing.yml`) baked into the image. Loaded at
-process start; hot-reloadable via `crewday admin budget reload-pricing`.
-An unknown `model_id` in the pricing table falls back to
-`(input_per_1k, output_per_1k) = (0.0, 0.0)` **and** logs a
-`WARNING` every call. A free-tier model (`:free` suffix on
-OpenRouter) is priced at zero — the meter still records the call for
-telemetry but the cost contribution is zero.
+Per-model USD cost per 1 M input and output tokens lives on
+`llm_provider_model` (§ "Provider / model / provider-model registry")
+and is kept current by the weekly `sync_llm_pricing` job (§ "Price
+sync"). An admin who pins a row (`price_source_override = 'none'`)
+becomes the price authority for that combo. An unknown `api_model_id`
+at call time falls back to `(input, output) = (0.0, 0.0)` per-million
+**and** logs a `WARNING` every call. A free-tier model (`:free`
+suffix on OpenRouter) is priced at zero — the meter still records
+the call for telemetry but the cost contribution is zero.
 
 ### Visible surfaces
 
@@ -1166,13 +1574,15 @@ telemetry but the cost contribution is zero.
     maths keeps the precise ratio for the at-cap decision.
   - Accessible to every user whose grant role passes the existing
     `settings.view` action (owners and managers by default; §05).
-- **Admin LLM page** (`/admin/llm`). Dollar amounts, token counts,
-  per-capability spend, per-workspace spend, provider keys, the
-  default model per capability, and the pricing table all live
-  here. Gated by `deployment.llm.view` / `deployment.llm.edit`
-  (§05). This is the sole operator-visibility surface for LLM
-  internals in v1; it replaces the per-workspace `/settings/llm`
-  page from the earlier design.
+- **Admin LLM page** (`/admin/llm`). The three-column graph
+  (providers → models → assignments) plus the prompt-library
+  slide-over, dollar amounts, token counts, per-capability spend,
+  per-workspace spend, provider key status, and the sync-pricing
+  trigger all live here (§ "LLM graph admin"). Gated by
+  `deployment.llm.view` / `deployment.llm.edit` (§05). This is the
+  sole operator-visibility surface for LLM internals in v1; it
+  replaces the per-workspace `/settings/llm` page from the earlier
+  design.
 - **Worker PWA.** No usage surface. Workers see only the at-cap
   banner inside the chat tab on refusal.
 
@@ -1203,14 +1613,14 @@ See §16 for deployment wiring and §24 for the demo-side UX.
 ## Cost tracking — extended
 
 Every LLM call still writes to `llm_call` with the provider's reported
-`usage.total_tokens` and the pricing-table cost estimate. The
-background worker aggregates daily totals; the owner/manager
-`/settings/llm` page still shows rolling 30-day LLM spend per
-capability and per model (dollars visible here — see "Visible
-surfaces" above). The per-capability `budget_json` caps remain a
-useful throttle on a single noisy capability; they run **before** the
-workspace envelope check so the capability-level error is preserved
-for observability.
+`usage.total_tokens` and the cost estimate computed from the serving
+`llm_provider_model`. The background worker aggregates daily totals
+into `llm_usage_daily` (one row per `(day, workspace_id, capability,
+provider_model_id)`), which powers the per-capability breakdowns on
+the `/admin/llm` page and the rolling 30-day meter. The per-capability
+daily dollar caps remain a useful throttle on a single noisy
+capability; they run **after** the workspace envelope check so the
+workspace-level refusal wins when both would fire.
 
 ## Failure modes
 
@@ -1221,8 +1631,9 @@ for observability.
   `Retry-After` header.
 - Content refused / unsafe: return an empty structured output; log
   `finish_reason`; caller surfaces a neutral fallback.
-- Per-capability `budget_json` daily cap exceeded: 429 with
-  explanation; that capability pauses until UTC midnight.
+- Per-capability daily dollar cap exceeded (aggregate over
+  `llm_call.cost_usd` for that capability on the current UTC day):
+  429 with explanation; that capability pauses until UTC midnight.
 - **Workspace usage budget exceeded** (see "Workspace usage budget"):
   the client refuses the call before it leaves with the structured
   `budget_exceeded` error shape; the agent surfaces a neutral "Agents
@@ -1241,3 +1652,17 @@ for observability.
   relevant rows per capability).
 - Autonomous long-running agent loops hosted in-process. Agents run
   elsewhere and call the API.
+- Native Anthropic / OpenAI / Z.AI SDK adapters. v1 reaches every
+  provider through the OpenAI-compatible shape (including OpenRouter
+  and self-hosted gateways). Adapters can land later without
+  schema changes — `llm_provider.provider_type` is an open enum.
+- `image_generation` and `embedding` capability tags. Neither has
+  a shipping consumer; both join the closed capability enum the
+  day one does.
+- Auto-import of models from OpenRouter's `/models` endpoint. The
+  weekly sync touches prices only; the model catalogue is curated by
+  hand via `/admin/llm`.
+- A Redis dependency. Rolling meter, daily summaries, and
+  `raw_response_json` all live in the DB with worker-driven TTL
+  sweeps. If a deployment grows past SQLite's comfort, the migration
+  is Postgres, not Redis.

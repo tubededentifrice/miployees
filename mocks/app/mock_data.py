@@ -292,14 +292,43 @@ class PropertyWorkspace:
     """A property can belong to more than one workspace (§02).
 
     `membership_role` says how the workspace relates to the property.
+    `share_guest_identity` widens the §15 cross-workspace PII boundary
+    so a managed/observer workspace sees the guest name / contact that
+    would otherwise be redacted; defaults to False.
     """
 
     property_id: str
     workspace_id: str
     membership_role: Literal["owner_workspace", "managed_workspace", "observer_workspace"]
+    share_guest_identity: bool = False
+    invite_id: str | None = None
     added_at: datetime = field(default_factory=lambda: datetime(2026, 1, 1))
     added_by_user_id: str | None = None
-    added_via: Literal["user", "agent", "system"] = "user"
+    added_via: Literal["invite_accept", "system", "seed"] = "seed"
+
+
+@dataclass
+class PropertyWorkspaceInvite:
+    """§22 two-sided invite used to materialise a non-owner
+    `property_workspace` row. Owner workspace creates the invite, the
+    target workspace's owners accept via the token URL, and only then
+    the `property_workspace` junction row is written.
+    """
+
+    id: str
+    token: str
+    from_workspace_id: str
+    property_id: str
+    proposed_membership_role: Literal["managed_workspace", "observer_workspace"]
+    created_by_user_id: str
+    to_workspace_id: str | None = None
+    initial_share_settings: dict = field(default_factory=lambda: {"share_guest_identity": False})
+    state: Literal["pending", "accepted", "rejected", "revoked", "expired"] = "pending"
+    created_at: datetime = field(default_factory=lambda: datetime(2026, 4, 10))
+    expires_at: datetime = field(default_factory=lambda: datetime(2026, 4, 24))
+    decided_at: datetime | None = None
+    decided_by_user_id: str | None = None
+    decision_note_md: str | None = None
 
 
 # Legacy alias kept for the web UI's "/api/v1/roles" shape (WorkRole
@@ -528,6 +557,9 @@ class Schedule:
     duration_minutes: int
     active_from: date
     paused: bool = False
+    # §06 Ordered fallback list the assignment algorithm tries before
+    # the generic candidate pool when the primary is unavailable.
+    backup_assignee_user_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -595,6 +627,12 @@ class PaySlip:
 
 @dataclass
 class ModelAssignment:
+    """Legacy shape kept for downstream pages that still read the flat row.
+
+    The /admin/llm graph uses `LlmAssignment` (see below); this dataclass is
+    derived from the same seed data at module load time.
+    """
+
     capability: str
     description: str
     provider: str
@@ -615,6 +653,106 @@ class LLMCall:
     cost_cents: int
     latency_ms: int
     status: Literal["ok", "error", "redacted_block"]
+    # §11 "Cost tracking": the new FKs and chain depth. Nullable so legacy
+    # rows still render.
+    assignment_id: str | None = None
+    provider_model_id: str | None = None
+    prompt_template_id: str | None = None
+    prompt_version: int | None = None
+    fallback_attempts: int = 0
+    raw_response_available: bool = False
+
+
+# ---------------------------------------------------------------------------
+# §11 — provider / model / provider-model registry (deployment-scope).
+# The three-column graph on /admin/llm reads these dataclasses directly.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LlmProvider:
+    id: str
+    name: str
+    provider_type: Literal["openrouter", "openai_compatible", "fake"]
+    endpoint: str
+    api_key_ref: str | None
+    api_key_status: Literal["present", "missing", "rotating"]
+    default_model: str | None
+    requests_per_minute: int
+    timeout_s: int
+    priority: int
+    is_enabled: bool
+
+
+@dataclass
+class LlmModel:
+    id: str
+    canonical_name: str
+    display_name: str
+    vendor: str
+    capabilities: list[str]                    # chat, vision, audio_input, reasoning, function_calling, json_mode, streaming
+    context_window: int | None
+    max_output_tokens: int | None
+    price_source: Literal["openrouter", "manual", ""]
+    price_source_model_id: str | None
+    is_active: bool
+    notes: str | None = None
+
+
+@dataclass
+class LlmProviderModel:
+    id: str
+    provider_id: str
+    model_id: str
+    api_model_id: str
+    input_cost_per_million: float
+    output_cost_per_million: float
+    max_tokens_override: int | None
+    temperature_override: float | None
+    supports_system_prompt: bool
+    supports_temperature: bool
+    reasoning_effort: Literal["", "low", "medium", "high"]
+    price_source_override: Literal["", "none", "openrouter"]
+    price_last_synced_at: str | None
+    is_enabled: bool
+
+
+@dataclass
+class LlmAssignment:
+    id: str
+    capability: str
+    description: str
+    priority: int                              # 0 = primary, 1 = first fallback, ...
+    provider_model_id: str
+    max_tokens: int | None
+    temperature: float | None
+    extra_api_params: dict[str, Any]
+    required_capabilities: list[str]
+    is_enabled: bool
+    last_used_at: str | None
+    # Observability — denormalised for the admin graph
+    spend_usd_30d: float
+    calls_30d: int
+
+
+@dataclass
+class LlmCapabilityInheritance:
+    capability: str                            # child
+    inherits_from: str                         # parent
+
+
+@dataclass
+class LlmPromptTemplate:
+    id: str
+    capability: str
+    name: str
+    version: int
+    is_active: bool
+    is_customised: bool                        # true when body hash ≠ default_hash
+    default_hash: str
+    updated_at: str
+    revisions_count: int
+    preview: str                               # first 160 chars of the current body
 
 
 @dataclass
@@ -1009,6 +1147,10 @@ class VendorInvoice:
     paid_at: datetime | None = None
     paid_by_user_id: str | None = None
     decision_note: str | None = None
+    # §22 Proof-of-payment + reminders
+    proof_of_payment_file_ids: list[str] = field(default_factory=list)
+    reminder_last_sent_at: datetime | None = None
+    reminder_next_due_at: datetime | None = None
 
 
 # ── Canonical starter data ───────────────────────────────────────────
@@ -1974,6 +2116,35 @@ TEMPLATES: list[TaskTemplate] = [
                  90, "any", "disabled", "high"),
     TaskTemplate("tpl-garden", "Garden upkeep", "Mow, trim, water — as needed.", "Gardener",
                  60, "one", "optional", "low"),
+    # §06 Checklist template shape — one coherent maintenance template
+    # whose items carry per-item RRULEs so one weekly schedule
+    # generates the right work for each visit without splitting the
+    # regime across three parent schedules.
+    TaskTemplate("tpl-home-maint", "Home maintenance — Villa du Lac",
+                 "Recurring maintenance regime. Items appear on each Monday visit "
+                 "based on their individual RRULE.",
+                 "Housekeeper",
+                 45, "one", "optional", "normal",
+                 checklist=[
+                     # No RRULE → appears every visit.
+                     {"key": "counters",       "label": "Wipe counters and surfaces",
+                      "required": True},
+                     # Monthly — 1st Monday.
+                     {"key": "clean_fridge",   "label": "Clean fridge (interior)",
+                      "required": True,
+                      "rrule": "FREQ=MONTHLY;BYDAY=1MO",
+                      "dtstart_local": "2026-01-05"},
+                     # Every 2 weeks, anchored to the schedule's dtstart.
+                     {"key": "clean_filter",   "label": "Clean air purifier filter",
+                      "required": False,
+                      "rrule": "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO",
+                      "dtstart_local": "2026-01-05"},
+                     # Every 6 months.
+                     {"key": "replace_filter", "label": "Replace air purifier filter",
+                      "required": True,
+                      "rrule": "FREQ=MONTHLY;INTERVAL=6;BYDAY=1MO",
+                      "dtstart_local": "2026-01-05"},
+                 ]),
 ]
 
 
@@ -1981,11 +2152,20 @@ SCHEDULES: list[Schedule] = [
     Schedule("sch-pool-sat", "Villa Sud pool — Saturdays 09:00", "tpl-pool-weekly",
              "p-villa-sud", "Every Saturday at 09:00", "e-ben", 30, date(2024, 4, 1)),
     Schedule("sch-linen-mon-thu", "Villa Sud linen — Mon & Thu 10:30", "tpl-linen-change",
-             "p-villa-sud", "Weekly on Mon, Thu at 10:30", "e-maria", 25, date(2024, 3, 1)),
+             "p-villa-sud", "Weekly on Mon, Thu at 10:30", "e-maria", 25, date(2024, 3, 1),
+             # §06 Ordered backups: if Maria is on leave, try Ana before falling
+             # back to the generic candidate pool.
+             backup_assignee_user_ids=["u-ana"]),
     Schedule("sch-garden-sat", "Villa Sud garden — Saturdays 08:00", "tpl-garden",
              "p-villa-sud", "Every Saturday at 08:00", "e-ben", 60, date(2024, 4, 1), paused=True),
     Schedule("sch-apt-turnover", "Apt 3B turnover (auto from stays)", "tpl-turnover",
              "p-apt-3b", "Triggered by stay check-out", "e-ana", 120, date(2025, 1, 1)),
+    # §06 "Checklist template shape" — home-maintenance template whose
+    # checklist items carry per-item RRULEs (fridge monthly, filter
+    # bi-weekly, filter replaced every 6 months). See tpl-home-maint.
+    Schedule("sch-home-maint-mon", "Villa du Lac maintenance — Mondays 10:00", "tpl-home-maint",
+             "p-villa-lac", "Every Monday at 10:00", "u-joselyn", 45, date(2026, 1, 5),
+             backup_assignee_user_ids=[]),
 ]
 
 
@@ -2080,32 +2260,348 @@ PAYSLIPS: list[PaySlip] = [
 ]
 
 
-LLM_ASSIGNMENTS: list[ModelAssignment] = [
-    ModelAssignment("tasks.nl_intake",    "Parse free-text into task/template/schedule drafts",      "openrouter", "google/gemma-4-31b-it", True,  1.50, 0.22,  18),
-    ModelAssignment("tasks.assist",       "Staff chat assistant: explain an instruction, etc.",      "openrouter", "google/gemma-4-31b-it", True,  2.00, 0.41,  32),
-    ModelAssignment("digest.manager",     "Morning manager digest composition",                      "openrouter", "anthropic/claude-haiku-4-5", True, 0.50, 0.08, 2),
-    ModelAssignment("digest.employee",    "Morning employee digest composition",                     "openrouter", "google/gemma-4-31b-it", True,  0.50, 0.10,  5),
-    ModelAssignment("anomaly.detect",     "Compare recent completions to schedule and flag issues",  "openrouter", "google/gemma-4-31b-it", True,  0.75, 0.00,  0),
-    ModelAssignment("expenses.autofill",  "OCR + structure a receipt image",                         "openrouter", "google/gemma-4-31b-it", True,  1.00, 0.31,  12),
-    ModelAssignment("instructions.draft", "Suggest an instruction from a conversation",              "openrouter", "google/gemma-4-31b-it", True,  0.50, 0.02,  1),
-    ModelAssignment("issue.triage",       "Classify severity/category of a reported issue",          "openrouter", "google/gemma-4-31b-it", True,  0.25, 0.01,  3),
-    ModelAssignment("stay.summarize",     "Summarize a stay for a guest welcome blurb",              "openrouter", "google/gemma-4-31b-it", True,  0.25, 0.00,  0),
-    ModelAssignment("voice.transcribe",   "Turn a voice note into text",                             "—",          "(unassigned)",           False, 0.00, 0.00,  0),
-    ModelAssignment("chat.manager",      "Manager-side embedded agent (full manager tool surface)",  "openrouter", "google/gemma-4-31b-it", True,  3.00, 0.55,  14),
-    ModelAssignment("chat.employee",     "Employee-side embedded agent (full employee tool surface)","openrouter", "google/gemma-4-31b-it", True,  2.00, 0.38,  28),
-    ModelAssignment("chat.compact",      "Summarize resolved chat topics (hourly compaction)",       "openrouter", "google/gemma-4-31b-it", True,  0.50, 0.04,  2),
-    ModelAssignment("chat.detect_language","Detect message language for auto-translation",           "openrouter", "google/gemma-4-31b-it", True,  0.25, 0.02,  8),
-    ModelAssignment("chat.translate",    "Translate message to workspace default language",          "openrouter", "google/gemma-4-31b-it", True,  0.50, 0.06,  6),
+# ---------------------------------------------------------------------------
+# Graph seed — providers / models / provider-models.
+# The /admin/llm page renders these as three columns with hover-linked edges.
+# ---------------------------------------------------------------------------
+
+
+LLM_PROVIDERS: list[LlmProvider] = [
+    LlmProvider(
+        id="prov-openrouter",
+        name="OpenRouter",
+        provider_type="openrouter",
+        endpoint="https://openrouter.ai/api/v1",
+        api_key_ref="envelope:llm:openrouter:default",
+        api_key_status="present",
+        default_model="google/gemma-3-27b-it",
+        requests_per_minute=60,
+        timeout_s=60,
+        priority=0,
+        is_enabled=True,
+    ),
+    LlmProvider(
+        id="prov-openai-compat",
+        name="OpenAI-compatible fallback",
+        provider_type="openai_compatible",
+        endpoint="",
+        api_key_ref=None,
+        api_key_status="missing",
+        default_model=None,
+        requests_per_minute=60,
+        timeout_s=60,
+        priority=1,
+        is_enabled=False,
+    ),
 ]
 
 
+LLM_MODELS: list[LlmModel] = [
+    LlmModel(
+        id="mdl-gemma-3-27b-it",
+        canonical_name="google/gemma-3-27b-it",
+        display_name="Gemma 3 27B IT",
+        vendor="google",
+        capabilities=["chat", "vision", "json_mode", "function_calling", "streaming"],
+        context_window=128_000,
+        max_output_tokens=8192,
+        price_source="openrouter",
+        price_source_model_id=None,
+        is_active=True,
+    ),
+    LlmModel(
+        id="mdl-gemma-3-27b-it-free",
+        canonical_name="google/gemma-3-27b-it:free",
+        display_name="Gemma 3 27B IT (free tier)",
+        vendor="google",
+        capabilities=["chat", "vision", "json_mode", "streaming"],
+        context_window=128_000,
+        max_output_tokens=4096,
+        price_source="openrouter",
+        price_source_model_id=None,
+        is_active=True,
+        notes="Demo-deployment default; rate-limited by OpenRouter.",
+    ),
+    LlmModel(
+        id="mdl-haiku-4-5",
+        canonical_name="anthropic/claude-haiku-4-5",
+        display_name="Claude Haiku 4.5",
+        vendor="anthropic",
+        capabilities=["chat", "vision", "json_mode", "function_calling", "streaming"],
+        context_window=200_000,
+        max_output_tokens=8192,
+        price_source="openrouter",
+        price_source_model_id=None,
+        is_active=True,
+    ),
+    LlmModel(
+        id="mdl-qwen3-32b",
+        canonical_name="qwen/qwen3-32b-instruct",
+        display_name="Qwen 3 32B Instruct",
+        vendor="qwen",
+        capabilities=["chat", "json_mode", "function_calling", "streaming"],
+        context_window=131_072,
+        max_output_tokens=8192,
+        price_source="openrouter",
+        price_source_model_id=None,
+        is_active=True,
+    ),
+    LlmModel(
+        id="mdl-gpt-4o-mini",
+        canonical_name="openai/gpt-4o-mini",
+        display_name="GPT-4o mini",
+        vendor="openai",
+        capabilities=["chat", "vision", "json_mode", "function_calling", "streaming"],
+        context_window=128_000,
+        max_output_tokens=16_384,
+        price_source="openrouter",
+        price_source_model_id=None,
+        is_active=True,
+    ),
+    # Unassigned on purpose — shows the "no audio-input model assigned yet" UX.
+    LlmModel(
+        id="mdl-whisper-v3",
+        canonical_name="openai/whisper-large-v3",
+        display_name="Whisper Large v3",
+        vendor="openai",
+        capabilities=["audio_input"],
+        context_window=None,
+        max_output_tokens=None,
+        price_source="",
+        price_source_model_id=None,
+        is_active=False,
+        notes="Not yet wired up — voice.transcribe is disabled in v1.",
+    ),
+]
+
+
+LLM_PROVIDER_MODELS: list[LlmProviderModel] = [
+    LlmProviderModel(
+        id="pm-or-gemma-27b",
+        provider_id="prov-openrouter",
+        model_id="mdl-gemma-3-27b-it",
+        api_model_id="google/gemma-3-27b-it",
+        input_cost_per_million=0.10,
+        output_cost_per_million=0.30,
+        max_tokens_override=None,
+        temperature_override=None,
+        supports_system_prompt=True,
+        supports_temperature=True,
+        reasoning_effort="",
+        price_source_override="",
+        price_last_synced_at="2026-04-14T03:00:12Z",
+        is_enabled=True,
+    ),
+    LlmProviderModel(
+        id="pm-or-gemma-27b-free",
+        provider_id="prov-openrouter",
+        model_id="mdl-gemma-3-27b-it-free",
+        api_model_id="google/gemma-3-27b-it:free",
+        input_cost_per_million=0.0,
+        output_cost_per_million=0.0,
+        max_tokens_override=None,
+        temperature_override=None,
+        supports_system_prompt=True,
+        supports_temperature=True,
+        reasoning_effort="",
+        price_source_override="",
+        price_last_synced_at="2026-04-14T03:00:12Z",
+        is_enabled=True,
+    ),
+    LlmProviderModel(
+        id="pm-or-haiku-4-5",
+        provider_id="prov-openrouter",
+        model_id="mdl-haiku-4-5",
+        api_model_id="anthropic/claude-haiku-4-5",
+        input_cost_per_million=0.80,
+        output_cost_per_million=4.00,
+        max_tokens_override=None,
+        temperature_override=0.3,
+        supports_system_prompt=True,
+        supports_temperature=True,
+        reasoning_effort="",
+        price_source_override="",
+        price_last_synced_at="2026-04-14T03:00:12Z",
+        is_enabled=True,
+    ),
+    LlmProviderModel(
+        id="pm-or-qwen3-32b",
+        provider_id="prov-openrouter",
+        model_id="mdl-qwen3-32b",
+        api_model_id="qwen/qwen3-32b-instruct",
+        input_cost_per_million=0.12,
+        output_cost_per_million=0.35,
+        max_tokens_override=None,
+        temperature_override=None,
+        supports_system_prompt=True,
+        supports_temperature=True,
+        reasoning_effort="",
+        price_source_override="none",     # Admin has pinned this row; skipped by the sync.
+        price_last_synced_at=None,
+        is_enabled=True,
+    ),
+    LlmProviderModel(
+        id="pm-or-gpt-4o-mini",
+        provider_id="prov-openrouter",
+        model_id="mdl-gpt-4o-mini",
+        api_model_id="openai/gpt-4o-mini",
+        input_cost_per_million=0.15,
+        output_cost_per_million=0.60,
+        max_tokens_override=None,
+        temperature_override=None,
+        supports_system_prompt=True,
+        supports_temperature=True,
+        reasoning_effort="",
+        price_source_override="",
+        price_last_synced_at="2026-04-14T03:00:12Z",
+        is_enabled=True,
+    ),
+]
+
+
+# Capability catalogue — mirrors docs/specs/11 "Capability catalog".
+# Drives the "required_capabilities" validation in the graph.
+LLM_CAPABILITY_CATALOGUE: list[dict[str, Any]] = [
+    {"key": "tasks.nl_intake",      "description": "Parse free-text into task/template/schedule drafts",         "required_capabilities": ["chat", "json_mode"]},
+    {"key": "tasks.assist",         "description": "Staff chat assistant: explain an instruction, etc.",         "required_capabilities": ["chat"]},
+    {"key": "digest.manager",       "description": "Morning manager digest composition",                         "required_capabilities": ["chat"]},
+    {"key": "digest.employee",      "description": "Morning employee digest composition",                        "required_capabilities": ["chat"]},
+    {"key": "anomaly.detect",       "description": "Compare recent completions to schedule and flag issues",     "required_capabilities": ["chat", "json_mode"]},
+    {"key": "expenses.autofill",    "description": "OCR + structure a receipt image",                            "required_capabilities": ["vision", "json_mode"]},
+    {"key": "instructions.draft",   "description": "Suggest an instruction from a conversation",                 "required_capabilities": ["chat"]},
+    {"key": "issue.triage",         "description": "Classify severity/category of a reported issue",             "required_capabilities": ["chat", "json_mode"]},
+    {"key": "stay.summarize",       "description": "Summarize a stay for a guest welcome blurb",                 "required_capabilities": ["chat"]},
+    {"key": "voice.transcribe",     "description": "Turn a voice note into text",                                "required_capabilities": ["audio_input"]},
+    {"key": "chat.manager",         "description": "Manager-side embedded agent (full manager tool surface)",    "required_capabilities": ["chat", "function_calling"]},
+    {"key": "chat.employee",        "description": "Employee-side embedded agent (full employee tool surface)",  "required_capabilities": ["chat", "function_calling"]},
+    {"key": "chat.admin",           "description": "Deployment-admin embedded agent (full admin tool surface)",  "required_capabilities": ["chat", "function_calling"]},
+    {"key": "chat.compact",         "description": "Summarize resolved chat topics (hourly compaction)",         "required_capabilities": ["chat"]},
+    {"key": "chat.detect_language", "description": "Detect message language for auto-translation",               "required_capabilities": ["chat", "json_mode"]},
+    {"key": "chat.translate",       "description": "Translate message to workspace default language",            "required_capabilities": ["chat"]},
+]
+
+
+LLM_CAPABILITY_INHERITANCE: list[LlmCapabilityInheritance] = [
+    LlmCapabilityInheritance(capability="chat.admin", inherits_from="chat.manager"),
+]
+
+
+LLM_ASSIGNMENTS_GRAPH: list[LlmAssignment] = [
+    # Primary assignments + a sprinkling of fallbacks. chat.admin has no row
+    # of its own — it flows through the inheritance edge to chat.manager.
+    LlmAssignment("as-nl",       "tasks.nl_intake",      "Parse free-text into task/template/schedule drafts",     0, "pm-or-gemma-27b",     None, 0.2, {}, ["chat", "json_mode"],        True, "2026-04-18T09:54:11Z", 6.60, 540),
+    LlmAssignment("as-assist",   "tasks.assist",         "Staff chat assistant",                                   0, "pm-or-gemma-27b",     None, 0.3, {}, ["chat"],                     True, "2026-04-18T09:58:03Z", 12.30, 960),
+    LlmAssignment("as-digest-m", "digest.manager",       "Morning manager digest (primary)",                       0, "pm-or-haiku-4-5",     None, 0.3, {}, ["chat"],                     True, "2026-04-18T06:02:00Z", 2.40, 60),
+    LlmAssignment("as-digest-mf","digest.manager",       "Fallback when Haiku is rate-limited",                    1, "pm-or-gemma-27b",     None, 0.3, {}, ["chat"],                     True, None,                     0.00, 0),
+    LlmAssignment("as-digest-e", "digest.employee",      "Morning employee digest",                                0, "pm-or-gemma-27b",     None, 0.3, {}, ["chat"],                     True, "2026-04-18T06:04:42Z", 3.00, 150),
+    LlmAssignment("as-anomaly",  "anomaly.detect",       "Anomaly candidate ranker",                               0, "pm-or-qwen3-32b",     None, 0.1, {}, ["chat", "json_mode"],        True, "2026-04-17T23:02:11Z", 0.00, 0),
+    LlmAssignment("as-exp",      "expenses.autofill",    "Receipt OCR + structure",                                0, "pm-or-gemma-27b",     None, 0.2, {}, ["vision", "json_mode"],      True, "2026-04-18T08:54:01Z", 9.30, 360),
+    LlmAssignment("as-instr",    "instructions.draft",   "Instruction suggestion",                                 0, "pm-or-gemma-27b",     None, 0.4, {}, ["chat"],                     True, "2026-04-17T14:20:11Z", 0.60, 30),
+    LlmAssignment("as-issue",    "issue.triage",         "Severity/category classifier",                           0, "pm-or-gemma-27b",     None, 0.1, {}, ["chat", "json_mode"],        True, "2026-04-18T08:06:30Z", 0.30, 90),
+    LlmAssignment("as-stay",     "stay.summarize",       "Guest welcome blurb",                                    0, "pm-or-gemma-27b",     None, 0.4, {}, ["chat"],                     True, None,                     0.00, 0),
+    LlmAssignment("as-chat-m",   "chat.manager",         "Manager embedded agent",                                 0, "pm-or-gemma-27b",     None, 0.2, {}, ["chat", "function_calling"],  True, "2026-04-18T10:06:44Z", 16.50, 420),
+    LlmAssignment("as-chat-mf",  "chat.manager",         "Fallback model when upstream 5xx's",                     1, "pm-or-gpt-4o-mini",   None, 0.2, {}, ["chat", "function_calling"],  True, None,                     0.00, 0),
+    LlmAssignment("as-chat-e",   "chat.employee",        "Worker embedded agent",                                  0, "pm-or-gemma-27b",     None, 0.2, {}, ["chat", "function_calling"],  True, "2026-04-18T09:41:22Z", 11.40, 840),
+    LlmAssignment("as-compact",  "chat.compact",         "Topic compaction",                                       0, "pm-or-gemma-27b",     None, 0.2, {}, ["chat"],                      True, "2026-04-18T01:00:00Z", 1.20, 60),
+    LlmAssignment("as-detect",   "chat.detect_language", "Message language detection",                             0, "pm-or-gemma-27b",     None, 0.0, {}, ["chat", "json_mode"],         True, "2026-04-18T10:01:11Z", 0.60, 240),
+    LlmAssignment("as-translate","chat.translate",       "Message translation",                                    0, "pm-or-gemma-27b",     None, 0.3, {}, ["chat"],                      True, "2026-04-18T09:30:18Z", 1.80, 180),
+    # voice.transcribe has no assignment — graph shows "unassigned" pill.
+]
+
+
+LLM_PROMPT_TEMPLATES: list[LlmPromptTemplate] = [
+    LlmPromptTemplate("pt-nl",        "tasks.nl_intake",      "Tasks NL intake",         2, True, True,  "a01f2e", "2026-04-10T11:02:00Z", 1,
+                      "You convert natural-language household requests into structured task drafts. Prefer conservative assumptions and surface ambiguities..."),
+    LlmPromptTemplate("pt-assist",    "tasks.assist",         "Tasks assistant",         1, True, False, "b12e3d", "2026-03-01T14:18:00Z", 0,
+                      "You are the staff chat assistant. Answer concisely about the current user's shift, tasks, and instructions..."),
+    LlmPromptTemplate("pt-digest-m",  "digest.manager",       "Manager digest",          1, True, False, "c93a41", "2026-03-02T07:20:00Z", 0,
+                      "Compose a short manager digest from the structured data block. Never invent numbers; if the data is empty, say so..."),
+    LlmPromptTemplate("pt-digest-e",  "digest.employee",      "Employee digest",         1, True, False, "d72b55", "2026-03-02T07:20:00Z", 0,
+                      "Compose the worker's morning digest. Warm tone, one short paragraph, end with the top three tasks for the day..."),
+    LlmPromptTemplate("pt-anomaly",   "anomaly.detect",       "Anomaly ranker",          1, True, False, "e51c72", "2026-03-04T09:00:00Z", 0,
+                      "Rank candidate anomalies by severity. Return a JSON list with {subject_id, kind, one_line_explanation}..."),
+    LlmPromptTemplate("pt-exp",       "expenses.autofill",    "Receipt OCR",             3, True, True,  "f44d89", "2026-04-12T16:40:00Z", 2,
+                      "Extract vendor, amount_minor, currency, date, and category from the receipt image. Return JSON matching the schema..."),
+    LlmPromptTemplate("pt-instr",     "instructions.draft",   "Instruction drafter",     1, True, False, "11aabb", "2026-03-05T10:00:00Z", 0,
+                      "From the manager-worker exchange, propose a crisp instruction with optional photo-evidence flag..."),
+    LlmPromptTemplate("pt-issue",     "issue.triage",         "Issue triage",            1, True, False, "22bbcc", "2026-03-05T10:00:00Z", 0,
+                      "Classify the reported issue. Return JSON with {category, severity ∈ {low,medium,high}, suggested_owner_role}..."),
+    LlmPromptTemplate("pt-stay",      "stay.summarize",       "Stay summariser",         1, True, False, "33ccdd", "2026-03-05T10:00:00Z", 0,
+                      "Draft a warm, factual welcome blurb for the upcoming stay. Use only the data provided..."),
+    LlmPromptTemplate("pt-chat-m",    "chat.manager",         "Manager embedded agent",  2, True, True,  "44ddee", "2026-04-11T18:32:00Z", 1,
+                      "You are the manager's embedded agent. You hold a delegated token with the caller's full authority..."),
+    LlmPromptTemplate("pt-chat-e",    "chat.employee",        "Worker embedded agent",   1, True, False, "55eeff", "2026-03-07T11:00:00Z", 0,
+                      "You are the worker's embedded agent. Answer in the caller's language, one short paragraph per reply..."),
+    LlmPromptTemplate("pt-compact",   "chat.compact",         "Topic compactor",         1, True, False, "66ff00", "2026-03-07T11:00:00Z", 0,
+                      "Summarise the resolved topic in one system-kind message. Preserve numbers, dates, and decisions verbatim..."),
+    LlmPromptTemplate("pt-detect",    "chat.detect_language", "Language detector",       1, True, False, "778800", "2026-03-07T11:00:00Z", 0,
+                      "Return JSON {language: ISO-639-1 code} for the provided message..."),
+    LlmPromptTemplate("pt-translate", "chat.translate",       "Message translator",      1, True, False, "889900", "2026-03-07T11:00:00Z", 0,
+                      "Translate the message to {{ target_lang }}. Preserve markdown, emoji, and @mentions verbatim..."),
+]
+
+
+# Compatibility projection: the legacy flat ModelAssignment list consumed by
+# older pages. Rolls up the chain's top (priority=0) row per capability, pulls
+# pricing/enabled flags from the graph, and restates the 30d spend + call
+# counts so the existing manager surfaces keep working during the cut-over.
+def _legacy_llm_assignments() -> list[ModelAssignment]:
+    by_pm = {pm.id: pm for pm in LLM_PROVIDER_MODELS}
+    by_model = {m.id: m for m in LLM_MODELS}
+    rows: list[ModelAssignment] = []
+    seen: set[str] = set()
+    # Group by capability, pick the lowest-priority (primary) enabled row.
+    for cap in LLM_CAPABILITY_CATALOGUE:
+        key = cap["key"]
+        chain = sorted(
+            (a for a in LLM_ASSIGNMENTS_GRAPH if a.capability == key and a.is_enabled),
+            key=lambda a: a.priority,
+        )
+        if not chain:
+            rows.append(ModelAssignment(
+                capability=key, description=cap["description"],
+                provider="—", model_id="(unassigned)",
+                enabled=False, daily_budget_usd=0.0, spent_24h_usd=0.0, calls_24h=0,
+            ))
+            seen.add(key)
+            continue
+        primary = chain[0]
+        pm = by_pm[primary.provider_model_id]
+        m = by_model[pm.model_id]
+        # Daily approximations derived from the rolling-30d mock figures.
+        rows.append(ModelAssignment(
+            capability=key, description=cap["description"],
+            provider=next(p.name for p in LLM_PROVIDERS if p.id == pm.provider_id).lower().replace(" ", "_"),
+            model_id=m.canonical_name,
+            enabled=primary.is_enabled,
+            daily_budget_usd=round(primary.spend_usd_30d / 30, 2) if primary.spend_usd_30d else 0.25,
+            spent_24h_usd=round(primary.spend_usd_30d / 30, 2),
+            calls_24h=round(primary.calls_30d / 30),
+        ))
+        seen.add(key)
+    return rows
+
+
+LLM_ASSIGNMENTS: list[ModelAssignment] = _legacy_llm_assignments()
+
+
 LLM_CALLS: list[LLMCall] = [
-    LLMCall(datetime(2026, 4, 15, 10, 6, 44), "tasks.assist",      "google/gemma-4-31b-it",        1240, 310, 1, 1820, "ok"),
-    LLMCall(datetime(2026, 4, 15, 9, 47, 2),  "anomaly.detect",    "google/gemma-4-31b-it",        3100, 180, 2, 2100, "ok"),
-    LLMCall(datetime(2026, 4, 15, 9, 12, 18), "digest.manager",    "anthropic/claude-haiku-4-5",   4800, 720, 3, 3400, "ok"),
-    LLMCall(datetime(2026, 4, 15, 8, 54, 1),  "expenses.autofill", "google/gemma-4-31b-it",        980, 410, 1, 1950, "ok"),
-    LLMCall(datetime(2026, 4, 15, 8, 41, 12), "expenses.autofill", "google/gemma-4-31b-it",        1100, 390, 1, 1720, "redacted_block"),
-    LLMCall(datetime(2026, 4, 15, 8, 6, 30),  "issue.triage",      "google/gemma-4-31b-it",        620, 140, 0, 890,  "ok"),
+    LLMCall(datetime(2026, 4, 15, 10, 6, 44), "tasks.assist",      "google/gemma-3-27b-it",      1240, 310, 1, 1820, "ok",
+            assignment_id="as-assist", provider_model_id="pm-or-gemma-27b", prompt_template_id="pt-assist", prompt_version=1, raw_response_available=True),
+    LLMCall(datetime(2026, 4, 15, 9, 47, 2),  "anomaly.detect",    "qwen/qwen3-32b-instruct",    3100, 180, 2, 2100, "ok",
+            assignment_id="as-anomaly", provider_model_id="pm-or-qwen3-32b", prompt_template_id="pt-anomaly", prompt_version=1, raw_response_available=True),
+    LLMCall(datetime(2026, 4, 15, 9, 12, 18), "digest.manager",    "anthropic/claude-haiku-4-5", 4800, 720, 3, 3400, "ok",
+            assignment_id="as-digest-m", provider_model_id="pm-or-haiku-4-5", prompt_template_id="pt-digest-m", prompt_version=1, fallback_attempts=0),
+    LLMCall(datetime(2026, 4, 15, 9, 12, 4),  "digest.manager",    "anthropic/claude-haiku-4-5", 4800, 0,   0, 480,  "error",
+            assignment_id="as-digest-m", provider_model_id="pm-or-haiku-4-5", prompt_template_id="pt-digest-m", prompt_version=1, fallback_attempts=0),
+    LLMCall(datetime(2026, 4, 15, 9, 12, 4),  "digest.manager",    "google/gemma-3-27b-it",      4800, 780, 3, 2900, "ok",
+            assignment_id="as-digest-mf", provider_model_id="pm-or-gemma-27b", prompt_template_id="pt-digest-m", prompt_version=1, fallback_attempts=1),
+    LLMCall(datetime(2026, 4, 15, 8, 54, 1),  "expenses.autofill", "google/gemma-3-27b-it",      980,  410, 1, 1950, "ok",
+            assignment_id="as-exp", provider_model_id="pm-or-gemma-27b", prompt_template_id="pt-exp", prompt_version=3, raw_response_available=True),
+    LLMCall(datetime(2026, 4, 15, 8, 41, 12), "expenses.autofill", "google/gemma-3-27b-it",      1100, 390, 1, 1720, "redacted_block",
+            assignment_id="as-exp", provider_model_id="pm-or-gemma-27b", prompt_template_id="pt-exp", prompt_version=3),
+    LLMCall(datetime(2026, 4, 15, 8, 6, 30),  "issue.triage",      "google/gemma-3-27b-it",      620,  140, 0, 890,  "ok",
+            assignment_id="as-issue", provider_model_id="pm-or-gemma-27b", prompt_template_id="pt-issue", prompt_version=1),
 ]
 
 
@@ -2801,13 +3297,14 @@ VENDOR_INVOICES: list[VendorInvoice] = [
         submitted_at=datetime(2026, 4, 15, 18, 0),
     ),
     # Vincent scenario — CleanCo invoices Vincent's DupontFamily org for
-    # Joselyn's maid work at Villa du Lac.
+    # Joselyn's maid work at Villa du Lac. Approved, reminder worker
+    # already nudged the client once; next nudge queued for due_on + 1.
     VendorInvoice(
         "vi-3", currency="EUR",
         subtotal_cents=13600, tax_cents=2720, total_cents=16320,
         billed_at=date(2026, 4, 15),
         due_on=date(2026, 4, 30),
-        status="submitted",
+        status="approved",
         property_id="p-villa-lac",
         vendor_organization_id="org-cleanco",
         payout_destination_stub="•• FR-07",
@@ -2816,6 +3313,57 @@ VENDOR_INVOICES: list[VendorInvoice] = [
              "quantity": 4, "unit": "hour", "unit_price_cents": 3400, "total_cents": 13600},
         ],
         submitted_at=datetime(2026, 4, 15, 19, 0),
+        approved_at=datetime(2026, 4, 16, 9, 30),
+        decided_by_user_id="u-clementine",
+        reminder_last_sent_at=datetime(2026, 4, 27, 7, 0),
+        reminder_next_due_at=datetime(2026, 5, 1, 7, 0),
+    ),
+    # Scenario 3 — single-house owner (Bernard) paying CleanCo for
+    # Joselyn at Villa Sud on a one-off basis. Proof of payment
+    # already uploaded by the client (Bernard's account), awaiting
+    # reconciliation on the CleanCo side.
+    VendorInvoice(
+        "vi-4", currency="EUR",
+        subtotal_cents=9600, tax_cents=1920, total_cents=11520,
+        billed_at=date(2026, 4, 12),
+        due_on=date(2026, 4, 26),
+        status="approved",
+        property_id="p-villa-sud",
+        vendor_organization_id="org-cleanco",
+        payout_destination_stub="•• FR-07",
+        lines=[
+            {"kind": "labor", "description": "One-off deep clean — Villa Sud",
+             "quantity": 3, "unit": "hour", "unit_price_cents": 3200, "total_cents": 9600},
+        ],
+        submitted_at=datetime(2026, 4, 12, 18, 0),
+        approved_at=datetime(2026, 4, 13, 8, 0),
+        decided_by_user_id="u-clementine",
+        proof_of_payment_file_ids=["file-proof-vi-4"],
+        reminder_last_sent_at=datetime(2026, 4, 23, 7, 0),
+        reminder_next_due_at=None,
+    ),
+]
+
+
+# §22 Pending property_workspace invites. The owner workspace creates
+# the invite; the target workspace's owners accept. Seeded here so the
+# manager UI can render the "Sharing & client" panel with pending rows.
+PROPERTY_WORKSPACE_INVITES: list[PropertyWorkspaceInvite] = [
+    # Bernard (ws-bernard) is inviting CleanCo (ws-cleanco) to manage
+    # Villa Sud — scenario 3. The invite carries the shareable token so
+    # Bernard can copy-paste the link into a message to CleanCo.
+    PropertyWorkspaceInvite(
+        id="pwi-bernard-villa-sud",
+        token="pwi_kzaq3m5tfwprnc7x9h2yvb8sud4gejlq",
+        from_workspace_id="ws-bernard",
+        property_id="p-villa-sud",
+        to_workspace_id="ws-cleanco",
+        proposed_membership_role="managed_workspace",
+        initial_share_settings={"share_guest_identity": False},
+        state="pending",
+        created_by_user_id="u-elodie",
+        created_at=datetime(2026, 4, 17, 10, 0),
+        expires_at=datetime(2026, 5, 1, 10, 0),
     ),
 ]
 
@@ -3762,25 +4310,6 @@ class AdminWorkspaceRow:
 
 
 @dataclass
-class AdminLlmProvider:
-    key: str
-    label: str
-    url: str
-    api_key_env: str
-    status: str  # connected | error | not_configured
-    last_check_at: str | None
-    fallback: bool
-
-
-@dataclass
-class AdminLlmPricingRow:
-    model_id: str
-    input_per_1k_usd: float
-    output_per_1k_usd: float
-    is_free_tier: bool
-
-
-@dataclass
 class AdminSignupSettings:
     enabled: bool
     disposable_domains_count: int
@@ -3911,35 +4440,6 @@ DEPLOYMENT_WORKSPACES: list[AdminWorkspaceRow] = [
         cap_usd_30d=12.0, spent_usd_30d=1.20, usage_percent=10, paused=False,
         archived_at="2026-02-08", created_at="2025-09-01",
     ),
-]
-
-
-DEPLOYMENT_LLM_PROVIDERS: list[AdminLlmProvider] = [
-    AdminLlmProvider(
-        "openrouter", "OpenRouter",
-        url="https://openrouter.ai/api/v1/chat/completions",
-        api_key_env="OPENROUTER_API_KEY",
-        status="connected",
-        last_check_at="2026-04-18T08:10:03Z",
-        fallback=False,
-    ),
-    AdminLlmProvider(
-        "openai_compat", "OpenAI-compatible fallback",
-        url="(none)",
-        api_key_env="OPENAI_COMPAT_API_KEY",
-        status="not_configured",
-        last_check_at=None,
-        fallback=True,
-    ),
-]
-
-
-DEPLOYMENT_LLM_PRICING: list[AdminLlmPricingRow] = [
-    AdminLlmPricingRow("google/gemma-4-31b-it", 0.10, 0.30, False),
-    AdminLlmPricingRow("google/gemma-3-27b-it:free", 0.0, 0.0, True),
-    AdminLlmPricingRow("anthropic/claude-haiku-4-5", 0.80, 4.00, False),
-    AdminLlmPricingRow("openai/gpt-4o-mini", 0.15, 0.60, False),
-    AdminLlmPricingRow("qwen/qwen3-32b-instruct", 0.12, 0.35, False),
 ]
 
 

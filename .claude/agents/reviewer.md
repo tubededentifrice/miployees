@@ -98,6 +98,22 @@ Check:
 - [ ] Data-model changes are on the update list for
   [`docs/specs/02-domain-model.md`](../../docs/specs/02-domain-model.md).
 
+### Frontend quality (when the change touches `mocks/web/` or `app/web/`)
+
+Load `/frontend-design:frontend-design` and use it as the rubric for
+aesthetic and component-quality judgements. Check:
+
+- [ ] Semantic CSS class names (no utility/atomic classes, no inline
+  `style=""`) — see [`AGENTS.md`](../../AGENTS.md) §Application-specific
+  notes.
+- [ ] Distinctive, cohesive aesthetic — no generic AI-slop defaults
+  (purple-gradient-on-white, Inter-everywhere, cookie-cutter layouts).
+- [ ] Reuses existing design tokens, shared components, and icon set
+  (`lucide-react`) rather than reintroducing one-offs.
+- [ ] Motion / interactions are purposeful, not decorative.
+- [ ] Responsive + accessible (keyboard nav, focus states, colour
+  contrast).
+
 ## Response format
 
 ```

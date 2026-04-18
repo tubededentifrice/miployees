@@ -281,16 +281,20 @@ catalog pair (see `permission_rule` below and the catalog in
   same person on different workspaces bills/accrues independently.
 - **Clients, vendors, work orders** (§22): `organization`,
   `client_rate`, `client_user_rate`, `shift_billing`,
-  `work_order`, `quote`, `vendor_invoice`. `payout_destination` is
-  shared with §09; destinations may be owned by a user **or**
-  an organization.
+  `work_order`, `quote`, `vendor_invoice`,
+  `property_workspace_invite` (two-sided invite/accept flow for
+  sharing a property across workspaces).
+  `payout_destination` is shared with §09; destinations may be
+  owned by a user **or** an organization.
 - **Comms** (§10): `digest_run`, `email_delivery`, `email_opt_out`,
   `webhook_subscription`, `webhook_delivery`, `issue`.
 - **Assets** (§21): `asset_type`, `asset`, `asset_action`,
   `asset_document`.
-- **LLM** (§11): `model_assignment`, `llm_call`, `agent_action`,
-  `anomaly_suppression`, `agent_preference`,
-  `agent_preference_revision`.
+- **LLM** (§11): `llm_provider`, `llm_model`, `llm_provider_model`,
+  `llm_assignment`, `llm_capability_inheritance`,
+  `llm_prompt_template`, `llm_prompt_template_revision`, `llm_call`,
+  `llm_usage_daily`, `agent_action`, `anomaly_suppression`,
+  `agent_preference`, `agent_preference_revision`.
 - **Files** (§02 "Shared tables", storage backend in §15): `file` —
   shared blob-reference table used by `task_evidence`,
   `expense_attachment`, `issue.attachment_file_ids`,
@@ -358,18 +362,28 @@ storage caps live in §15.
 Junction table. A property can belong to more than one workspace.
 One row per `(property_id, workspace_id)` pair.
 
-| column             | type    | notes                                                    |
-|--------------------|---------|----------------------------------------------------------|
-| property_id        | ULID FK | references `property.id`                                 |
-| workspace_id       | ULID FK | references `workspace.id`                                |
-| membership_role    | text    | `owner_workspace \| managed_workspace \| observer_workspace` (see below) |
-| added_at           | tstz    |                                                          |
-| added_by_user_id   | ULID?   | nullable for system seeds; references `users.id`         |
-| added_via          | text    | `user \| agent \| system`                                |
+| column                | type    | notes                                                    |
+|-----------------------|---------|----------------------------------------------------------|
+| property_id           | ULID FK | references `property.id`                                 |
+| workspace_id          | ULID FK | references `workspace.id`                                |
+| membership_role       | text    | `owner_workspace \| managed_workspace \| observer_workspace` (see below) |
+| share_guest_identity  | bool    | `false` by default. When true, managers on this workspace see the stay's guest name, contact, and welcome-page fields otherwise redacted by the cross-workspace PII boundary (§15). Copied from the accepted `property_workspace_invite.initial_share_settings_json` (§22) at materialisation. Only editable on non-owner rows — the `owner_workspace` always sees everything at its own property. |
+| invite_id             | ULID FK?| `property_workspace_invite.id` that materialised this row; null for the bootstrap `owner_workspace` seed and for system seeds |
+| added_at              | tstz    |                                                          |
+| added_by_user_id      | ULID?   | nullable for system seeds; references `users.id`         |
+| added_via             | text    | `invite_accept \| system \| seed`                        |
 
 Primary key `(property_id, workspace_id)`. On soft-delete of a
 property the junction rows remain (history is preserved); on
 workspace delete the rows are hard-dropped.
+
+**Creation path.** The `owner_workspace` row is seeded at
+`property.create` time in the creating workspace. Every other row
+— `managed_workspace` or `observer_workspace` — is materialised
+only by the accept step of a `property_workspace_invite` (§22);
+there is no direct "share" API. This keeps the two-sided consent
+invariant visible in the schema: every non-owner row has a
+non-null `invite_id` pointing at the accepted invite.
 
 **`membership_role`** expresses how the workspace relates to the
 property, not a user permission:
@@ -1104,6 +1118,9 @@ scope, and the spec that defines the feature:
 | `notifications.email_digest` | bool | `true` | W/WE | §10 |
 | `assets.warranty_alert_days` | int | `30` | W/P | §21 |
 | `assets.show_guest_assets` | bool | `false` | W/P/U | §21 |
+| `invoice_reminders.enabled` | bool | `true` | W/P | §22 |
+| `invoice_reminders.offsets_days` | int[] | `[-3, 1, 7]` | W/P | §22 |
+| `invoice_reminders.stop_after_days` | int | `30` | W/P | §22 |
 
 "WE" in the scope column refers to the **work_engagement** layer
 (per-(user, workspace) row), replacing the v0 "employee" scope tag.

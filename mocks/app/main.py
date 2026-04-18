@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable, Literal
 
@@ -1333,6 +1333,209 @@ async def api_property_revoke(request: Request) -> Response:
     return ok({"ok": True})
 
 
+# §22 property_workspace_invite — two-sided invite/accept flow. The
+# owner workspace creates an invite; the target workspace's owners
+# accept via the token URL. Only on acceptance is the
+# `property_workspace` junction row materialised.
+
+@app.get("/api/v1/property_workspace_invites")
+def api_property_workspace_invites(
+    request: Request,
+    workspace_id: str = "",
+    property_id: str = "",
+    state: str = "",
+    direction: str = "out",
+) -> Response:
+    """List invites from / to the current workspace.
+
+    `direction = out` (default) returns invites this workspace
+    originated. `direction = in` returns invites addressed to this
+    workspace (pending decisions). `direction = any` returns both.
+    """
+    wsid = workspace_id or current_workspace_id(request)
+    rows = list(md.PROPERTY_WORKSPACE_INVITES)
+    if wsid and direction == "out":
+        rows = [r for r in rows if r.from_workspace_id == wsid]
+    elif wsid and direction == "in":
+        rows = [r for r in rows if r.to_workspace_id == wsid]
+    elif wsid and direction == "any":
+        rows = [r for r in rows
+                if r.from_workspace_id == wsid or r.to_workspace_id == wsid]
+    if property_id:
+        rows = [r for r in rows if r.property_id == property_id]
+    if state:
+        rows = [r for r in rows if r.state == state]
+    return ok(rows)
+
+
+@app.post("/api/v1/property_workspace_invites")
+async def api_property_workspace_invite_create(request: Request) -> Response:
+    body = await request.json()
+    pid = str(body.get("property_id") or "")
+    from_wsid = str(body.get("from_workspace_id") or current_workspace_id(request) or "")
+    to_wsid = body.get("to_workspace_id")
+    role = str(body.get("proposed_membership_role") or "managed_workspace")
+    share_guest_identity = bool(body.get("share_guest_identity") or False)
+    if role not in {"managed_workspace", "observer_workspace"}:
+        return JSONResponse({"detail": "invalid_membership_role"}, status_code=422)
+    if md.property_by_id(pid) is None:
+        return JSONResponse({"detail": "unknown_property"}, status_code=404)
+    owner_link = next((pw for pw in md.PROPERTY_WORKSPACES
+                       if pw.property_id == pid
+                       and pw.workspace_id == from_wsid
+                       and pw.membership_role == "owner_workspace"), None)
+    if owner_link is None:
+        return JSONResponse({"detail": "not_owner_workspace"}, status_code=403)
+    import secrets as _secrets
+    invite = md.PropertyWorkspaceInvite(
+        id=f"pwi-{_secrets.token_hex(6)}",
+        token=f"pwi_{_secrets.token_urlsafe(22)}",
+        from_workspace_id=from_wsid,
+        property_id=pid,
+        to_workspace_id=(str(to_wsid) if to_wsid else None),
+        proposed_membership_role=role,
+        initial_share_settings={"share_guest_identity": share_guest_identity},
+        state="pending",
+        created_by_user_id=current_user_id(request) or "u-elodie",
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+    )
+    md.PROPERTY_WORKSPACE_INVITES.append(invite)
+    hub.publish("property_workspace_invite.created",
+                {"invite_id": invite.id, "property_id": pid,
+                 "from_workspace_id": from_wsid, "to_workspace_id": to_wsid})
+    return ok(invite)
+
+
+def _invite_by_token_or_id(ident: str):
+    for inv in md.PROPERTY_WORKSPACE_INVITES:
+        if inv.id == ident or inv.token == ident:
+            return inv
+    return None
+
+
+@app.get("/api/v1/property_workspace_invites/{ident}")
+def api_property_workspace_invite_get(ident: str) -> Response:
+    inv = _invite_by_token_or_id(ident)
+    if inv is None:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    prop = md.property_by_id(inv.property_id)
+    from_ws = md.workspace_by_id(inv.from_workspace_id)
+    to_ws = md.workspace_by_id(inv.to_workspace_id) if inv.to_workspace_id else None
+    return ok({
+        "invite": inv,
+        "property": prop,
+        "from_workspace": from_ws,
+        "to_workspace": to_ws,
+    })
+
+
+@app.post("/api/v1/property_workspace_invites/{ident}/accept")
+async def api_property_workspace_invite_accept(ident: str, request: Request) -> Response:
+    inv = _invite_by_token_or_id(ident)
+    if inv is None:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    if inv.state != "pending":
+        return JSONResponse({"detail": f"invite_{inv.state}"}, status_code=409)
+    body = await request.json() if request.headers.get("content-length") else {}
+    accepting_wsid = str(body.get("accepting_workspace_id") or current_workspace_id(request) or "")
+    if inv.to_workspace_id and inv.to_workspace_id != accepting_wsid:
+        return JSONResponse({"detail": "workspace_not_addressed"}, status_code=403)
+    if md.workspace_by_id(accepting_wsid) is None:
+        return JSONResponse({"detail": "unknown_accepting_workspace"}, status_code=404)
+    # Collide with any existing row.
+    dup = next((pw for pw in md.PROPERTY_WORKSPACES
+                if pw.property_id == inv.property_id and pw.workspace_id == accepting_wsid), None)
+    if dup is not None:
+        return JSONResponse({"detail": "already_linked"}, status_code=409)
+    inv.state = "accepted"
+    inv.decided_at = datetime.now(timezone.utc)
+    inv.decided_by_user_id = current_user_id(request) or "u-vincent"
+    row = md.PropertyWorkspace(
+        property_id=inv.property_id,
+        workspace_id=accepting_wsid,
+        membership_role=inv.proposed_membership_role,
+        share_guest_identity=bool(inv.initial_share_settings.get("share_guest_identity", False)),
+        invite_id=inv.id,
+        added_by_user_id=current_user_id(request),
+        added_via="invite_accept",
+    )
+    md.PROPERTY_WORKSPACES.append(row)
+    hub.publish("property_workspace_invite.accepted",
+                {"invite_id": inv.id, "property_id": inv.property_id,
+                 "workspace_id": accepting_wsid})
+    hub.publish("property_workspace.shared",
+                {"property_id": inv.property_id, "workspace_id": accepting_wsid,
+                 "membership_role": inv.proposed_membership_role})
+    return ok({"invite": inv, "property_workspace": row})
+
+
+@app.post("/api/v1/property_workspace_invites/{ident}/reject")
+async def api_property_workspace_invite_reject(ident: str, request: Request) -> Response:
+    inv = _invite_by_token_or_id(ident)
+    if inv is None:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    if inv.state != "pending":
+        return JSONResponse({"detail": f"invite_{inv.state}"}, status_code=409)
+    body = await request.json() if request.headers.get("content-length") else {}
+    inv.state = "rejected"
+    inv.decided_at = datetime.now(timezone.utc)
+    inv.decided_by_user_id = current_user_id(request)
+    inv.decision_note_md = body.get("note_md")
+    hub.publish("property_workspace_invite.rejected",
+                {"invite_id": inv.id, "property_id": inv.property_id})
+    return ok(inv)
+
+
+@app.post("/api/v1/property_workspace_invites/{ident}/revoke")
+async def api_property_workspace_invite_revoke(ident: str, request: Request) -> Response:
+    inv = _invite_by_token_or_id(ident)
+    if inv is None:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    if inv.state != "pending":
+        return JSONResponse({"detail": f"invite_{inv.state}"}, status_code=409)
+    inv.state = "revoked"
+    inv.decided_at = datetime.now(timezone.utc)
+    inv.decided_by_user_id = current_user_id(request)
+    hub.publish("property_workspace_invite.revoked",
+                {"invite_id": inv.id, "property_id": inv.property_id})
+    return ok(inv)
+
+
+# §22 vendor_invoice proof-of-payment upload. The client (or the
+# billing workspace's owner/manager) appends file ids to
+# `proof_of_payment_file_ids`. The mock accepts ids without actually
+# storing files — the real backend would run this through the §02
+# `file` table.
+
+@app.post("/api/v1/vendor_invoices/{vid}/proof")
+async def api_vendor_invoice_upload_proof(vid: str, request: Request) -> Response:
+    inv = next((v for v in md.VENDOR_INVOICES if v.id == vid), None)
+    if inv is None:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    body = await request.json() if request.headers.get("content-length") else {}
+    file_ids = body.get("file_ids") or [f"file-proof-{vid}-{len(inv.proof_of_payment_file_ids) + 1}"]
+    for fid in file_ids:
+        if fid not in inv.proof_of_payment_file_ids:
+            inv.proof_of_payment_file_ids.append(str(fid))
+    hub.publish("vendor_invoice.proof_uploaded",
+                {"vendor_invoice_id": inv.id, "file_ids": file_ids})
+    return ok(inv)
+
+
+@app.delete("/api/v1/vendor_invoices/{vid}/proof/{fid}")
+def api_vendor_invoice_remove_proof(vid: str, fid: str) -> Response:
+    inv = next((v for v in md.VENDOR_INVOICES if v.id == vid), None)
+    if inv is None:
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+    if fid not in inv.proof_of_payment_file_ids:
+        return JSONResponse({"detail": "file_not_attached"}, status_code=404)
+    inv.proof_of_payment_file_ids.remove(fid)
+    hub.publish("vendor_invoice.proof_removed",
+                {"vendor_invoice_id": inv.id, "file_id": fid})
+    return ok(inv)
+
+
 # `/api/v1/managers` — legacy alias. In v1 there is no `manager`
 # entity; the UI asks for it only in a handful of legacy spots. We
 # return users who hold an `owner` or `manager` grant somewhere.
@@ -2620,20 +2823,121 @@ def api_admin_me(request: Request) -> Response:
     })
 
 
-@app.get("/admin/api/v1/llm/assignments")
-def api_admin_llm_assignments(request: Request) -> Response:
+# §11 — /admin/llm "graph" endpoints. Three-column view (providers →
+# models → assignments) plus the prompt-library slide-over and the weekly
+# pricing sync trigger. All deployment-scope, gated by
+# deployment.llm.{view,edit}.
+
+
+@app.get("/admin/api/v1/llm/graph")
+def api_admin_llm_graph(request: Request) -> Response:
+    """Single-call snapshot for the three-column admin graph.
+
+    Returns providers, models, provider-models, the capability catalogue,
+    inheritance edges, assignments (grouped later on the client), and the
+    summary totals that fill the stat cards. One round trip keeps the
+    hover-highlight interactions responsive.
+    """
+
     guard = _require_deployment_admin(request)
     if guard is not None:
         return guard
-    total_spent = sum(a.spent_24h_usd for a in md.LLM_ASSIGNMENTS)
-    total_budget = sum(a.daily_budget_usd for a in md.LLM_ASSIGNMENTS)
-    total_calls = sum(a.calls_24h for a in md.LLM_ASSIGNMENTS)
+
+    # Denormalised counts for card chips
+    pm_by_provider: dict[str, int] = {}
+    pm_by_model: dict[str, int] = {}
+    for pm in md.LLM_PROVIDER_MODELS:
+        pm_by_provider[pm.provider_id] = pm_by_provider.get(pm.provider_id, 0) + 1
+        pm_by_model[pm.model_id] = pm_by_model.get(pm.model_id, 0) + 1
+
+    providers = [
+        {
+            **p.__dict__,
+            "provider_model_count": pm_by_provider.get(p.id, 0),
+        }
+        for p in md.LLM_PROVIDERS
+    ]
+    models = [
+        {
+            **m.__dict__,
+            "provider_model_count": pm_by_model.get(m.id, 0),
+        }
+        for m in md.LLM_MODELS
+    ]
+    assignments = [a.__dict__ for a in md.LLM_ASSIGNMENTS_GRAPH]
+
+    # Validation: which assignments serve a provider_model whose model
+    # lacks one or more required capability tags? The graph renders those
+    # edges red.
+    by_pm = {pm.id: pm for pm in md.LLM_PROVIDER_MODELS}
+    by_model = {m.id: m for m in md.LLM_MODELS}
+    assignment_issues: list[dict[str, Any]] = []
+    for a in md.LLM_ASSIGNMENTS_GRAPH:
+        pm = by_pm.get(a.provider_model_id)
+        if pm is None:
+            continue
+        model = by_model.get(pm.model_id)
+        if model is None:
+            continue
+        missing = [c for c in a.required_capabilities if c not in model.capabilities]
+        if missing:
+            assignment_issues.append({
+                "assignment_id": a.id,
+                "capability": a.capability,
+                "missing_capabilities": missing,
+            })
+
+    total_spent = sum(a.spend_usd_30d for a in md.LLM_ASSIGNMENTS_GRAPH)
+    total_calls = sum(a.calls_30d for a in md.LLM_ASSIGNMENTS_GRAPH)
+
     return ok({
-        "assignments": md.LLM_ASSIGNMENTS,
-        "total_spent": total_spent,
-        "total_budget": total_budget,
-        "total_calls": total_calls,
+        "providers": providers,
+        "models": models,
+        "provider_models": [pm.__dict__ for pm in md.LLM_PROVIDER_MODELS],
+        "capabilities": md.LLM_CAPABILITY_CATALOGUE,
+        "inheritance": [i.__dict__ for i in md.LLM_CAPABILITY_INHERITANCE],
+        "assignments": assignments,
+        "assignment_issues": assignment_issues,
+        "totals": {
+            "spend_usd_30d": round(total_spent, 2),
+            "calls_30d": total_calls,
+            "provider_count": len(md.LLM_PROVIDERS),
+            "model_count": len(md.LLM_MODELS),
+            "capability_count": len(md.LLM_CAPABILITY_CATALOGUE),
+            "unassigned_capabilities": [
+                c["key"]
+                for c in md.LLM_CAPABILITY_CATALOGUE
+                if not any(a.capability == c["key"] and a.is_enabled for a in md.LLM_ASSIGNMENTS_GRAPH)
+                # chat.admin inherits — still counts as resolved.
+                and not any(inh.capability == c["key"] for inh in md.LLM_CAPABILITY_INHERITANCE)
+            ],
+        },
     })
+
+
+@app.get("/admin/api/v1/llm/prompts")
+def api_admin_llm_prompts(request: Request) -> Response:
+    guard = _require_deployment_admin(request)
+    if guard is not None:
+        return guard
+    return ok(md.LLM_PROMPT_TEMPLATES)
+
+
+@app.post("/admin/api/v1/llm/sync-pricing")
+def api_admin_llm_sync_pricing(request: Request) -> Response:
+    guard = _require_deployment_admin(request)
+    if guard is not None:
+        return guard
+    # Mock-only: report the would-be deltas without mutating state.
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    deltas = [
+        {"provider_model_id": pm.id, "api_model_id": pm.api_model_id,
+         "input_before": pm.input_cost_per_million, "input_after": pm.input_cost_per_million,
+         "output_before": pm.output_cost_per_million, "output_after": pm.output_cost_per_million,
+         "status": "pinned" if pm.price_source_override == "none" else "unchanged"}
+        for pm in md.LLM_PROVIDER_MODELS
+    ]
+    return ok({"started_at": now_iso, "deltas": deltas, "updated": 0, "skipped": len(deltas), "errors": 0})
 
 
 @app.get("/admin/api/v1/llm/calls")
@@ -2642,22 +2946,6 @@ def api_admin_llm_calls(request: Request) -> Response:
     if guard is not None:
         return guard
     return ok(md.LLM_CALLS)
-
-
-@app.get("/admin/api/v1/llm/providers")
-def api_admin_llm_providers(request: Request) -> Response:
-    guard = _require_deployment_admin(request)
-    if guard is not None:
-        return guard
-    return ok(md.DEPLOYMENT_LLM_PROVIDERS)
-
-
-@app.get("/admin/api/v1/llm/pricing")
-def api_admin_llm_pricing(request: Request) -> Response:
-    guard = _require_deployment_admin(request)
-    if guard is not None:
-        return guard
-    return ok(md.DEPLOYMENT_LLM_PRICING)
 
 
 @app.get("/admin/api/v1/chat/providers")
