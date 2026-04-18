@@ -300,8 +300,14 @@ crewday expenses
   submit --user <id?> --photo <path> [--vendor "..."] [--amount 1234 --currency EUR]
                                       # autofill from receipt if photo only
   list [--user] [--state]
-  approve <id>
+  approve <id>                        # snaps claim.currency → workspace default + → destination currency (§09)
   reject <id> --reason "..."
+  pending-reimbursement [--user]      # approved-but-not-reimbursed totals by owed_currency
+
+crewday rates
+  show [--as-of YYYY-MM-DD] [--quote USD] [--source ecb|manual|stale_carryover]
+  refresh                              # force today's run of refresh_exchange_rates for this workspace
+  set-manual --base EUR --quote XAF --as-of YYYY-MM-DD --rate 655.957  # errors if an ECB row exists
 
 crewday issues
   report --property <id> [--area <id>] "<title>" --body @issue.md \

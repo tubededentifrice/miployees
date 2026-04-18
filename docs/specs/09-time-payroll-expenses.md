@@ -569,12 +569,15 @@ those rules; there is no separate "blessed" subset. If null, the
 engagement's default reimbursement destination applies (which itself
 falls back to `pay_destination_id`).
 
-**Currency.** If `destination.currency != claim.currency`, approval
-reuses the exchange rate already snapped on the claim at approval
-time (ECB daily fix, see "Approval (manager)"). No second
-acknowledgement is required — the snapped rate is the acknowledgement.
-The payslip PDF and the payout manifest both show the converted
-amount and the rate source for transparency.
+**Currency.** `destination.currency != claim.currency` is fully
+supported. On approval the server snaps two related figures
+(§ "Amount owed to the employee"): `exchange_rate_to_default`
+(claim → workspace default, for reporting) and `owed_amount_cents` /
+`owed_exchange_rate` (claim → destination, for payout). The snapped
+rates *are* the acknowledgement — no second confirmation step. The
+payslip PDF and the payout manifest both show the original amount,
+the destination-currency amount, the rate, and the rate source for
+transparency.
 
 An agent cannot approve a claim with a non-null
 `reimbursement_destination_id` in the approval payload — that field
@@ -603,8 +606,12 @@ payslip.payout_snapshot_json = {
       "destination_id": "pd_…",
       "label": "Expense float — Revolut",
       "display_stub": "•• 4499",
-      "currency": "EUR",
-      "amount_cents": 3412 }
+      "currency": "EUR",                     // = claim.owed_currency
+      "amount_cents": 3412,                  // = claim.owed_amount_cents
+      "original_currency": "GBP",            // claim.currency at submission
+      "original_amount_cents": 2850,
+      "exchange_rate": 1.1972,
+      "rate_source": "ecb" }
   ]
 }
 ```
@@ -658,16 +665,23 @@ endpoint. Only treasury workflows do.
 
 ### Currency mismatch
 
-Issuing a payslip whose computed gross is in currency `X` with a
-`pay_destination` whose currency is `Y` is blocked at the
-`draft → issued` transition with a 422 `currency_mismatch` error.
-Managers resolve by choosing a same-currency destination or by
+**Payroll (gross).** Issuing a payslip whose computed gross is in
+currency `X` with a `pay_destination` whose currency is `Y` is
+blocked at the `draft → issued` transition with a 422
+`currency_mismatch` error. Multi-currency payroll is deferred
+(§ "Out of scope (v1)"): payroll math within a single period is
+single-currency, so the mismatch is treated as a configuration
+bug. Managers resolve by choosing a same-currency destination or by
 explicitly marking the payslip "pay by cash" (clears the pointer
 for this payslip only via the snapshot).
 
-Same rule for reimbursements: a claim in currency `X` cannot be
-attached to a destination in currency `Y` without an explicit
-conversion acknowledgement recorded on the claim.
+**Reimbursements.** A claim in currency `X` attached to a
+destination in currency `Y` is **not** a mismatch — expenses are
+fully multi-currency (§02, § "Amount owed to the employee"). The
+conversion is recorded on the claim at approval time
+(`owed_amount_cents` + `owed_exchange_rate` + `owed_rate_source`)
+and is itself the acknowledgement; no separate confirmation is
+required.
 
 ### Audit, approval, and webhook events
 
@@ -675,6 +689,9 @@ conversion acknowledgement recorded on the claim.
 - `work_engagement_default_destination.*`: `set`, `cleared`.
 - `payroll.payslip_destination_snapshotted` (fires at issue time).
 - `payroll.payout_manifest_accessed` (fires on every manifest fetch).
+- `exchange_rate.*`: `refreshed`, `failed`, `overridden` (fired by
+  the worker job and the manual-override endpoint — see "Exchange
+  rates service" below).
 - All of the above are in §10's webhook catalog; the approval gate
   is in §11.
 
@@ -715,9 +732,14 @@ expense_claim
 ├── submitted_at
 ├── vendor
 ├── purchased_at               # date (+ time if known)
-├── currency
-├── exchange_rate_to_default   # snapshot at submission; editable by owner/manager
+├── currency                   # ISO-4217; any code, per-claim (see §02 "Multi-currency expenses")
+├── exchange_rate_to_default   # snap at approval against workspace.default_currency; immutable
 ├── total_amount_cents         # in claim currency
+├── owed_destination_id        # FK snapshot of payout_destination at approval; immutable
+├── owed_currency              # ISO-4217; copy of owed destination's currency
+├── owed_amount_cents          # claim total converted into owed_currency via snapped rate; authoritative "owed"
+├── owed_exchange_rate         # claim.currency → owed_currency rate (may be cross via EUR)
+├── owed_rate_source           # ecb | manual | stale_carryover — copied from exchange_rate.source
 ├── category                   # supplies|fuel|food|transport|maintenance|other
 ├── property_id                # optional
 ├── note_md
@@ -756,12 +778,18 @@ expense_attachment
 ### Approval (owner or manager)
 
 - Review claim, edit any field, approve or reject with reason.
-- Approving snaps the exchange rate (ECB daily fix fetched at
-  approval time; cached in memory per currency/day by the worker,
-  and stored on the claim in `exchange_rate_to_default` for
-  reproducibility). If the ECB fetch fails, the UI blocks approval
-  with a "no exchange rate available, try again or enter manually"
-  error and the approver may type the rate by hand.
+- Approving snaps the exchange rate against the workspace default
+  currency. Source of truth is the `exchange_rate` table (§02),
+  populated daily by the `refresh_exchange_rates` worker job and
+  — as fallback — by an on-demand fetch at approval time if the
+  needed row is missing. The resolved rate is copied to the claim's
+  `exchange_rate_to_default` for reproducibility, and the
+  destination-currency amount owed is computed and cached (see
+  "Amount owed to the employee" below). If both the table and the
+  on-demand fetch fail (ECB outage + no prior carryover), the UI
+  blocks approval with `no_rate_available` and the approver may
+  type the rate by hand (`source = 'manual'`, audit-logged). See
+  "Exchange rates service" below for the full rules.
 - The claim attaches to the pay period whose `[starts_on, ends_on]`
   contains `purchased_at`. If that period is already `locked` for the
   work_engagement, it attaches to the next open period; a note is
@@ -773,6 +801,169 @@ expense_attachment
 
 A claim becomes `reimbursed` when the containing payslip moves to
 `paid`. No separate payment integration.
+
+### Amount owed to the employee
+
+A reimbursement is always ultimately paid from one account into one
+account. The **authoritative payment amount** is expressed in the
+**reimbursement destination's currency** — that is the number the
+employee will actually see land in their account. All other numbers
+on the claim (original purchase amount in `claim.currency`,
+workspace-default equivalent from `exchange_rate_to_default`) are
+informational.
+
+On approval, in addition to
+`exchange_rate_to_default`, the server computes and stores:
+
+| field                          | notes                                                                 |
+|--------------------------------|-----------------------------------------------------------------------|
+| `owed_destination_id`          | snapshot of the destination that was the active default (or override) at approval time; FK to `payout_destination` |
+| `owed_currency`                | copy of `payout_destination.currency` at that moment                  |
+| `owed_amount_cents`            | `total_amount_cents` converted from `claim.currency` to `owed_currency` using the snapped rate; minor units of `owed_currency` |
+| `owed_exchange_rate`           | `1 {claim.currency} = rate {owed_currency}`, derived from the workspace-default rate and the destination-currency rate via EUR cross (see "Exchange rates service" below) |
+| `owed_rate_source`             | `ecb | manual | stale_carryover` — copied from the underlying `exchange_rate` row |
+
+Rounding: half-to-even at the destination currency's minor-unit
+precision. Storing the rate alongside the amount makes the rounding
+reproducible for audit.
+
+**Display & surfaces.**
+
+- **Worker "My pay" (PWA + web).** Shows the running total of
+  approved-but-not-yet-reimbursed claims grouped by `owed_currency`
+  plus a "due on YYYY-MM-DD" stamp from the next open pay period
+  that will roll them up. Driven by
+  `GET /expense_claims/pending_reimbursement?user_id=me`.
+- **Payslip PDF (§ "PDF" above).** The existing "Expense
+  reimbursements" line itemises each included claim as
+  `{original_amount} {claim.currency} → {owed_amount} {owed_currency}
+  @ {owed_exchange_rate} ({owed_rate_source})` when
+  `claim.currency ≠ owed_currency`; otherwise just the single
+  amount. Subtotals group by `payout_snapshot_json.destination_id`.
+- **Manager "Pay" page.** Per-employee pending total and a
+  workspace-wide aggregate, each grouped by destination currency.
+  A manager who wants to split-pay early (before period close)
+  issues one-off payments out of band — crewday records that the
+  claim is `reimbursed` when the operator marks the containing
+  payslip `paid`.
+
+**Currency alignment rule.** Because `owed_currency` is pinned to the
+destination at approval time, later changes to the destination's
+currency or archival have no effect on the amount owed (the snapshot
+on the claim is immutable, same as `exchange_rate_to_default`). If
+the destination is archived before reimbursement, the manager must
+route the payment manually — the payslip will still render the
+snapshotted figure.
+
+**Agent authority.** An agent cannot change `owed_destination_id`
+independently: the `expense_claim.set_destination_override`
+approval gate already covers this (§11). Approving an agent's
+override also re-snaps `owed_currency` / `owed_amount_cents` at
+the approval moment (same transaction).
+
+### Exchange rates service
+
+#### Worker job: `refresh_exchange_rates`
+
+A daily APScheduler job (§01) fetches foreign-exchange reference
+rates and populates the `exchange_rate` table (§02).
+
+- **Cadence.** Runs at **17:00 CET** on every calendar day. The ECB
+  reference rate is published on working days at ~16:00 CET; running
+  at 17:00 leaves a buffer. On weekends and TARGET holidays the job
+  still runs (and writes `stale_carryover` rows forward from the
+  last working day's rate).
+- **Currencies refreshed.** For every workspace, the job computes
+  the **active currency set**: the union of
+  - `workspace.default_currency`,
+  - every distinct `property.default_currency` in the workspace,
+  - every distinct `currency` on open `expense_claim` rows in the
+    last 180 days,
+  - every distinct `currency` on `payout_destination` rows not
+    archived,
+  - every distinct `currency` on `pay_rule` rows with
+    `effective_to IS NULL OR effective_to ≥ today - 180 days`.
+  The active set is the quote currencies; the base is
+  `workspace.default_currency`. For workspaces whose default is
+  not `EUR`, the job fetches ECB's EUR-based table and **cross-
+  computes** the non-EUR base rate via EUR pivot.
+- **Provider.** ECB daily reference rates
+  (`https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`).
+  No other provider in v1. A workspace-scoped manual override is the
+  escape hatch for currencies ECB doesn't publish (e.g. XOF peg);
+  see "Manual override" below.
+- **Idempotency.** Upsert on `(workspace_id, base, quote,
+  as_of_date)`. A retry after partial success is safe.
+- **Failure handling.** If the ECB endpoint is unreachable, the job
+  logs `llm_call`-shaped diagnostics (source = `ecb`, latency, HTTP
+  status), emits an `exchange_rate.failed` webhook and a daily-
+  digest warning, and re-queues itself at 18:00, 19:00, 20:00 CET.
+  Three consecutive failures page the deployment operator.
+- **Events.** One `exchange_rate.refreshed` webhook per successful
+  run carrying `{workspace_id, as_of_date, currencies_refreshed: n}`;
+  `exchange_rate.failed` on each failed attempt.
+
+#### On-demand fallback
+
+If an approval needs a `(base, quote, as_of_date)` row and the table
+does not have one (e.g. first-ever use of `GBP` in the workspace,
+worker hasn't caught up yet), the server issues a one-shot ECB fetch
+inside the approval transaction and upserts the missing row with
+`source = 'ecb'`, `fetched_by_job = 'on_demand_fallback'`. The
+snapshot fields on the claim are then copied from that row. A
+process-wide in-memory cache keyed by `(base, quote, as_of_date)`
+keeps a batch of consecutive approvals to one fetch.
+
+#### Manual override
+
+When neither the worker nor the fallback can produce a rate (ECB
+outage beyond the retry window, or a currency ECB doesn't publish),
+the approval UI prompts the manager for a rate. The manager-entered
+row is written with `source = 'manual'`, `source_ref = user_id`, and
+an `exchange_rate.overridden` webhook fires. Subsequent approvals on
+the same day reuse that row; the worker job will not overwrite a
+`manual` row.
+
+#### Staleness policy
+
+At approval time the server checks `(as_of_date, today())`:
+
+- `as_of_date == today` → green, no warning.
+- `today - as_of_date ≤ 3 days` and `source = 'stale_carryover'` →
+  amber, inline warning "Using rate from {as_of_date}; ECB has not
+  published since."
+- `today - as_of_date > 3 days` → red, approval blocked with
+  `rate_too_stale`; manager must refresh or enter a manual rate.
+
+#### Why rates are workspace-scoped
+
+Rates could have been a deployment-wide singleton. Scoping them per
+workspace keeps four properties straight:
+
+1. The base currency in the row always matches that workspace's
+   `default_currency`, so reads need no conversion.
+2. Manual overrides are tenant-local — one client's manual XAF rate
+   does not leak into another's approvals.
+3. Multi-tenant deployments (§01) can purge one tenant's rates on
+   offboarding without untangling a global table.
+4. The rate-refresh job's active-set logic can run per workspace in
+   parallel without a global coordination lock.
+
+The storage cost is tiny (N workspaces × ~30 currencies × 365 days).
+
+#### Surfaces
+
+- `GET /exchange_rates` — list rates for the workspace; filters
+  `as_of_date`, `quote`, `source`.
+- `GET /exchange_rates/{base}/{quote}?as_of=YYYY-MM-DD` — single row;
+  `as_of` defaults to today.
+- `POST /exchange_rates/refresh` — manager-only; force a run of
+  `refresh_exchange_rates` for this workspace. Returns the job
+  correlation id.
+- `POST /exchange_rates/manual` — manager-only; body `{base, quote,
+  as_of_date, rate}`; fails 409 if an `ecb` row exists for that key.
+- CLI: `crewday rates show`, `crewday rates refresh`, `crewday rates
+  set-manual` (§13).
 
 ### LLM accuracy & guardrails
 
@@ -837,10 +1028,14 @@ Exports: `GET /api/v1/exports/...csv` (streamed) or via CLI
 - Tax withholding, social contributions, statutory filings.
 - Tip pooling, shift differentials beyond the overtime/holiday rules.
 - Direct bank transfers or payment execution.
-- Multi-currency payroll is not implemented in v1. The seam is in
-  place: `pay_rule.currency` and `payslip.currency` carry per-entity
-  codes, `property.default_currency` allows per-property overrides,
-  and `components_json` is currency-stamped. v1 enforces that all pay
-  rules for one work_engagement within a pay period share one
-  currency. Lifting that constraint requires conversion logic at
-  period-close time.
+- **Multi-currency *payroll*** is not implemented in v1.
+  `pay_rule.currency` and `payslip.currency` carry per-entity codes,
+  and `property.default_currency` allows per-property overrides, but
+  v1 enforces that all pay rules for one work_engagement within a
+  single pay period share one currency. Lifting that constraint
+  requires conversion logic at period-close time.
+  **Multi-currency *expenses*, on the other hand, are fully
+  supported in v1** — any claim in any ISO-4217 currency, snapped
+  against the workspace default on approval, paid in the
+  reimbursement destination's currency (see "Amount owed to the
+  employee" above and §02 "Multi-currency expenses").

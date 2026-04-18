@@ -403,6 +403,12 @@ class Expense:
     a user directly). ``employee_id`` is kept for the legacy UI and
     mirrors the employee row's id; ``user_id`` and ``work_engagement_id``
     are the v1 canonical pointers.
+
+    Multi-currency fields (§09 "Amount owed to the employee") are
+    populated at approval time from the ``exchange_rate`` table:
+    ``exchange_rate_to_default`` snaps claim→workspace default for
+    reporting, and ``owed_*`` snaps claim→destination for the actual
+    payout. Both are immutable once written.
     """
 
     id: str
@@ -417,6 +423,31 @@ class Expense:
     category: str | None = None
     user_id: str = ""
     work_engagement_id: str = ""
+    exchange_rate_to_default: float | None = None
+    owed_currency: str | None = None
+    owed_amount_cents: int | None = None
+    owed_exchange_rate: float | None = None
+    owed_rate_source: Literal["ecb", "manual", "stale_carryover"] | None = None
+
+
+@dataclass
+class ExchangeRate:
+    """A snapped FX rate per §02 ``exchange_rate`` and §09 "Exchange
+    rates service". Populated by the daily ``refresh_exchange_rates``
+    worker job or the on-demand fallback at approval time.
+    ``rate`` is expressed as ``1 {quote} = rate {base}``.
+    """
+
+    id: str
+    workspace_id: str
+    base: str
+    quote: str
+    as_of_date: date
+    rate: float
+    source: Literal["ecb", "manual", "stale_carryover"]
+    fetched_at: datetime
+    fetched_by_job: str | None = None
+    source_ref: str | None = None
 
 
 @dataclass
@@ -1710,14 +1741,86 @@ TASKS: list[Task] = [
 EXPENSES: list[Expense] = [
     Expense("x-1", "e-maria", 4280, "EUR", "Carrefour",   datetime(2026, 4, 14, 17, 32), "submitted", "Cleaning supplies — bleach, sponges, 2× fresh towels", ocr_confidence=0.96, category="supplies",
             user_id="u-maria", work_engagement_id="we-maria-bernard"),
+    # Same-currency approved claim: claim ccy == workspace default == destination ccy.
+    # exchange_rate_to_default = 1.0, owed_* mirror the claim total.
     Expense("x-2", "e-arun",  1890, "EUR", "Total Energies", datetime(2026, 4, 13, 19, 5), "approved", "Fuel — Johnson airport run", ocr_confidence=0.99, category="fuel",
-            user_id="u-arun", work_engagement_id="we-arun-bernard"),
+            user_id="u-arun", work_engagement_id="we-arun-bernard",
+            exchange_rate_to_default=1.0,
+            owed_currency="EUR", owed_amount_cents=1890,
+            owed_exchange_rate=1.0, owed_rate_source="ecb"),
     Expense("x-3", "e-ben",  12500, "EUR", "Pool Pro",    datetime(2026, 4, 10, 11, 22), "submitted", "Chlorine tablets (3 month supply) + replacement skimmer basket", ocr_confidence=0.94, category="maintenance",
             user_id="u-ben", work_engagement_id="we-ben-bernard"),
     Expense("x-4", "e-ana",   2210, "EUR", "Marché Provence", datetime(2026, 4, 11, 9, 40), "approved", "Welcome-basket groceries — Apt 3B", category="food",
-            user_id="u-ana", work_engagement_id="we-ana-bernard"),
+            user_id="u-ana", work_engagement_id="we-ana-bernard",
+            exchange_rate_to_default=1.0,
+            owed_currency="EUR", owed_amount_cents=2210,
+            owed_exchange_rate=1.0, owed_rate_source="ecb"),
     Expense("x-5", "e-sam",   5780, "EUR", "Brico Dépôt", datetime(2026, 4, 9, 14, 58), "reimbursed", "Door handles, screws, wood filler", category="maintenance",
-            user_id="u-sam", work_engagement_id="we-sam-bernard"),
+            user_id="u-sam", work_engagement_id="we-sam-bernard",
+            exchange_rate_to_default=1.0,
+            owed_currency="EUR", owed_amount_cents=5780,
+            owed_exchange_rate=1.0, owed_rate_source="ecb"),
+    # Multi-currency demo: Maria bought London hardware in GBP while
+    # escorting a guest to Heathrow. Claim ccy = GBP, workspace default
+    # = EUR, her reimbursement destination = EUR. Approved → both snaps
+    # written at 2026-04-15 ECB rate (1 GBP = 1.1972 EUR).
+    Expense("x-6", "e-maria", 2850, "GBP", "Screwfix Hammersmith",
+            datetime(2026, 4, 15, 14, 12), "approved",
+            "Replacement door handles & anchors for Apt 3B (stocked up while on the London trip).",
+            ocr_confidence=0.92, category="maintenance",
+            user_id="u-maria", work_engagement_id="we-maria-bernard",
+            exchange_rate_to_default=1.1972,
+            owed_currency="EUR", owed_amount_cents=3412,
+            owed_exchange_rate=1.1972, owed_rate_source="ecb"),
+    # Multi-currency pending: Arun filled the rental in USD on a US
+    # courier trip. Claim ccy = USD, destination = EUR. Submitted only,
+    # so owed_* is still unset — we'll snap on approval.
+    Expense("x-7", "e-arun", 4200, "USD", "Shell US",
+            datetime(2026, 4, 16, 11, 3), "submitted",
+            "Rental-car fuel, Newark → Greenwich courier run.",
+            ocr_confidence=0.97, category="fuel",
+            user_id="u-arun", work_engagement_id="we-arun-bernard"),
+]
+
+
+# Exchange rates seed (§02 exchange_rate, §09 "Exchange rates service").
+# All rows have workspace_id = "w-bernard" (the primary demo workspace)
+# and base = "EUR" (its default currency). Populated by the daily
+# refresh_exchange_rates job — sources: ecb for working days,
+# stale_carryover for weekends, one manual override example.
+EXCHANGE_RATES: list[ExchangeRate] = [
+    # Friday 2026-04-17 — most recent working day.
+    ExchangeRate("fx-1", "w-bernard", "EUR", "GBP", date(2026, 4, 17),
+                 1.1972, "ecb",
+                 datetime(2026, 4, 17, 17, 1),
+                 fetched_by_job="refresh_exchange_rates"),
+    ExchangeRate("fx-2", "w-bernard", "EUR", "USD", date(2026, 4, 17),
+                 0.9248, "ecb",
+                 datetime(2026, 4, 17, 17, 1),
+                 fetched_by_job="refresh_exchange_rates"),
+    ExchangeRate("fx-3", "w-bernard", "EUR", "CHF", date(2026, 4, 17),
+                 1.0312, "ecb",
+                 datetime(2026, 4, 17, 17, 1),
+                 fetched_by_job="refresh_exchange_rates"),
+    # Saturday 2026-04-18 — stale_carryover from Friday.
+    ExchangeRate("fx-4", "w-bernard", "EUR", "GBP", date(2026, 4, 18),
+                 1.1972, "stale_carryover",
+                 datetime(2026, 4, 18, 17, 0),
+                 fetched_by_job="refresh_exchange_rates"),
+    ExchangeRate("fx-5", "w-bernard", "EUR", "USD", date(2026, 4, 18),
+                 0.9248, "stale_carryover",
+                 datetime(2026, 4, 18, 17, 0),
+                 fetched_by_job="refresh_exchange_rates"),
+    # 2026-04-15 ECB fix — the rate snapped on the x-6 GBP claim above.
+    ExchangeRate("fx-6", "w-bernard", "EUR", "GBP", date(2026, 4, 15),
+                 1.1972, "ecb",
+                 datetime(2026, 4, 15, 17, 2),
+                 fetched_by_job="refresh_exchange_rates"),
+    # Manual override example: ECB does not publish XAF; owner entered.
+    ExchangeRate("fx-7", "w-bernard", "EUR", "XAF", date(2026, 4, 17),
+                 0.001524, "manual",
+                 datetime(2026, 4, 17, 10, 44),
+                 source_ref="u-bernard"),
 ]
 
 

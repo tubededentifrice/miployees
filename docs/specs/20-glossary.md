@@ -150,6 +150,16 @@ fix the offender.
   (non-`inherit`) value — with one domain-specific rule: `forbid` at
   any layer is absolute (camera picker hidden regardless of more
   specific layers).
+- **Exchange rate.** A row in `exchange_rate` (§02) keyed by
+  `(workspace_id, base, quote, as_of_date)` that records a
+  foreign-exchange rate used to snap a conversion. `base` is always
+  the workspace's default currency at the moment the row was
+  written. Populated daily by the `refresh_exchange_rates` worker
+  job (§01, §09) against ECB reference rates, with an on-demand
+  fallback inside the approval transaction and a manager-authored
+  `manual` escape hatch for currencies ECB doesn't publish. Rows
+  are immutable once cited by a snapshot. See §09 "Exchange rates
+  service".
 - **File.** Shared blob-reference row (§02 `file`). Pluggable backend;
   local disk in v1.
 - **Guest link.** A tokenized URL sent to a stay guest that opens a
@@ -278,6 +288,14 @@ fix the offender.
   on the deployment host; authorisation is by shell access.
 - **Payslip.** A computed pay document for one
   (work_engagement, pay_period).
+- **Pending reimbursement.** An `expense_claim` that has been
+  approved but is not yet `reimbursed`. The amount owed to the
+  employee is the claim's `owed_amount_cents` in `owed_currency` —
+  both snapped at approval time from the destination that was
+  active then (§09 "Amount owed to the employee"). Pending totals
+  are exposed to the worker on their "My pay" widget
+  (`GET /expenses/pending_reimbursement`), and aggregated for the
+  manager on the Pay page.
 - **Pending (task).** A task whose `scheduled_for_utc` is within the
   next hour (or already past for a one-off). Distinct from
   `scheduled`; used to populate the worker "today" list (§06).

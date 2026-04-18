@@ -286,6 +286,7 @@ quote.*              submitted, accepted, rejected, superseded
 vendor_invoice.*     submitted, approved, rejected, paid, voided
 shift_billing.*      resolved
 agent_preference.*   updated, cleared  (§11)
+exchange_rate.*      refreshed, failed, overridden  (§09)
 ```
 
 The `manager.*` and `employee.*` event families from earlier drafts

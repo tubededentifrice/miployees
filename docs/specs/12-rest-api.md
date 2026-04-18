@@ -500,11 +500,17 @@ POST   /payslips/{id}/void
 POST   /payslips/{id}/payout_manifest     # OWNER/MANAGER SESSION ONLY (interactive-session-only, §11). Streams decrypted account numbers JIT; not cached in the idempotency store; returns 410 once secrets are purged.
 
 GET    /expenses
+GET    /expenses/pending_reimbursement   # ?user_id=me|<id>; returns approved-but-not-reimbursed totals grouped by owed_currency (§09)
 POST   /expenses                   # multipart for receipts
 POST   /expenses/{id}/submit
-POST   /expenses/{id}/approve
+POST   /expenses/{id}/approve      # snaps owed_* fields; see §09 "Amount owed to the employee"
 POST   /expenses/{id}/reject
 POST   /expenses/autofill          # multipart/form-data; image in → structured JSON out
+
+GET    /exchange_rates                              # ?as_of=…&quote=…&source=…
+GET    /exchange_rates/{base}/{quote}?as_of=YYYY-MM-DD   # single row; as_of defaults to today
+POST   /exchange_rates/refresh                       # manager-only; force a refresh_exchange_rates run for this workspace → {job_correlation_id}
+POST   /exchange_rates/manual                        # manager-only; body {base, quote, as_of_date, rate}; 409 if ecb row exists
 ```
 
 `POST /expenses/autofill` accepts `multipart/form-data` with

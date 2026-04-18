@@ -6,7 +6,13 @@ import { formatMoney } from "@/lib/money";
 import { fmtDate } from "@/lib/dates";
 import { Chip, Loading } from "@/components/common";
 import AutoGrowTextarea from "@/components/AutoGrowTextarea";
-import type { Expense, ExpenseCategory, ExpenseScanResult, ExpenseStatus } from "@/types/api";
+import type {
+  Expense,
+  ExpenseCategory,
+  ExpenseScanResult,
+  ExpenseStatus,
+  PendingReimbursement,
+} from "@/types/api";
 
 type ScanPhase = "upload" | "processing" | "review" | "submitted";
 
@@ -57,6 +63,18 @@ export default function MyExpensesPage() {
   const q = useQuery({
     queryKey: qk.expenses("mine"),
     queryFn: () => fetchJson<Expense[]>("/api/v1/expenses?mine=true"),
+  });
+
+  // §09 "Amount owed to the employee" — destination-currency total of
+  // approved-but-not-yet-reimbursed claims. Refreshes alongside the
+  // expenses list so the worker sees the number update the moment a
+  // claim is approved.
+  const pending = useQuery({
+    queryKey: qk.expensesPendingReimbursement("me"),
+    queryFn: () =>
+      fetchJson<PendingReimbursement>(
+        "/api/v1/expenses/pending_reimbursement?user_id=me",
+      ),
   });
 
   const resetForm = useCallback(() => {
@@ -353,6 +371,27 @@ export default function MyExpensesPage() {
         )}
       </section>
 
+      {/* ── Pending reimbursement (§09 "Amount owed") ─── */}
+      {pending.data && pending.data.totals_by_currency.length > 0 && (
+        <section className="phone__section">
+          <h2 className="section-title">Owed to you</h2>
+          <p className="muted">
+            Approved, paid out with your next payslip. Each amount is
+            shown in the currency of the account where it will land.
+          </p>
+          <ul className="reimbursement-totals">
+            {pending.data.totals_by_currency.map((t) => (
+              <li key={t.currency} className="reimbursement-totals__row">
+                <span className="reimbursement-totals__amount">
+                  {formatMoney(t.amount_cents, t.currency)}
+                </span>
+                <span className="reimbursement-totals__ccy">{t.currency}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* ── Recent expenses list (always visible) ────── */}
       <section className="phone__section">
         <h2 className="section-title">My recent expenses</h2>
@@ -362,23 +401,36 @@ export default function MyExpensesPage() {
           <p className="muted">Failed to load.</p>
         ) : (
           <ul className="expense-list">
-            {q.data.map((x) => (
-              <li key={x.id} className="expense-row">
-                <div className="expense-row__main">
-                  <strong>{x.merchant}</strong>
-                  <span className="expense-row__note">{x.note}</span>
-                  <span className="expense-row__time">{fmtDate(x.submitted_at)}</span>
-                </div>
-                <div className="expense-row__side">
-                  <span className="expense-row__amount">
-                    {formatMoney(x.amount_cents, x.currency)}
-                  </span>
-                  <span className={"chip chip--sm chip--" + STATUS_TONE[x.status]}>
-                    {x.status}
-                  </span>
-                </div>
-              </li>
-            ))}
+            {q.data.map((x) => {
+              const converted =
+                x.owed_currency &&
+                x.owed_amount_cents != null &&
+                x.owed_currency !== x.currency;
+              return (
+                <li key={x.id} className="expense-row">
+                  <div className="expense-row__main">
+                    <strong>{x.merchant}</strong>
+                    <span className="expense-row__note">{x.note}</span>
+                    <span className="expense-row__time">{fmtDate(x.submitted_at)}</span>
+                  </div>
+                  <div className="expense-row__side">
+                    <span className="expense-row__amount">
+                      {formatMoney(x.amount_cents, x.currency)}
+                    </span>
+                    {converted && (
+                      <span className="expense-row__owed" title={
+                        `Snapped at approval: 1 ${x.currency} = ${x.owed_exchange_rate} ${x.owed_currency} (${x.owed_rate_source})`
+                      }>
+                        = {formatMoney(x.owed_amount_cents!, x.owed_currency!)}
+                      </span>
+                    )}
+                    <span className={"chip chip--sm chip--" + STATUS_TONE[x.status]}>
+                      {x.status}
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

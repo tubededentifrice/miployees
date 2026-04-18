@@ -1131,6 +1131,95 @@ def api_expenses(request: Request, mine: bool = False) -> Response:
     return ok(md.EXPENSES)
 
 
+@app.get("/api/v1/expenses/pending_reimbursement")
+def api_expenses_pending_reimbursement(
+    request: Request, user_id: str | None = None
+) -> Response:
+    """Approved-but-not-yet-reimbursed totals grouped by ``owed_currency``.
+
+    Per §09 "Amount owed to the employee" this is the authoritative
+    "what do we owe this employee right now?" endpoint.
+
+    - ``user_id=me`` → current worker (what the employee widget calls).
+    - ``user_id=<uid>`` → that employee's pending totals.
+    - no ``user_id`` → workspace-wide aggregate; the response includes a
+      ``by_user`` breakdown for the manager Pay page.
+    """
+
+    if user_id == "me":
+        uid: str | None = current_user_id(request)
+    else:
+        uid = user_id or None
+
+    scope = md.expenses_for_user(uid) if uid else md.EXPENSES
+    pending = [x for x in scope if x.status == "approved"]
+    totals: dict[str, int] = {}
+    per_user: dict[str, dict[str, int]] = {}
+    for x in pending:
+        ccy = x.owed_currency or x.currency
+        cents = x.owed_amount_cents if x.owed_amount_cents is not None else x.amount_cents
+        totals[ccy] = totals.get(ccy, 0) + cents
+        if uid is None:
+            key = x.user_id or x.employee_id
+            per_user.setdefault(key, {})
+            per_user[key][ccy] = per_user[key].get(ccy, 0) + cents
+
+    payload: dict[str, object] = {
+        "user_id": uid,
+        "claims": pending,
+        "totals_by_currency": [
+            {"currency": ccy, "amount_cents": cents}
+            for ccy, cents in sorted(totals.items())
+        ],
+    }
+    if uid is None:
+        payload["by_user"] = [
+            {
+                "user_id": uid_key,
+                "employee_id": next(
+                    (
+                        x.employee_id
+                        for x in pending
+                        if (x.user_id or x.employee_id) == uid_key
+                    ),
+                    uid_key,
+                ),
+                "totals_by_currency": [
+                    {"currency": ccy, "amount_cents": cents}
+                    for ccy, cents in sorted(per_user[uid_key].items())
+                ],
+            }
+            for uid_key in sorted(per_user.keys())
+        ]
+    return ok(payload)
+
+
+@app.get("/api/v1/exchange_rates")
+def api_exchange_rates(
+    as_of: str | None = None,
+    quote: str | None = None,
+    source: str | None = None,
+) -> Response:
+    """§09 "Exchange rates service" — list FX rates in the demo
+    workspace. Filters are optional; ``as_of`` narrows to a single
+    date (YYYY-MM-DD), ``quote`` to a currency code, ``source`` to
+    ``ecb | manual | stale_carryover``.
+    """
+
+    rows = list(md.EXCHANGE_RATES)
+    if as_of:
+        try:
+            target = date.fromisoformat(as_of)
+        except ValueError:
+            return JSONResponse({"detail": "bad as_of"}, status_code=422)
+        rows = [r for r in rows if r.as_of_date == target]
+    if quote:
+        rows = [r for r in rows if r.quote.upper() == quote.upper()]
+    if source:
+        rows = [r for r in rows if r.source == source]
+    return ok(rows)
+
+
 @app.get("/api/v1/issues")
 def api_issues() -> Response:
     return ok(md.ISSUES)

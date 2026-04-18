@@ -638,6 +638,16 @@
 .expense-row__time { color: var(--ink-3); font-size: 11px; font-family: "JetBrains Mono", monospace; }
 .expense-row__side { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .expense-row__amount { font-family: "Fraunces", serif; font-weight: 600; }
+.expense-row__owed {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.reimbursement-totals { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.reimbursement-totals__row { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.reimbursement-totals__amount { font-family: "Fraunces", serif; font-weight: 600; font-size: 20px; }
+.reimbursement-totals__ccy { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-3); letter-spacing: 0.04em; }
 
 .thread-list { list-style: none; padding: 0; margin: 0; }
 .thread { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
@@ -657,6 +667,7 @@
 .table td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .table tbody tr:last-child td { border-bottom: 0; }
 .table__sub { color: var(--ink-3); font-size: 12px; }
+.table tbody tr.table__foot td { border-top: 2px solid var(--line); border-bottom: 0; background: var(--paper); }
 .table--compact td, .table--compact th { padding: 6px 8px; font-size: 13px; }
 .table--roomy td, .table--roomy th { padding: 14px 16px; }
 .row--warn { background: var(--sand-soft); }
@@ -836,6 +847,8 @@
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 14px;
 }
+.panel__head-stack { display: flex; flex-direction: column; gap: 4px; }
+.panel__sub { margin: 0; font-size: 13px; }
 .panel--article { padding: 32px 36px; }
 .panel--danger { border-color: var(--rust); border-width: 1.5px; }
 

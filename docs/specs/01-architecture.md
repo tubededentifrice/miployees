@@ -110,7 +110,7 @@ clients** to `api.v1.*` using a long-lived API token (§03). The CLI
   `CREWDAY_WORKER=external`.
 - Jobs: `generate_task_occurrences`, `poll_ical`, `send_daily_digest`,
   `detect_anomalies`, `retry_failed_webhooks`, `prune_sessions`,
-  `rotate_audit_log`.
+  `rotate_audit_log`, `refresh_exchange_rates` (daily, §09).
 
 ## Module boundaries and bounded contexts
 

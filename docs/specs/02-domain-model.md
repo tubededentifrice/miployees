@@ -1099,21 +1099,120 @@ layer). The API exposes this as `GET /settings/resolved` (§12).
 
 ## Money
 
+### Storage and minor units
+
 - All money stored as **integer cents** plus ISO-4217 `currency` (text)
   on the owning row. No floats.
-- `default_currency` is a column on `workspaces` (see table above).
-  Per-property override via `property.default_currency` (§04).
 - **Currency minor units** are looked up from a static ISO-4217 table
   (JPY=0, BHD=3, EUR=2). All `*_cents` columns store the currency's
   minor unit. Formatting uses the minor-unit count, never hardcoded
   `/ 100`.
-- v1 enforces that all pay rules for a single `work_engagement`
-  within one pay period share one currency.
-- Lifting the single-currency-per-period constraint later requires only
-  conversion logic at period-close time -- the per-entity `currency`
-  columns are already in place.
-- Expenses may be in any currency, converted to the workspace default at
-  approval time using the snapshot rate stored on the expense line.
+
+### Currency inheritance
+
+The **default currency** for any money-touching operation resolves
+through a simple cascade — broadest to narrowest:
+
+```
+workspace.default_currency
+  └── property.default_currency           (§04)
+        └── per-row currency on the entity itself
+              (expense_claim.currency, pay_rule.currency,
+               payslip.currency, work_order.currency,
+               vendor_invoice.currency, asset.purchase_currency, …)
+```
+
+- The **workspace default** is the fallback for rows that do not pick
+  a currency themselves. It is also the reporting currency for the
+  expense ledger (§09 "Reports and exports") and the base currency
+  from which exchange rates are expressed.
+- A **property override** applies to rows created in the property's
+  context that do not specify their own currency: new expense claims,
+  new pay rules for workers on that property, new work orders, asset
+  purchases. The override does **not** retroactively convert rows that
+  already have a currency snapped.
+- **Per-row currency** always wins once set. An expense claim filed
+  at a French property may still carry `currency = "GBP"` (the worker
+  bought something in London); a pay rule may be in a different
+  currency from its property.
+
+### Editing `workspace.default_currency`
+
+The workspace default is a text column and may be edited by an
+owner-or-manager at any time. Changing it **does not re-snap any
+historical row** — every `expense_claim.exchange_rate_to_default`,
+`vendor_invoice.exchange_rate_to_default`, and
+`payslip.payout_snapshot_json` already issued remains exactly as
+captured. The change only affects:
+
+- the "default" target of rate snapshots for **future** approvals,
+- reporting output (new exports convert to the new default),
+- the set of currencies the daily `refresh_exchange_rates` job keeps
+  warm (see §09 "Exchange rates service").
+
+Historical exports re-generated after a default change are stamped
+with the default that was **in effect at the referenced event's
+timestamp** (approval date for claims, issue date for payslips),
+not the default at export time. The `audit_log` row for the default
+change carries `before_json` / `after_json` so the change itself is
+auditable.
+
+### Multi-currency expenses (v1)
+
+Expenses are **fully multi-currency in v1**: any `expense_claim` may
+carry any ISO-4217 `currency`, with `exchange_rate_to_default`
+snapped against `workspace.default_currency` at approval time from
+the `exchange_rate` table (§ below). The *payment* currency owed to
+the employee is determined by the reimbursement destination's
+currency, per §09 "Amount owed to the employee".
+
+### Multi-currency payroll (deferred to post-v1)
+
+v1 enforces that all pay rules for a single `work_engagement`
+within one pay period share one currency. The per-entity `currency`
+columns (`pay_rule.currency`, `payslip.currency`) are already in
+place; lifting the single-currency-per-period constraint later
+requires only conversion logic at period-close time.
+
+### `exchange_rate`
+
+Daily FX rates used to snap conversions on approval. One row per
+(`base`, `quote`, `as_of_date`). Populated by the
+`refresh_exchange_rates` worker job (§01, §09) and — as a fallback —
+by the on-demand fetch that runs at approval time if a needed row is
+missing.
+
+| column           | type       | notes                                                              |
+|------------------|------------|--------------------------------------------------------------------|
+| id               | ULID PK    |                                                                    |
+| workspace_id     | ULID FK    | rates are workspace-scoped; rationale in §09 "Exchange rates service" |
+| base             | text       | ISO-4217 — always the workspace's default currency at fetch time   |
+| quote            | text       | ISO-4217 — the currency being converted from (e.g. `GBP` → `EUR`)  |
+| as_of_date       | date       | ECB publication date (workspace-local: ECB working day in CET)     |
+| rate             | numeric    | rate in the sense `1 {quote} = {rate} {base}`. Precision: 8 dp.    |
+| source           | text       | `ecb | manual | stale_carryover` (see §09)                         |
+| source_ref       | text?      | for `manual`, the approver's user id; for `ecb`, the publication URL |
+| fetched_at       | tstz       | when the row was written                                           |
+| fetched_by_job   | text?      | `refresh_exchange_rates` or `on_demand_fallback`; null for `manual` |
+
+**Uniqueness:** `UNIQUE(workspace_id, base, quote, as_of_date)`. The
+worker upserts by this key; a manual override is allowed only when
+`source = 'ecb'` is absent for that date (the override then lands
+with `source = 'manual'`). Once any snapshot refers to a rate, the
+row is immutable (CI guard + DB trigger): editing a rate that has
+been cited would rewrite history.
+
+**Weekend / holiday carryover.** ECB publishes on working days only.
+For dates without a published rate, the worker writes a
+`stale_carryover` row copying the last working day's rate and
+marking it accordingly. A `stale_carryover` aged >3 calendar days
+raises a daily-digest warning and is considered unfit for approvals
+of claims purchased after the carryover began (the manager is
+prompted to enter a manual rate or retry the job).
+
+**Retention.** `exchange_rate` rows are never pruned — they are the
+audit trail for every snapped claim/invoice. Storage is cheap
+(hundreds of rows per workspace per year).
 
 ### Country and locale
 

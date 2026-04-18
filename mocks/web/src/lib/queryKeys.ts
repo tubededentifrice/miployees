@@ -17,6 +17,9 @@ export const qk = {
   week: () => ["week"] as const,
   dashboard: () => ["dashboard"] as const,
   expenses: (scope: "all" | "mine") => ["expenses", scope] as const,
+  expensesPendingReimbursement: (userId: "me" | string) =>
+    ["expenses", "pending_reimbursement", userId] as const,
+  exchangeRates: () => ["exchange_rates"] as const,
   issues: () => ["issues"] as const,
   stays: () => ["stays"] as const,
   taskTemplates: () => ["task_templates"] as const,
