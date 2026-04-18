@@ -3,6 +3,7 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { EmptyState, Loading } from "@/components/common";
 import TaskListCard from "@/components/TaskListCard";
+import NewTaskButton from "@/components/NewTaskModal";
 import type { Property, Task } from "@/types/api";
 
 interface WeekPayload {
@@ -26,17 +27,21 @@ export default function WeekPage() {
 
   return (
     <section className="phone__section">
-      <h2 className="section-title">This week</h2>
+      <div className="section-title-row">
+        <h2 className="section-title">This week</h2>
+        <NewTaskButton />
+      </div>
       <ul className="task-list">
-        {tasks.map((t) => {
-          const prop = propsById.get(t.property_id);
-          if (!prop) return null;
-          return (
-            <li key={t.id}>
-              <TaskListCard task={t} property={prop} showWeekday showStatus />
-            </li>
-          );
-        })}
+        {tasks.map((t) => (
+          <li key={t.id}>
+            <TaskListCard
+              task={t}
+              property={propsById.get(t.property_id) ?? null}
+              showWeekday
+              showStatus
+            />
+          </li>
+        ))}
       </ul>
     </section>
   );

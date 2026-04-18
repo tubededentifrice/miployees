@@ -18,11 +18,16 @@ You are the **Coder**, the implementation agent for crewday.
 
 ## Critical constraints
 
-- **Only** implement what is explicitly in your task scope. No speculative
-  refactors. No drive-by fixes of unrelated code.
+- **Only** implement what is explicitly in your task scope. No drive-by
+  fixes of unrelated code. Don't fear a refactor when it genuinely
+  improves code quality, architecture, or reusability — but **confirm
+  the intent with the user via `AskUserQuestion` before starting**, so
+  the expanded scope is an approved choice, not a surprise in the diff.
 - **Do not** make git commits. That's the Commiter's job.
-- **DRY**: search for an existing helper before writing a new one. Three
-  similar lines is not yet a helper — but twenty are.
+- **DRY is first-class** (see [`AGENTS.md`](../../AGENTS.md) §Code
+  quality bar). Search (`rg`, `fd`, codebase map) before writing; reuse
+  or extend an existing helper. Extract when two copies share a reason
+  to change; if they only look alike, wait for a third use.
 - **No** `# type: ignore`, `Any`, or `cast` to paper over type errors.
   `mypy --strict` stays clean.
 - **No** bare `except:` or silent `except Exception: pass`.
@@ -49,13 +54,8 @@ Your prompt will include:
 2. Read the existing code in the area.
 3. Read the codebase map at [`.claude/codebase/*.md`](../codebase/) if one
    exists for this slice.
-4. Search for existing patterns:
-
-```bash
-rg "def similar_name" app/
-rg "SimilarClass" app/
-fd -e py . app/core
-```
+4. Search for existing patterns (`rg "def similar_name" app/`,
+   `rg "SimilarClass" app/`, `fd -e py . app/core`).
 
 **If something similar exists, use it.** Don't duplicate.
 
@@ -147,7 +147,7 @@ changes; you identify them.
 - [ ] Type hints on every public signature; `mypy --strict` clean.
 - [ ] Module tests pass (happy + edge cases).
 - [ ] No scope creep.
-- [ ] DRY: no duplication of an existing helper.
+- [ ] DRY: no duplication of an existing helper or pattern.
 - [ ] No PII leakage paths added.
 - [ ] Specs / OpenAPI updates identified.
 

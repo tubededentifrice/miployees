@@ -240,6 +240,119 @@ ops.example.com {
 - Encrypted `secret_envelope` rows included in pg_dump; root key is
   **not**.
 
+## Recipe C — Demo deployment
+
+Target: an internet-facing public demo (`demo.crewday.app`) that
+lets unauthenticated visitors try the product against fake data. One
+visitor per cookie, one workspace per (cookie, scenario) pair, 24 h
+rolling TTL from last activity. See §24 for the full demo-mode spec.
+
+Critical: **demo is its own container with its own database and its
+own OpenRouter key.** Prod never reads demo rows and demo never reads
+prod rows. The image is the same image as prod; the difference is
+entirely env.
+
+### Topology
+
+- **Host:** `demo.crewday.app` (subdomain distinct from any prod host).
+- **Database:** a dedicated SQLite file under the demo container's
+  volume, **or** a dedicated Postgres DB in a dedicated cluster. It
+  must not be the same physical store as any prod deployment. The
+  bootstrap refuses to start if `CREWDAY_DATABASE_URL` matches any URL
+  in `CREWDAY_DEMO_DB_DENYLIST`.
+- **Storage:** local filesystem under `/data/demo/` with a
+  per-workspace subdirectory (`/data/demo/<workspace_id>/`). S3 is
+  out of scope on demo.
+- **TLS:** same as prod recipes — Caddy fronts the container on
+  443/80, binds to 127.0.0.1:8000 → `demo.crewday.app`.
+
+### Compose snippet
+
+```yaml
+services:
+  demo-app:
+    image: ghcr.io/<org>/crewday:<tag>
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      CREWDAY_DEMO_MODE: "1"
+      CREWDAY_PUBLIC_URL: "https://demo.crewday.app"
+      CREWDAY_DATABASE_URL: "sqlite+aiosqlite:///data/demo.db"
+      CREWDAY_DATA_DIR: "/data"
+      CREWDAY_BIND: "0.0.0.0:8000"
+      CREWDAY_ALLOW_PUBLIC_BIND: "1"
+      CREWDAY_ROOT_KEY: "${DEMO_ROOT_KEY}"              # distinct from prod
+      CREWDAY_DEMO_COOKIE_KEY: "${DEMO_COOKIE_KEY}"     # 32 bytes base64
+      CREWDAY_DEMO_FRAME_ANCESTORS: "https://crewday.app https://*.crewday.app"
+      CREWDAY_DEMO_GLOBAL_DAILY_USD_CAP: "5"
+      CREWDAY_DEMO_BLOCK_CIDR: ""                        # optional deny-list
+      OPENROUTER_API_KEY: "${DEMO_OPENROUTER_KEY}"       # distinct from prod
+      # No SMTP_*; the Mailer port binds to the null adapter under
+      # CREWDAY_DEMO_MODE=1 regardless of SMTP_* values.
+    volumes:
+      - ./data-demo:/data
+    ports:
+      - "127.0.0.1:8100:8000"
+```
+
+The bootstrap guard enforces that `CREWDAY_DEMO_MODE=1` sees a
+`CREWDAY_PUBLIC_URL` whose host ends in `.crewday.app` **and** a
+`CREWDAY_DATABASE_URL` distinct from every URL in
+`CREWDAY_DEMO_DB_DENYLIST`. The intent is to make "flipping demo on
+in prod by accident" a hard boot failure, not a quiet misconfig.
+
+### Caddyfile
+
+```
+demo.crewday.app {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8100
+    log {
+        output file /data/demo-access.log
+    }
+}
+```
+
+### Bootstrap
+
+```
+# Root key for demo — DISTINCT from prod. Keep separate.
+export DEMO_ROOT_KEY=$(python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())")
+export DEMO_COOKIE_KEY=$(python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())")
+export DEMO_OPENROUTER_KEY="sk-or-…"                  # a demo-only key
+
+docker compose -f demo-compose.yml up -d
+```
+
+No `crewday admin init` on demo. There is no bootstrap owner, no
+first-boot magic link. The scenarios seed themselves on each visitor's
+first request. Scenario fixtures live under `app/fixtures/demo/`
+inside the image (§24).
+
+### GC and scheduled jobs on demo
+
+The following worker jobs run on demo in addition to the regular job
+set:
+
+- `demo_gc` — every 15 minutes; purges `demo_workspace` rows whose
+  `expires_at < now()` and every dependent row via FK cascade.
+- `demo_usage_rollup` — every 60 s; refreshes the per-workspace
+  rolling 30-day cost aggregate (§11).
+
+The following jobs are **disabled** on demo:
+
+- iCal polling.
+- Daily digest composition and anomaly detection.
+- Email delivery retries (the Mailer is the null adapter).
+- Webhook delivery retries.
+
+### Backup on demo
+
+Demo does not need a backup policy. Every workspace is ephemeral and
+a lost container is indistinguishable from 15 minutes of GC. The
+operator may still snapshot the scenario fixtures (they live in the
+image) for reproducibility.
+
 ## Bootstrap (both recipes)
 
 ```
@@ -270,6 +383,12 @@ docker compose exec app crewday admin init --email owner@example.com
 | `CREWDAY_TRUSTED_INTERFACES`| `tailscale*`                  | comma-separated fnmatch globs of interface names whose addresses pass without the opt-in; set value **replaces** the default (no implicit baseline) |
 | `SMTP_*`                    | -                              | see §10                  |
 | `OPENROUTER_API_KEY`        | -                              | see §11                  |
+| `CREWDAY_DEMO_MODE`         | 0                              | Recipe C only; refuses to boot outside the demo URL allowlist. §24 |
+| `CREWDAY_DEMO_COOKIE_KEY`   | -                              | Recipe C only; 32 bytes base64; signs `__Host-crewday_demo`. §24 |
+| `CREWDAY_DEMO_FRAME_ANCESTORS` | -                           | Recipe C only; whitespace-separated CSP `frame-ancestors` allowlist. §15 |
+| `CREWDAY_DEMO_GLOBAL_DAILY_USD_CAP` | 5                      | Recipe C only; deployment-wide daily kill-switch across every demo workspace. §11 |
+| `CREWDAY_DEMO_BLOCK_CIDR`   | -                              | Recipe C only; optional comma-separated IP deny-list. §24 |
+| `CREWDAY_DEMO_DB_DENYLIST`  | -                              | Recipe C only; comma-separated list of DB URLs the demo refuses to start on. §16 |
 
 A full env reference lives in `deploy/.env.example`.
 

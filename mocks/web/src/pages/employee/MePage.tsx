@@ -51,9 +51,19 @@ export default function MePage() {
     enabled: Boolean(empId),
   });
 
-  if (me.isPending) return <section className="phone__section"><Loading /></section>;
+  if (me.isPending) {
+    return (
+      <section className="me-page">
+        <Loading />
+      </section>
+    );
+  }
   if (me.isError || !me.data) {
-    return <section className="phone__section"><p className="muted">Failed to load.</p></section>;
+    return (
+      <section className="me-page">
+        <p className="muted">Failed to load.</p>
+      </section>
+    );
   }
 
   const { employee } = me.data;
@@ -61,26 +71,9 @@ export default function MePage() {
   const langLabel = LANG_LABEL[employee.language] ?? employee.language;
   const clockChip = CLOCK_CHIP[employee.clock_mode] ?? "ghost";
 
-  const firstName = employee.name.split(" ")[0];
-  const todayStr = me.data.today
-    ? new Date(me.data.today).toLocaleDateString("en-GB", {
-        weekday: "long",
-        day: "numeric",
-        month: "short",
-      })
-    : "";
-
   return (
-    <>
-      {/* — Identity — */}
-      <section className="phone__section phone__section--hero">
-        <div className="me-greet">
-          <span className="me-greet__hello">Hi, {firstName}</span>
-          <span className="me-greet__date">{todayStr}</span>
-        </div>
-      </section>
-
-      <section className="phone__section">
+    <section className="me-page">
+      <section className="panel">
         <div className="profile-card">
           <div className="avatar avatar--xl">{employee.avatar_initials}</div>
           <div>
@@ -103,9 +96,8 @@ export default function MePage() {
         </div>
       </section>
 
-      {/* — Work & schedule — */}
-      <section className="phone__section">
-        <h2 className="section-title">Shift</h2>
+      <section className="panel">
+        <header className="panel__head"><h2>Shift</h2></header>
         <Link to="/shifts" className="stack-row">
           <div>
             <strong>
@@ -121,8 +113,8 @@ export default function MePage() {
         </Link>
       </section>
 
-      <section className="phone__section">
-        <h2 className="section-title">Clock mode</h2>
+      <section className="panel">
+        <header className="panel__head"><h2>Clock mode</h2></header>
         <div className="stack-row">
           <div>
             <strong>Clock-in: {employee.clock_mode}</strong>
@@ -138,8 +130,8 @@ export default function MePage() {
         </div>
       </section>
 
-      <section className="phone__section">
-        <h2 className="section-title">Weekly availability</h2>
+      <section className="panel">
+        <header className="panel__head"><h2>Weekly availability</h2></header>
         <p className="muted">Read-only. Ask the manager to change these.</p>
         <div className="avail-grid">
           {DAYS.map(([key, label]) => {
@@ -163,8 +155,8 @@ export default function MePage() {
         </div>
       </section>
 
-      <section className="phone__section">
-        <h2 className="section-title">My leave</h2>
+      <section className="panel">
+        <header className="panel__head"><h2>My leave</h2></header>
         <ul className="task-list">
           {leaves.length === 0 ? (
             <li className="empty-state empty-state--quiet">No leave on file.</li>
@@ -189,21 +181,18 @@ export default function MePage() {
         <button className="btn btn--ghost" type="button">+ Request leave</button>
       </section>
 
-      {/* — Agent — */}
-      <AgentApprovalModePanel variant="phone" />
+      <AgentApprovalModePanel />
 
       <AgentPreferencesPanel
         scope="user"
-        variant="phone"
         title="My agent preferences"
         subtitle="Private to you. Written in plain language; sent to your chat agent on every turn."
       />
 
       <ChatChannelsMeCard me={me.data} />
 
-      {/* — Settings — */}
-      <section className="phone__section">
-        <h2 className="section-title">Language</h2>
+      <section className="panel">
+        <header className="panel__head"><h2>Language</h2></header>
         <div className="stack-row">
           <div>
             <strong>{langLabel}</strong>
@@ -215,8 +204,11 @@ export default function MePage() {
         </div>
       </section>
 
-      <section className="phone__section">
-        <h2 className="section-title">Passkeys</h2>
+      <section className="panel">
+        <header className="panel__head">
+          <h2>Passkeys</h2>
+          <button className="btn btn--moss btn--sm" type="button">+ Register another device</button>
+        </header>
         <ul className="task-list">
           <li className="stack-row">
             <div>
@@ -226,12 +218,10 @@ export default function MePage() {
             <button className="btn btn--ghost btn--sm" type="button">Remove</button>
           </li>
         </ul>
-        <button className="btn btn--moss" type="button">+ Register another device</button>
       </section>
 
-      {/* — History (link out) — */}
-      <section className="phone__section">
-        <h2 className="section-title">History</h2>
+      <section className="panel">
+        <header className="panel__head"><h2>History</h2></header>
         <Link to="/history" className="stack-row">
           <div>
             <strong>Past tasks, chats, expenses, leaves</strong>
@@ -240,6 +230,6 @@ export default function MePage() {
           <Chip tone="ghost" size="sm">View</Chip>
         </Link>
       </section>
-    </>
+    </section>
   );
 }

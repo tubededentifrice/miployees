@@ -960,18 +960,21 @@ def api_managers() -> Response:
 
 
 @app.get("/api/v1/tasks")
-def api_tasks() -> Response:
-    return ok(md.TASKS)
+def api_tasks(request: Request) -> Response:
+    uid = current_user_id(request)
+    return ok([t for t in md.TASKS if md.visible_to(t, uid)])
 
 
 @app.get("/api/v1/tasks/{tid}")
-def api_task(tid: str) -> Response:
+def api_task(tid: str, request: Request) -> Response:
     task = md.task_by_id(tid)
     if task is None:
         return JSONResponse({"detail": "not found"}, status_code=404)
+    if not md.visible_to(task, current_user_id(request)):
+        return JSONResponse({"detail": "not found"}, status_code=404)
     return ok({
         "task": task,
-        "property": md.property_by_id(task.property_id),
+        "property": md.property_by_id(task.property_id) if task.property_id else None,
         "instructions": md.instructions_for_task(task),
         "comments": md.comments_for_task(tid),
     })
@@ -979,30 +982,39 @@ def api_task(tid: str) -> Response:
 
 @app.get("/api/v1/today")
 def api_today(request: Request) -> Response:
-    emp = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
-    tasks = sorted(md.tasks_for_employee(emp.id), key=lambda t: t.scheduled_start)
-    today_tasks = [t for t in tasks if t.scheduled_start.date() == md.TODAY]
+    uid = current_user_id(request)
+    tasks = sorted(md.tasks_for_user(uid), key=lambda t: t.scheduled_start)
+    today_tasks = [
+        t for t in tasks
+        if t.scheduled_start.date() == md.TODAY and md.visible_to(t, uid)
+    ]
     now_task = next((t for t in today_tasks if t.status in {"pending", "in_progress"}), None)
     upcoming = [t for t in today_tasks if t is not now_task and t.status in {"pending", "in_progress"}]
     completed = [t for t in today_tasks if t.status == "completed"]
-    _ = request  # quiet linters
     return ok({"now_task": now_task, "upcoming": upcoming, "completed": completed,
                "properties": md.PROPERTIES})
 
 
 @app.get("/api/v1/week")
-def api_week() -> Response:
-    emp = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
+def api_week(request: Request) -> Response:
+    uid = current_user_id(request)
     return ok({
-        "tasks": sorted(md.tasks_for_employee(emp.id), key=lambda t: t.scheduled_start),
+        "tasks": sorted(
+            [t for t in md.tasks_for_user(uid) if md.visible_to(t, uid)],
+            key=lambda t: t.scheduled_start,
+        ),
         "properties": md.PROPERTIES,
     })
 
 
 @app.get("/api/v1/dashboard")
-def api_dashboard() -> Response:
+def api_dashboard(request: Request) -> Response:
+    uid = current_user_id(request)
     on_shift = [e for e in md.EMPLOYEES if e.clocked_in_at]
-    today_tasks = [t for t in md.TASKS if t.scheduled_start.date() == md.TODAY]
+    today_tasks = [
+        t for t in md.TASKS
+        if t.scheduled_start.date() == md.TODAY and md.visible_to(t, uid)
+    ]
     by_status = {
         "completed":   [t for t in today_tasks if t.status == "completed"],
         "in_progress": [t for t in today_tasks if t.status == "in_progress"],
@@ -1022,9 +1034,9 @@ def api_dashboard() -> Response:
 
 
 @app.get("/api/v1/expenses")
-def api_expenses(mine: bool = False) -> Response:
+def api_expenses(request: Request, mine: bool = False) -> Response:
     if mine:
-        return ok(md.expenses_for_employee(md.DEFAULT_EMPLOYEE_ID))
+        return ok(md.expenses_for_user(current_user_id(request)))
     return ok(md.EXPENSES)
 
 
@@ -1150,6 +1162,11 @@ def api_llm_assignments() -> Response:
 @app.get("/api/v1/llm/calls")
 def api_llm_calls() -> Response:
     return ok(md.LLM_CALLS)
+
+
+@app.get("/api/v1/workspace/usage")
+def api_workspace_usage() -> Response:
+    return ok(md.WORKSPACE_USAGE)
 
 
 @app.get("/api/v1/settings")
@@ -1373,15 +1390,26 @@ def api_guest() -> Response:
 
 
 @app.get("/api/v1/history")
-def api_history(tab: str = "tasks") -> Response:
+def api_history(request: Request, tab: str = "tasks") -> Response:
     if tab not in {"tasks", "chats", "expenses", "leaves"}:
         tab = "tasks"
-    emp = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
+    uid = current_user_id(request)
+    emp = md.employee_by_user_id(uid)
+    emp_id = emp.id if emp else ""
     return ok({
         "tab": tab,
-        "tasks": [t for t in md.tasks_for_employee(emp.id) if t.status in {"completed", "skipped"}],
-        "expenses": [x for x in md.expenses_for_employee(emp.id) if x.status in {"approved", "reimbursed", "rejected"}],
-        "leaves": [lv for lv in md.leaves_for_employee(emp.id) if lv.approved_at is not None and lv.ends_on < md.TODAY],
+        "tasks": [
+            t for t in md.tasks_for_user(uid)
+            if t.status in {"completed", "skipped"} and md.visible_to(t, uid)
+        ],
+        "expenses": [
+            x for x in md.expenses_for_user(uid)
+            if x.status in {"approved", "reimbursed", "rejected"}
+        ],
+        "leaves": [
+            lv for lv in md.leaves_for_employee(emp_id)
+            if lv.approved_at is not None and lv.ends_on < md.TODAY
+        ] if emp_id else [],
         "chats": md.HISTORY.get("chats", []),
     })
 
@@ -1516,6 +1544,57 @@ def api_expenses_decide(xid: str, decision: str) -> Response:
             hub.publish(event, {"id": xid, "status": new_status})
             return ok(x)
     return JSONResponse({"detail": "not found"}, status_code=404)
+
+
+@app.post("/api/v1/tasks")
+def api_tasks_create(request: Request, payload: dict[str, Any] = Body(...)) -> Response:
+    """Quick-add a task for the current user. §06 — self-assigned,
+    `is_personal = true` by default. Workers land here too now that §05
+    `tasks.create` allows `all_workers` (personal-only in spirit; the
+    UI enforces the opt-out toggle)."""
+    uid = current_user_id(request)
+    role = current_role(request)
+    emp_id = md.DEFAULT_EMPLOYEE_ID if role == "employee" else ""
+
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"detail": "title required"}, status_code=400)
+
+    is_personal = bool(payload.get("is_personal", True))
+    property_id = str(payload.get("property_id") or "")
+    area = str(payload.get("area") or "")
+
+    scheduled_raw = payload.get("scheduled_start")
+    if scheduled_raw:
+        try:
+            raw = str(scheduled_raw).replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return JSONResponse({"detail": "bad scheduled_start"}, status_code=400)
+        # Seed TASKS are tz-naive; keep this normalised so the list-wide
+        # sort in /today doesn't mix aware + naive datetimes.
+        scheduled = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    else:
+        scheduled = datetime.combine(md.TODAY, time(9, 0))
+
+    task = md.Task(
+        id=f"t-u-{len(md.TASKS) + 1}",
+        title=title,
+        property_id=property_id,
+        area=area,
+        assignee_id=emp_id,
+        scheduled_start=scheduled,
+        estimated_minutes=int(payload.get("estimated_minutes") or 30),
+        priority="normal",
+        status="pending",
+        assigned_user_id=uid,
+        created_by=uid,
+        is_personal=is_personal,
+        workspace_id=md.DEFAULT_WORKSPACE_ID,
+    )
+    md.TASKS.append(task)
+    hub.publish("task.updated", {"task": task})
+    return ok(task, status_code=201)
 
 
 @app.post("/api/v1/issues")

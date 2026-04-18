@@ -159,6 +159,8 @@ range is evaluated only when `paused_at` is null.
 | completion_note_md           | text?     |                                               |
 | skipped_reason               | text?     |                                               |
 | cancellation_reason          | text?     |                                               |
+| created_by                   | ULID FK   | user who originated the task (NOT NULL)       |
+| is_personal                  | bool      | task is private to creator + workspace owners; default false |
 | llm_generated                | bool      | created by an agent                           |
 | llm_correlation_id           | ULID?     | if llm_generated                              |
 | created_at / updated_at      | tstz      |                                               |
@@ -181,8 +183,9 @@ The canonical enum lives in §02 (`task_state`, 7 values including
 
 - `scheduled` → `pending` happens at `scheduled_for_utc - 1h` (or
   immediately for one-offs created with a past `scheduled_for`). This
-  is the "now actionable, on today's list" boundary used by the
-  worker PWA to separate `/today` from `/week`.
+  is the "now actionable, on today's list" boundary used to separate
+  `/today` from `/week` — for any user (worker or manager) who has
+  tasks assigned to them.
 - `pending` → `in_progress` is optional; workers may go directly
   to `completed`.
 - `completed` is terminal.
@@ -737,6 +740,24 @@ When a property is created with `kind IN (str, vacation)`:
 
 For `mixed`: same rules but with
 `guest_kind_filter = ['guest', 'staff', 'other']`.
+
+## Self-created and personal tasks
+
+Any user with the `tasks.create` permission (owners, managers, and
+workers — see §05 action catalog) may originate a task via
+`POST /api/v1/tasks` or the quick-add modal available on `/today` and
+`/week`.
+
+The quick-add default is `is_personal = true, assigned_user_id =
+created_by` (self-assigned). The user may flip "share to team" before
+submitting, which sets `is_personal = false` and optionally re-assigns
+to another user. Once created, the `is_personal` flag can only be
+changed by the `created_by` user or a workspace owner.
+
+Personal tasks (`is_personal = true`) are not visible to non-owner
+managers, team dashboards, or reports. Visibility rule lives in §15
+"Personal task visibility". Agents (§11) see personal tasks only for
+the user they are embedded for.
 
 ## Natural-language intake (agent)
 

@@ -386,3 +386,49 @@ and never creates a session.
 - We never store a device fingerprint beyond AAGUID (which only
   identifies the authenticator model).
 - `last_used_at` is visible only to the owning user.
+
+## Demo sessions
+
+Demo deployments (§24) do not use passkeys, magic links, or `sessions`
+rows. Authority on the demo comes from a **signed demo cookie** that
+binds the browser to one or more ephemeral demo workspaces and picks a
+seeded persona inside each.
+
+- Cookie name: `__Host-crewday_demo`.
+- Flags: `Secure; HttpOnly; SameSite=None; Path=/; Partitioned;
+  Max-Age=2592000` (30 days). `SameSite=None` and `Partitioned`
+  together opt into CHIPS so the cookie works inside cross-origin
+  iframes on the landing page while remaining partitioned per
+  top-frame origin. See §15 "Demo deployment".
+- Payload: an `itsdangerous`-signed JSON blob with a list of
+  `(scenario, workspace_id, persona_user_id)` bindings. See §24
+  "Demo cookie".
+- Signing key: `CREWDAY_DEMO_COOKIE_KEY`, 32 bytes base64. Rotating
+  the key invalidates every live demo cookie on the next request,
+  which simply causes a reseed.
+
+The demo cookie is **not** a `sessions` row and does not appear in
+the revocation/rotation surfaces described above. It is not a
+credential — tampering invalidates the signature, the server treats
+it as absent, and a fresh workspace is minted.
+
+Routes that would produce authenticating side effects in prod all
+return `501` with `error = "demo_disabled"` when
+`CREWDAY_DEMO_MODE=1`:
+
+- Every passkey ceremony endpoint (`/auth/passkey/*`).
+- Magic-link send and consume (`/auth/magic/*`).
+- API token creation — scoped and delegated alike
+  (`POST /api/v1/auth/tokens`). The embedded chat agents (§11) on
+  demo acquire their delegated-token equivalent through the demo
+  cookie's persona binding, bypassing the normal mint path.
+- Break-glass code generation.
+- The interactive-session-only endpoints (§11) stay refused —
+  their response bodies contain real secrets in prod and there is
+  nothing demo-equivalent to return.
+
+Audit still works: every demo write lands an `audit_log` row with
+`actor_kind = 'user'`, `actor_id = persona_user_id`, and
+`agent_label = 'demo'` so the trail is coherent inside the workspace
+for its lifetime. Rows are garbage-collected with the workspace
+(§24).

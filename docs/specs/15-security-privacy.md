@@ -381,6 +381,22 @@ Users with membership in more than one workspace (§02
 chosen workspace id rides with every subsequent request. Switching
 workspaces re-seeds the RLS context and is audited.
 
+### Personal task visibility
+
+Tasks with `is_personal = true` (§06) are visible only to: (a) the
+user identified by `task.created_by`, and (b) members of the `owners`
+permission group for the workspace. Non-owner managers never see
+personal tasks in listings, team dashboards, approval queues, reports,
+or audit surfaces — the same `workspace_id` workspace-tenancy filter
+applies, but an additional application-layer check enforces
+`is_personal = false OR created_by = caller_id OR caller_is_owner`.
+On Postgres this is an additional RLS predicate on the `tasks` table;
+on SQLite it is enforced as a query-time filter in the ORM layer.
+
+Workers may originate tasks via `tasks.create` (§05) but the quick-add
+default is `is_personal = true` — sharing to team requires an explicit
+opt-out by the creator before submission.
+
 ## Off-app channel privacy (WhatsApp / SMS)
 
 When off-app adapters are eventually enabled, WhatsApp and SMS
@@ -475,6 +491,99 @@ See §11 redaction details. Additional rules:
 - Security contact in `SECURITY.md` (TBD per-deployment).
 - Break-glass path (§03) documented and tested quarterly.
 - `audit export` + `backup` before any destructive incident action.
+
+## Demo deployment
+
+The demo deployment (§24) relaxes a handful of the headers and cookie
+flags above, and adds a set of demo-specific abuse controls. None of
+these changes apply to prod or staging — they are gated on
+`CREWDAY_DEMO_MODE=1` and the demo deployment refuses to boot if that
+flag is set on a container whose `CREWDAY_PUBLIC_URL` is not on the
+demo allowlist.
+
+### CSP on demo
+
+The demo app must be embeddable in a landing page that lives at a
+different origin. `frame-ancestors` is therefore an **allowlist**
+rather than `'none'`:
+
+- `frame-ancestors` = whitespace-separated value of
+  `CREWDAY_DEMO_FRAME_ANCESTORS`; default empty → demo runs stand-
+  alone (no embedding). Operators set it to the landing origins they
+  intend to embed from (e.g. `https://crewday.app https://*.crewday.app`).
+- `X-Frame-Options` is not set on demo responses — the CSP
+  `frame-ancestors` directive supersedes and the legacy header cannot
+  express an allowlist of multiple origins.
+- Every other CSP directive is unchanged from the prod baseline
+  above: `default-src 'self'`, no inline scripts except the hashed
+  bootstrap, no `unsafe-eval`, `form-action 'self'`, `base-uri
+  'self'`, `img-src 'self' data:`.
+
+### Cookies on demo
+
+- The production session cookie `__Host-crewday_session` is **not
+  issued** on demo — passkey sessions do not exist there (§03 "Demo
+  sessions").
+- A single cookie `__Host-crewday_demo` is issued per visitor.
+  Flags: `Secure; HttpOnly; SameSite=None; Path=/; Partitioned;
+  Max-Age=2592000` (30 days).
+- `SameSite=None` is required because the demo app is loaded inside
+  an iframe whose top-frame is a different origin. `Partitioned`
+  opts the cookie into CHIPS (Cookies Having Independent Partitioned
+  State): its storage is keyed to the `(top-frame-origin,
+  cookie-origin)` pair, so a different landing page embedding the
+  same demo iframe gets a separate partition and therefore a
+  separate workspace. That is the desired behaviour — each landing
+  context is a separate playground.
+- The `crewday_csrf` double-submit cookie is **not issued** on demo.
+  The demo accepts non-GET requests when: (a) the demo cookie's
+  signature verifies, (b) the request's `Sec-Fetch-Site` is
+  `same-origin` or `same-site`, and (c) the workspace named by the
+  cookie is still alive. All demo writes are scoped to the bound
+  workspace and cannot touch secrets, payroll, or other workspaces,
+  so the existing CSRF surface is an overreach.
+
+### Bind policy
+
+Unchanged. The demo container follows the same §16 recipe (bind to
+`0.0.0.0:8000` inside the container, expose via the Docker port map or
+a Caddy reverse proxy, never to the public interface directly).
+
+### Rate-limiting and abuse controls on demo
+
+In addition to the general rate limits above, the demo deployment
+enforces (see §24 "Abuse controls"):
+
+- Mint throttle: 10 new demo workspaces per IP per hour.
+- Mutation rate: 60 writes per workspace per minute.
+- LLM rate: 10 chat turns per workspace per minute.
+- Upload cap: 5 MiB per file, 10 files per workspace lifetime,
+  25 MiB per IP per day.
+- Text-field cap: 32 KiB per field.
+- Optional IP deny-list via `CREWDAY_DEMO_BLOCK_CIDR`.
+
+### Secret posture on demo
+
+- The demo deployment carries its **own** OpenRouter key, distinct
+  from prod. Revoking it has no effect on any prod deployment.
+- The demo deployment has its **own** `CREWDAY_ROOT_KEY`; envelope
+  decryption paths are exercised on demo only for seed-time
+  fixture setup (e.g., fake iCal feed URL pretending to be a
+  secret). No real secret ever enters a demo `secret_envelope` row.
+- The budget-refusal path (§11 "Workspace usage budget") does not
+  decrypt or log any secret material; `budget_exceeded` is a pre-
+  flight refusal that never reaches the provider.
+
+### Privacy posture on demo
+
+- Email addresses collected by demo "invite user" flows are stored on
+  the `users` row for UI consistency, with the local part masked at
+  render time (`a*@e*.com`). Addresses live exactly as long as the
+  demo workspace (24 h rolling from last activity; §24).
+- The redaction layer (§11) stays on; agent prompts on demo go through
+  the same filter as prod.
+- No product telemetry is emitted from demo. Access logs and audit
+  rows stay local to the operator's stack.
 
 ## Items deferred but noted
 

@@ -355,7 +355,10 @@ DELETE /public_holidays/{id}
 GET    /task_templates
 POST   /task_templates
 GET    /tasks
-POST   /tasks                      # ad-hoc
+POST   /tasks                      # ad-hoc; body: {title, scheduled_start?,
+                                   #   property_id?, area?, notes?,
+                                   #   is_personal?} → Task; requires
+                                   #   tasks.create permission (§05)
 POST   /tasks/from_nl              # natural language intake
 POST   /tasks/from_nl/commit       # commit a preview
 GET    /tasks/{id}

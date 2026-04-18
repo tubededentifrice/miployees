@@ -5,12 +5,13 @@ import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
 import AgentApprovalModePanel from "@/components/AgentApprovalModePanel";
 import AgentPreferencesPanel from "@/components/AgentPreferencesPanel";
-import { Chip, Loading } from "@/components/common";
+import { Chip, Loading, ProgressBar } from "@/components/common";
 import type {
   Employee,
   Property,
   SettingDefinition,
   WorkspaceSettings,
+  WorkspaceUsage,
 } from "@/types/api";
 
 const NAMESPACE_LABELS: Record<string, string> = {
@@ -116,6 +117,10 @@ export default function SettingsPage() {
     queryKey: qk.employees(),
     queryFn: () => fetchJson<Employee[]>("/api/v1/employees"),
   });
+  const usageQ = useQuery({
+    queryKey: qk.workspaceUsage(),
+    queryFn: () => fetchJson<WorkspaceUsage>("/api/v1/workspace/usage"),
+  });
   const sub = "Workspace-wide configuration. Settings cascade from workspace to property to employee to task.";
 
   if (settingsQ.isPending || catalogQ.isPending || propsQ.isPending || empsQ.isPending) {
@@ -162,6 +167,35 @@ export default function SettingsPage() {
           <dt>Locale</dt><dd className="mono">{ws.meta.default_locale}</dd>
         </dl>
       </section>
+
+      {/* §11 — Workspace usage budget. Manager-visible shape is
+          percent-only by design: no dollars, no tokens, no reset date.
+          Dollars live on /settings/llm for the operator audience. The
+          cap itself is adjusted via `crewday admin budget set-cap`; there
+          is no HTTP surface to raise it. */}
+      {usageQ.data ? (
+        <section className="panel agent-usage">
+          <header className="panel__head"><h2>Agent usage</h2></header>
+          <div className="agent-usage__row">
+            <div className="agent-usage__value">
+              {usageQ.data.paused ? (
+                <Chip tone="rust" size="sm">Paused</Chip>
+              ) : (
+                <span className="agent-usage__pct">{usageQ.data.percent}%</span>
+              )}
+            </div>
+            <div className="agent-usage__bar">
+              <ProgressBar value={usageQ.data.percent} />
+            </div>
+          </div>
+          <p className="muted agent-usage__window">{usageQ.data.window_label}</p>
+          {usageQ.data.paused ? (
+            <p className="muted">
+              Agents are paused until older activity ages out of the window.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       {/* Workspace defaults grouped by namespace */}
       <section className="grid grid--split">

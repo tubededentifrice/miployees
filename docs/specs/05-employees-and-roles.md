@@ -416,7 +416,7 @@ configuration.
 | `properties.edit`                       | `workspace`, `property`        | `owners, managers`            | —  | §04 |
 | `properties.view_access_codes`          | `workspace`, `property`        | `owners, managers`            | —  | §04 |
 | `work_roles.manage`                     | `workspace`                    | `owners, managers`            | —  | §05 |
-| `tasks.create`                          | `workspace`, `property`        | `owners, managers`            | —  | §06 |
+| `tasks.create`                          | `workspace`, `property`        | `owners, managers, all_workers` | — | §06 |
 | `tasks.assign_other`                    | `workspace`, `property`        | `owners, managers`            | —  | §06 |
 | `tasks.complete_other`                  | `workspace`, `property`        | `owners, managers`            | —  | §06 |
 | `tasks.skip_other`                      | `workspace`, `property`        | `owners, managers`            | —  | §06 |
@@ -455,11 +455,13 @@ Notes:
 - Workers, clients, and contractors **default** to the actions
   they need to do their job:
   - `all_workers` carries `expenses.submit`,
-    `messaging.comments.author_global`, and any task/shift
-    actions scoped to themselves (viewing / editing *your own*
-    shift is not in this catalog — it is an identity-scoped
-    action, not scope-scoped, and does not flow through the
-    resolver).
+    `messaging.comments.author_global`, `tasks.create`, and any
+    task/shift actions scoped to themselves (viewing / editing
+    *your own* shift is not in this catalog — it is an
+    identity-scoped action, not scope-scoped, and does not flow
+    through the resolver). Workers may create tasks; if
+    `is_personal = true` (the quick-add default) the task is
+    private to the creator; otherwise it is a normal team task.
   - `all_clients` carries `quotes.accept` (subject to §11
     gating), `work_orders.view`, and
     `vendor_invoices.approve_as_client`.

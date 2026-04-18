@@ -124,6 +124,46 @@
 }
 .section-title--sm { font-size: 12px; margin-top: 22px; margin-bottom: 8px; }
 
+.section-title-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 10px;
+}
+.section-title-row .section-title { margin-bottom: 0; }
+
+.field--inline {
+  display: flex; flex-direction: row; align-items: center; gap: 8px;
+}
+.field--inline > span { font-size: 13px; color: var(--ink-2); }
+
+.task-card--personal { border-left: 3px solid var(--sky, #9bb8d9); }
+
+/* Shared "Me" page container. Renders inside `.phone__body` (worker
+   PWA) and `.desk__main` (manager shell) with the same panel
+   aesthetic as `/settings`. */
+.me-page {
+  display: flex; flex-direction: column; gap: 22px;
+  padding: 16px 20px;
+}
+@media (min-width: 720px) {
+  .me-page { padding: 24px 0; }
+}
+
+/* Panels on /me wrap what used to be bespoke phone cards. Strip the
+   inner card chrome when these row/card components sit directly
+   inside a `.panel`, so the panel itself is the card — no double
+   framing. */
+.panel > .stack-row,
+.panel > a.stack-row,
+.panel > ul > li.stack-row {
+  background: transparent; border: 0; border-radius: 0;
+  padding: 0; margin-bottom: 0;
+}
+.panel > ul > li.stack-row + li.stack-row { margin-top: 10px; }
+.panel > .profile-card {
+  background: transparent; border: 0; border-radius: 0;
+  padding: 0; box-shadow: none;
+}
+
 .phone__tabs {
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
   display: grid; grid-template-columns: repeat(5, 1fr);
@@ -414,6 +454,7 @@
   min-height: 48px;
   padding: 10px 18px;
   font-size: 15px;
+  margin-bottom: 0;
 }
 
 .back-link {
@@ -427,6 +468,7 @@
   line-height: 1.3;
   text-decoration: none;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  margin-bottom: 16px;
 }
 .back-link:hover {
   background: var(--paper-2);
@@ -955,6 +997,14 @@
 .danger-list li { padding: 6px 0; border-bottom: 1px dashed var(--rust-soft); }
 .setting-label { display: block; font-size: 0.8em; }
 .setting-scope { margin-left: 0.5rem; font-size: 0.8em; }
+
+/* §11 agent usage: percent-only envelope on the workspace budget. */
+.agent-usage__row { display: flex; align-items: center; gap: 14px; }
+.agent-usage__value { min-width: 64px; font-weight: 600; }
+.agent-usage__pct { font-size: 20px; }
+.agent-usage__bar { flex: 1; display: flex; align-items: center; }
+.agent-usage__bar .progress-bar { display: block; width: 100%; }
+.agent-usage__window { margin-top: 8px; font-size: 12px; }
 
 /* ── Assets ────────────────────────────────────────────── */
 .asset-card {

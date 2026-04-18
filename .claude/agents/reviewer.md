@@ -49,7 +49,8 @@ Review code changes made by the Coder:
 - [ ] No bare `except:` or silent `except Exception: pass`.
 - [ ] Proper naming and module layout for this repo.
 - [ ] No N+1 queries — `selectinload` / eager loading where needed.
-- [ ] DRY — no duplication of an existing helper.
+- [ ] DRY — no duplication of an existing helper or pattern (see
+  [`AGENTS.md`](../../AGENTS.md) §Code quality bar).
 - [ ] Comments are rare and capture *why*, not *what*.
 - [ ] No dead code left behind (commented-out blocks, unused imports,
   leftover debug logging).

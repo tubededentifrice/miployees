@@ -75,6 +75,11 @@ At the start of every session:
   are truly blocked.
 - Stop if you catch yourself looping — re-reading or re-editing the same
   files without progress. End the turn with a concise summary.
+- **Never call work "done" without verifying it.** Type-checks and unit
+  tests prove code compiles, not that the feature works. Exercise the
+  change end-to-end — Playwright for UI, `curl`/CLI for APIs, a real
+  invocation for scripts. If you genuinely cannot verify (no harness,
+  no access), say so explicitly instead of claiming success.
 
 ## Partner in thought
 
@@ -105,8 +110,18 @@ concise. Mention the update in your wrap-up so the user sees it.
 
 ## Code quality bar
 
-- Correctness and clarity over speed. No speculative refactors, no
-  symptom-only patches — fix root causes.
+- **DRY is first-class.** Before writing, search (`rg`, `fd`, codebase
+  map) for an existing helper, component, or pattern and reuse or
+  extend it. Extract when two copies share a reason to change (same
+  invariant, same bug would affect both); if they only look alike,
+  wait — a third use tells you whether it's a real pattern or a
+  coincidence. Same rule for prose — docs and specs reference code,
+  they don't restate it.
+- Correctness and clarity over speed. No symptom-only patches — fix
+  root causes. Don't fear a refactor when it genuinely improves code
+  quality, architecture, or reusability — but **confirm the intent
+  with the user via `AskUserQuestion` before starting**, so scope
+  creep is a conscious choice, not a surprise in the diff.
 - Follow existing conventions (naming, formatting, package layout, test
   patterns). If you must diverge, say why in the PR.
 - Preserve behavior unless the task is explicitly about changing it. When
@@ -116,8 +131,6 @@ concise. Mention the update in your wrap-up so the user sees it.
   pass`. Errors propagate or are logged explicitly.
 - Type safety: the codebase is fully type-annotated. `mypy --strict`
   passes. Avoid `Any` and `# type: ignore`.
-- DRY with judgment — search for existing helpers before writing a new
-  one; but three similar lines is not yet a helper.
 
 ## Editing constraints
 

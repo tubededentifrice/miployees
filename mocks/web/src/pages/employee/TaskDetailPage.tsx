@@ -13,7 +13,7 @@ import type { AgentMessage, Instruction, Property, Task } from "@/types/api";
 
 interface TaskPayload {
   task: Task;
-  property: Property;
+  property: Property | null;
   instructions: Instruction[];
 }
 
@@ -164,8 +164,12 @@ export default function TaskDetailPage() {
 
       <header className="task-detail__head">
         <div className="task-detail__chips">
-          <Chip tone={property.color}>{property.name}</Chip>
-          <Chip tone="ghost">{task.area}</Chip>
+          {property ? (
+            <Chip tone={property.color}>{property.name}</Chip>
+          ) : task.is_personal ? (
+            <Chip tone="ghost">Personal</Chip>
+          ) : null}
+          {task.area && <Chip tone="ghost">{task.area}</Chip>}
           {(task.priority === "high" || task.priority === "urgent") && (
             <Chip tone="rust">{cap(task.priority)}</Chip>
           )}
@@ -210,7 +214,11 @@ export default function TaskDetailPage() {
               <summary>
                 <span className="instruction-card__title">{i.title}</span>
                 <Chip tone="ghost" size="sm">
-                  {i.scope === "area" ? i.area : i.scope === "property" ? property.name : "House-wide"}
+                  {i.scope === "area"
+                    ? i.area
+                    : i.scope === "property"
+                      ? (property?.name ?? "Property")
+                      : "House-wide"}
                 </Chip>
               </summary>
               <div className="instruction-card__body">{i.body_md}</div>

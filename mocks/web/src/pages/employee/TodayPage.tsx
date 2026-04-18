@@ -4,6 +4,7 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { Chip, EmptyState, Loading, ProgressBar } from "@/components/common";
 import TaskListCard from "@/components/TaskListCard";
+import NewTaskButton from "@/components/NewTaskModal";
 import { fmtTime } from "@/lib/dates";
 import { cap } from "@/lib/strings";
 import type { Property, Task } from "@/types/api";
@@ -36,9 +37,12 @@ export default function TodayPage() {
   return (
     <>
       <section className="phone__section phone__section--hero">
-        <h2 className="section-title">Now</h2>
+        <div className="section-title-row">
+          <h2 className="section-title">Now</h2>
+          <NewTaskButton />
+        </div>
         {now_task ? (
-          <NowCard task={now_task} property={propsById.get(now_task.property_id)!} />
+          <NowCard task={now_task} property={propsById.get(now_task.property_id) ?? null} />
         ) : (
           <EmptyState glyph="✓" variant="celebrate">All done for now. Nice work.</EmptyState>
         )}
@@ -52,7 +56,7 @@ export default function TodayPage() {
           )}
           {upcoming.map((t) => (
             <li key={t.id}>
-              <TaskListCard task={t} property={propsById.get(t.property_id)!} />
+              <TaskListCard task={t} property={propsById.get(t.property_id) ?? null} />
             </li>
           ))}
         </ul>
@@ -66,13 +70,17 @@ export default function TodayPage() {
           </summary>
           <ul className="task-list">
             {completed.map((t) => {
-              const prop = propsById.get(t.property_id)!;
+              const prop = propsById.get(t.property_id) ?? null;
               return (
                 <li key={t.id}>
                   <Link to={"/task/" + t.id} className="task-card task-card--compact task-card--done">
                     <div className="task-card__head">
                       <span className="task-card__when">✓ {fmtTime(t.scheduled_start)}</span>
-                      <Chip tone={prop.color} size="sm">{prop.name}</Chip>
+                      {prop ? (
+                        <Chip tone={prop.color} size="sm">{prop.name}</Chip>
+                      ) : t.is_personal ? (
+                        <Chip tone="ghost" size="sm">Personal</Chip>
+                      ) : null}
                     </div>
                     <div className="task-card__title task-card__title--sm">{t.title}</div>
                   </Link>
@@ -86,14 +94,21 @@ export default function TodayPage() {
   );
 }
 
-function NowCard({ task, property }: { task: Task; property: Property }) {
+function NowCard({ task, property }: { task: Task; property: Property | null }) {
   const doneSteps = task.checklist.filter((i) => i.done).length;
   const total = task.checklist.length;
   const pct = total > 0 ? Math.round((doneSteps / total) * 100) : 0;
   return (
-    <Link to={"/task/" + task.id} className="task-card task-card--now">
+    <Link
+      to={"/task/" + task.id}
+      className={"task-card task-card--now" + (task.is_personal ? " task-card--personal" : "")}
+    >
       <div className="task-card__head">
-        <Chip tone={property.color}>{property.name}</Chip>
+        {property ? (
+          <Chip tone={property.color}>{property.name}</Chip>
+        ) : task.is_personal ? (
+          <Chip tone="ghost">Personal</Chip>
+        ) : null}
         {(task.priority === "high" || task.priority === "urgent") && (
           <Chip tone="rust">{cap(task.priority)} priority</Chip>
         )}
@@ -103,7 +118,7 @@ function NowCard({ task, property }: { task: Task; property: Property }) {
         <span className="task-card__when">{fmtTime(task.scheduled_start)} · {task.estimated_minutes} min</span>
       </div>
       <h3 className="task-card__title">{task.title}</h3>
-      <div className="task-card__meta">{task.area}</div>
+      {task.area && <div className="task-card__meta">{task.area}</div>}
       {total > 0 && (
         <div className="task-card__progress">
           <ProgressBar value={pct} />

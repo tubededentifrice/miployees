@@ -92,8 +92,8 @@ export default function ChatChannelsMeCard({ me }: { me: Me }) {
   });
 
   return (
-    <section className="phone__section">
-      <h2 className="section-title">Chat channels</h2>
+    <section className="panel">
+      <header className="panel__head"><h2>Chat channels</h2></header>
       <p className="me-chat-channels__intro">
         Reach your agent over WhatsApp. Messages you send land in the
         same conversation as the Chat tab. Unlink to stop off-app

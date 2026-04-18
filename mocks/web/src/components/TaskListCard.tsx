@@ -12,17 +12,19 @@ export default function TaskListCard({
   showStatus = false,
 }: {
   task: Task;
-  property: Property;
+  property: Property | null;
   showWeekday?: boolean;
   showStatus?: boolean;
 }) {
   const when = formatWhen(task.scheduled_start, showWeekday);
-  const meta = showStatus
-    ? `${task.area} · ${task.estimated_minutes} min · ${task.status}`
-    : `${task.area} · ${task.estimated_minutes} min`;
+  const metaBase = task.area
+    ? `${task.area} · ${task.estimated_minutes} min`
+    : `${task.estimated_minutes} min`;
+  const meta = showStatus ? `${metaBase} · ${task.status}` : metaBase;
   const cls =
     "task-card task-card--compact task-card--split" +
-    (task.status === "completed" ? " task-card--done" : "");
+    (task.status === "completed" ? " task-card--done" : "") +
+    (task.is_personal ? " task-card--personal" : "");
 
   return (
     <Link to={"/task/" + task.id} className={cls}>
@@ -32,7 +34,11 @@ export default function TaskListCard({
       </div>
       <div className="task-card__aside">
         <span className="task-card__when">{when}</span>
-        <Chip tone={property.color} size="sm">{property.name}</Chip>
+        {property ? (
+          <Chip tone={property.color} size="sm">{property.name}</Chip>
+        ) : task.is_personal ? (
+          <Chip tone="ghost" size="sm">Personal</Chip>
+        ) : null}
         {(task.priority === "high" || task.priority === "urgent") && <Dot tone="rust" />}
         {task.photo_evidence === "required" && <Dot tone="sand" />}
       </div>

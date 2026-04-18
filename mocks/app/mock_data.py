@@ -389,6 +389,11 @@ class Task:
     # both.
     assigned_user_id: str = ""
     workspace_id: str = ""
+    # §06 "Self-created and personal tasks". `created_by` is the user
+    # who originated the task (empty = seeded / system). Personal tasks
+    # are visible only to the creator and workspace owners (§15 RLS).
+    created_by: str = ""
+    is_personal: bool = False
 
 
 @dataclass
@@ -578,6 +583,15 @@ class LLMCall:
     cost_cents: int
     latency_ms: int
     status: Literal["ok", "error", "redacted_block"]
+
+
+@dataclass
+class WorkspaceUsage:
+    """§11 — Workspace agent usage budget (manager-visible shape)."""
+
+    percent: int
+    paused: bool
+    window_label: str
 
 
 @dataclass
@@ -1673,6 +1687,22 @@ TASKS: list[Task] = [
         "e-sam", _t(11, 0, day=14), 15, "normal", "overdue",
         photo_evidence="disabled",
     ),
+    # §06 "Self-created and personal tasks" — seeded quick-add entries
+    # that exercise the `is_personal` visibility rule across roles.
+    Task(
+        "t-p-maria-1", "Dentist appointment", "", "", "e-maria",
+        _t(17, 30), 60, "normal", "pending",
+        assigned_user_id="u-maria",
+        created_by="u-maria",
+        is_personal=True,
+    ),
+    Task(
+        "t-p-elodie-1", "Call accountant about Q1 VAT", "", "", "",
+        _t(15, 0), 30, "normal", "pending",
+        assigned_user_id="u-elodie",
+        created_by="u-elodie",
+        is_personal=True,
+    ),
 ]
 
 
@@ -1926,6 +1956,16 @@ LLM_CALLS: list[LLMCall] = [
     LLMCall(datetime(2026, 4, 15, 8, 41, 12), "expenses.autofill", "google/gemma-4-31b-it",        1100, 390, 1, 1720, "redacted_block"),
     LLMCall(datetime(2026, 4, 15, 8, 6, 30),  "issue.triage",      "google/gemma-4-31b-it",        620, 140, 0, 890,  "ok"),
 ]
+
+
+# §11 — Workspace usage budget. Manager-visible view is percent-only
+# (no dollars, no tokens, no reset date). The window label is fixed
+# copy for the rolling-30-day meter.
+WORKSPACE_USAGE = WorkspaceUsage(
+    percent=32,
+    paused=False,
+    window_label="Rolling 30 days",
+)
 
 
 AUDIT: list[AuditEntry] = [
@@ -3036,12 +3076,48 @@ def tasks_for_employee(eid: str) -> list[Task]:
     return [t for t in TASKS if t.assignee_id == eid]
 
 
+def tasks_for_user(uid: str) -> list[Task]:
+    """Canonical v1 filter — matches §06 `assigned_user_id`. Works for
+    both worker-employees (who also have an `assignee_id`) and managers
+    (who have no employee row but do have a user row)."""
+    return [t for t in TASKS if t.assigned_user_id == uid]
+
+
+def is_owner_user(uid: str) -> bool:
+    """§15 — an 'owner' for personal-task visibility is any user with an
+    active `grant_role = 'owner'` role grant anywhere in the workspace."""
+    return any(
+        g.grant_role == "owner" and g.revoked_at is None
+        for g in ROLE_GRANTS
+        if g.user_id == uid
+    )
+
+
+def visible_to(task: Task, viewer_user_id: str) -> bool:
+    """§15 Personal task visibility. A personal task is visible only to
+    its creator and to workspace owners. Non-personal tasks are visible
+    as usual."""
+    if not task.is_personal:
+        return True
+    if task.created_by == viewer_user_id:
+        return True
+    return is_owner_user(viewer_user_id)
+
+
 def task_by_id(tid: str) -> Task | None:
     return next((t for t in TASKS if t.id == tid), None)
 
 
 def expenses_for_employee(eid: str) -> list[Expense]:
     return [x for x in EXPENSES if x.employee_id == eid]
+
+
+def expenses_for_user(uid: str) -> list[Expense]:
+    return [x for x in EXPENSES if x.user_id == uid]
+
+
+def employee_by_user_id(uid: str) -> "Employee | None":
+    return next((e for e in EMPLOYEES if e.user_id == uid), None)
 
 
 def stays_for_property(pid: str) -> list[Stay]:

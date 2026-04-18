@@ -74,6 +74,12 @@ export interface Task {
   turnover_bundle_id: string | null;
   asset_id: string | null;
   settings_override: Record<string, unknown>;
+  assigned_user_id: string;
+  workspace_id: string;
+  // §06 "Self-created and personal tasks". Private to creator +
+  // workspace owners when `is_personal` (see §15 RLS).
+  created_by: string;
+  is_personal: boolean;
 }
 
 // ── Time / payroll ────────────────────────────────────────────────
@@ -351,6 +357,16 @@ export interface LLMCall {
   cost_cents: number;
   latency_ms: number;
   status: "ok" | "error" | "redacted_block";
+}
+
+// §11 — Workspace usage budget (manager-visible shape).
+// Deliberately percent-only: no dollars, no tokens, no reset date.
+// Dollars live on the LLM settings page for the operator audience;
+// workers and managers only see the envelope usage here.
+export interface WorkspaceUsage {
+  percent: number;
+  paused: boolean;
+  window_label: string;
 }
 
 export interface AuditEntry {
