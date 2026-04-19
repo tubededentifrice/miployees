@@ -306,17 +306,17 @@ function DayDrawer({
                 Weekly pattern: {cell.pattern.starts_local}–{cell.pattern.ends_local}
               </p>
             )}
-            <div className="day-drawer__actions">
+            <div className="btn-group btn-group--split">
               <button
                 type="button"
-                className="btn btn--ghost btn--sm"
+                className="btn btn--ghost btn--block"
                 onClick={() => onRequestOverride(cell.iso)}
               >
                 Adjust this day
               </button>
               <button
                 type="button"
-                className="btn btn--ghost btn--sm"
+                className="btn btn--ghost btn--block"
                 onClick={() => onRequestLeave(cell.iso)}
               >
                 Request leave

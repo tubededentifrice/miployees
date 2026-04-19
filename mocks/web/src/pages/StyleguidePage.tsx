@@ -73,6 +73,50 @@ export default function StyleguidePage() {
       </section>
 
       <section className="styleguide__section">
+        <h2>Button groups</h2>
+        <p className="styleguide__note">
+          Use <code>.btn-group</code> for any row of buttons. Pair with a
+          layout modifier (<code>--end</code>, <code>--split</code>,
+          <code>--stack</code>) and add <code>.btn--block</code> to any
+          button that should fill its track with a 44px tap target.
+        </p>
+
+        <div className="styleguide__demo-track">
+          <h3>Default (inline, left)</h3>
+          <div className="btn-group">
+            <button className="btn btn--moss">Save</button>
+            <button className="btn btn--ghost">Cancel</button>
+          </div>
+
+          <h3>Modal footer (<code>--end</code>)</h3>
+          <div className="btn-group btn-group--end">
+            <button className="btn btn--ghost">Cancel</button>
+            <button className="btn btn--moss">Confirm</button>
+          </div>
+
+          <h3>Two-up, equal width (<code>--split</code> + <code>--block</code>)</h3>
+          <p className="styleguide__note">
+            Ideal for mobile dialog actions. Each child flexes to an equal
+            share; <code>.btn--block</code> lifts the tap target to 44px.
+          </p>
+          <div className="btn-group btn-group--split">
+            <button className="btn btn--ghost btn--block">Adjust this day</button>
+            <button className="btn btn--ghost btn--block">Request leave</button>
+          </div>
+
+          <h3>Vertical stack (<code>--stack</code>)</h3>
+          <div className="btn-group btn-group--stack">
+            <button className="btn btn--moss btn--block">Continue</button>
+            <button className="btn btn--ghost btn--block">Use a different account</button>
+            <button className="btn btn--ghost btn--block">Back</button>
+          </div>
+
+          <h3>Standalone full-width (<code>.btn--block</code>)</h3>
+          <button className="btn btn--moss btn--block">Sign in</button>
+        </div>
+      </section>
+
+      <section className="styleguide__section">
         <h2>Task card</h2>
         <div className="demo-row demo-row--stack">
           <a className="task-card task-card--now" href="#">

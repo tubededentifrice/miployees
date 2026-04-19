@@ -539,6 +539,37 @@
 .btn--ghost { background: transparent; border-color: var(--line-strong); color: var(--ink-2); }
 .btn--ghost:hover { background: var(--paper-2); }
 
+/* Full-width button. Pairs with any color + size modifier; guarantees
+   a 44px minimum tap target (iOS HIG / Material) so even a .btn--sm
+   promoted to block is still thumb-safe on phones. Use standalone
+   for a single card CTA, or inside .btn-group--stack/--split for a
+   row/column of equally-sized actions. */
+.btn--block { width: 100%; min-height: 44px; }
+.btn--block.btn--sm { padding-block: 10px; }
+.btn--block.btn--lg { min-height: 52px; }
+
+/* Button groups — semantic layouts for a collection of .btn.
+   .btn-group            → inline row, left-aligned, wraps on overflow
+   .btn-group--end       → push to the trailing edge (modal footers)
+   .btn-group--center    → center the row
+   .btn-group--between   → split ends (e.g. back / next)
+   .btn-group--split     → equal-width children, no wrap (best with
+                           .btn--block on phones; dialog 2-up CTAs)
+   .btn-group--stack     → vertical stack; children fill container
+                           (stacked CTAs, login cards, pref panels) */
+.btn-group {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.btn-group--end     { justify-content: flex-end; }
+.btn-group--center  { justify-content: center; }
+.btn-group--between { justify-content: space-between; }
+.btn-group--split   { flex-wrap: nowrap; }
+.btn-group--split > .btn { flex: 1 1 0; min-width: 0; }
+.btn-group--stack {
+  flex-direction: column; flex-wrap: nowrap; align-items: stretch;
+}
+.btn-group--stack > .btn { width: 100%; }
+
 .form { display: flex; flex-direction: column; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
 
@@ -1624,6 +1655,18 @@
 .styleguide__section h2 {
   font-family: "Fraunces", serif; font-size: 1.3rem;
   margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.styleguide__demo-track { max-width: 420px; }
+.styleguide__demo-track h3 {
+  font-family: "Fraunces", serif; font-size: 1rem; font-weight: 500;
+  margin: 22px 0 10px; color: var(--ink-2);
+}
+.styleguide__note {
+  color: var(--ink-3); font-size: 13px; max-width: 62ch; margin: 0 0 10px;
+}
+.styleguide__note code {
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+  background: var(--paper-2); padding: 1px 6px; border-radius: 4px;
 }
 .swatch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .swatch {
@@ -4383,11 +4426,6 @@
 .day-drawer__hours--ghost { background: var(--paper-2);   color: var(--ink-3); }
 .day-drawer__muted { color: var(--ink-3); font-size: 13px; }
 
-.day-drawer__actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
 .day-drawer__list {
   list-style: none;
   padding: 0;
