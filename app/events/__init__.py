@@ -1,5 +1,36 @@
-"""Events kernel — in-process event bus and typed event registry.
+"""In-process typed event bus. See docs/specs/01 §"Boundary rules" #3."""
 
-See docs/specs/01-architecture.md §"Module boundaries" and
-§"Cross-context writes flow through events".
-"""
+from app.events.bus import EventBus, bus
+from app.events.registry import (
+    Event,
+    EventAlreadyRegistered,
+    EventNotFound,
+    get_event_type,
+    register,
+    registered_events,
+)
+from app.events.types import (
+    ExpenseApproved,
+    ShiftEnded,
+    StayUpcoming,
+    TaskCompleted,
+    TaskCreated,
+    TaskOverdue,
+)
+
+__all__ = [
+    "Event",
+    "EventAlreadyRegistered",
+    "EventBus",
+    "EventNotFound",
+    "ExpenseApproved",
+    "ShiftEnded",
+    "StayUpcoming",
+    "TaskCompleted",
+    "TaskCreated",
+    "TaskOverdue",
+    "bus",
+    "get_event_type",
+    "register",
+    "registered_events",
+]
