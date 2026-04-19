@@ -15,7 +15,7 @@ import type { ApiToken, ApiTokenCreated } from "@/types/api";
 
 const ME_SCOPES: { key: string; hint: string; verb: string }[] = [
   { key: "me.tasks:read",     verb: "Read",  hint: "Your assigned tasks and the unassigned tasks you can claim." },
-  { key: "me.shifts:read",    verb: "Read",  hint: "Your shifts, clock-in history, and payslips." },
+  { key: "me.bookings:read",  verb: "Read",  hint: "Your bookings, amend history, and payslips." },
   { key: "me.expenses:read",  verb: "Read",  hint: "Your expense claims." },
   { key: "me.expenses:write", verb: "Write", hint: "Create or edit your own expense drafts." },
   { key: "me.profile:read",   verb: "Read",  hint: "Your display name, timezone, avatar." },

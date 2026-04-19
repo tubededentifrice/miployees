@@ -30,12 +30,12 @@ vendor-invoice / shift-billing plumbing.
   materialises an existing §22 `property_workspace_invite`
   (client-as-inviter → agency-as-recipient) and thereafter the
   normal §22 flow runs — `property_workspace` link,
-  `work_order`, `quote`, `vendor_invoice`, `shift_billing`.
+  `work_order`, `quote`, `vendor_invoice`, `booking_billing`.
   There is no parallel dispatch pipeline.
 - **Fee capture via append-only ledger.** A new
   `platform_fee_event` table records every fee accrual keyed to
   the marketplace match and to the billable source row
-  (`shift_billing` or `vendor_invoice`). No fee columns on
+  (`booking_billing` or `vendor_invoice`). No fee columns on
   invoices, quotes, or work orders. The fee rate is **snapshotted
   onto the match** at match-time so later deployment-wide rate
   changes never rewrite history.
@@ -131,8 +131,8 @@ Append-only ledger of fee accruals.
 |-----------------------|------------------------------------------------------------------------------------------|
 | id                    | ULID PK                                                                                  |
 | match_id              | FK → `marketplace_match.id`                                                              |
-| source_kind           | enum: `shift_billing \| vendor_invoice`                                                  |
-| source_id             | ULID of the source row (`shift_billing.id` or `vendor_invoice.id`)                       |
+| source_kind           | enum: `booking_billing \| vendor_invoice`                                                  |
+| source_id             | ULID of the source row (`booking_billing.id` or `vendor_invoice.id`)                       |
 | source_workspace_id   | FK → `workspace.id` — which workspace generated the billable row; one of the match sides |
 | base_currency         | ISO 4217 — the currency of the billable row                                              |
 | base_amount_cents     | what was billed between the two parties on this row                                      |
@@ -165,10 +165,10 @@ When a `marketplace_match` transitions to `accepted`:
    §22 invite flow. Rejection flips the match back to `pending`.
 3. On acceptance the `property_workspace` link is live and every
    §22 flow runs exactly as today: `work_order`, `quote`,
-   `vendor_invoice`, `shift_billing`.
+   `vendor_invoice`, `booking_billing`.
 
 The marketplace adds **one async worker** — `accrue_platform_fees`
-— that watches `shift_billing.resolved` and
+— that watches `booking_billing.resolved` and
 `vendor_invoice.approved` events (§10 webhook catalog). When the
 event's property+agency pair belongs to an active
 `marketplace_match`, the worker writes one `platform_fee_event`
@@ -279,7 +279,7 @@ additive are:
   `settings.*` booleans; `features.postgis` and
   `settings.marketplace_*` slot in without runtime code change.
 - **Webhook catalog** (§10) already carries
-  `shift_billing.resolved` and `vendor_invoice.approved`, which
+  `booking_billing.resolved` and `vendor_invoice.approved`, which
   are the hooks the later `accrue_platform_fees` worker
   subscribes to.
 

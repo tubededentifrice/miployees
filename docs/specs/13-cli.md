@@ -294,10 +294,18 @@ crewday inventory
   adjust <item-id> --to 7 --reason "counted"
   burn-rate --days 30
 
-crewday shifts
-  clock-in [--property <id>]
-  clock-out <id?>
-  list [--user] [--from] [--to]
+crewday bookings
+  list [--user] [--property] [--from] [--to] [--status] [--pending-amend]
+  show <id>
+  create --property <id> --start <iso> --end <iso> [--user <id>]
+         [--kind work|travel] [--note "..."]
+  amend <id> [--start <iso>] [--end <iso>] [--actual-minutes <n>]
+              [--break-seconds <n>] --reason "..."
+  decline <id> [--reason "..."]
+  cancel <id> --by client|agency --reason "..."
+  approve <id>          # accepts a worker-proposed pending_approval booking
+  reject  <id> --reason "..."
+  no-show <id>          # records / confirms no_show_worker
 
 crewday pay
   rules list [--employee]

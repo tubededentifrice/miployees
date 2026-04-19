@@ -224,8 +224,9 @@ Scenario fixtures live under `app/fixtures/demo/` in the production
 image (they are part of the build, not runtime-loaded from disk) and
 are the single source of truth for demo content. Each fixture is a
 YAML file describing the workspace, properties, units, users, role
-grants, task templates, stays, inventory, a handful of past shifts,
-and a few in-flight items to make the UI look alive on landing.
+grants, task templates, stays, inventory, a handful of past
+bookings, and a few in-flight items to make the UI look alive on
+landing.
 
 - Timestamps in fixtures are **relative** (`T-2d`, `T+3h`, `stay:+7d`),
   resolved to absolute UTC at seed time. Nothing in the fixture is a

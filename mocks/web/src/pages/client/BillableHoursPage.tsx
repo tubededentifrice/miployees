@@ -4,12 +4,12 @@ import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading } from "@/components/common";
 import { formatMoney } from "@/lib/money";
-import type { Me, Organization, ShiftBilling, User } from "@/types/api";
+import type { BookingBilling, Me, Organization, User } from "@/types/api";
 
 // §22 — billable-hours rollup. The CSV export ships in v1; this is
 // the same data rendered for the client to read at a glance.
 // Worker pay rates are deliberately NOT shown — clients see what the
-// agency charges (`shift_billing.hourly_cents`), not the worker's
+// agency charges (`booking_billing.hourly_cents`), not the worker's
 // `pay_rule` rate. See "Redactions" in §22.
 export default function ClientBillableHoursPage() {
   const meQ = useQuery({ queryKey: qk.me(), queryFn: () => fetchJson<Me>("/api/v1/me") });
@@ -21,10 +21,10 @@ export default function ClientBillableHoursPage() {
 
   const orgIds = meQ.data?.client_binding_org_ids ?? [];
   const billingQs = useQuery({
-    queryKey: qk.shiftBillings(orgIds.join(",")),
+    queryKey: qk.bookingBillings(orgIds.join(",")),
     queryFn: async () => {
       const groups = await Promise.all(
-        orgIds.map((oid) => fetchJson<ShiftBilling[]>("/api/v1/shift_billings?client_org_id=" + oid)),
+        orgIds.map((oid) => fetchJson<BookingBilling[]>("/api/v1/booking_billings?client_org_id=" + oid)),
       );
       return groups.flat();
     },
@@ -63,9 +63,9 @@ export default function ClientBillableHoursPage() {
       </section>
 
       <div className="panel">
-        <header className="panel__head"><h2>Recent shifts</h2></header>
+        <header className="panel__head"><h2>Recent bookings</h2></header>
         {rows.length === 0 ? (
-          <p className="muted">No shifts billed to you yet.</p>
+          <p className="muted">No bookings billed to you yet.</p>
         ) : (
           <table className="table">
             <thead>
@@ -86,7 +86,11 @@ export default function ClientBillableHoursPage() {
                   <td className="table__mono">{r.billable_minutes}</td>
                   <td className="table__mono">{formatMoney(r.hourly_cents, r.currency)}</td>
                   <td className="table__mono">{formatMoney(r.subtotal_cents, r.currency)}</td>
-                  <td><Chip size="sm" tone="ghost">{r.rate_source}</Chip></td>
+                  <td>
+                    <Chip size="sm" tone={r.is_cancellation_fee ? "rust" : "ghost"}>
+                      {r.is_cancellation_fee ? "cancel fee" : r.rate_source}
+                    </Chip>
+                  </td>
                 </tr>
               ))}
             </tbody>

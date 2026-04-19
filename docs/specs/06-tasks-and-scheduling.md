@@ -502,6 +502,29 @@ self-service form calls `POST /api/v1/me/availability_overrides`,
 §12); a manager who needs to shuffle a recurring pattern edits
 the ruleset on `/schedules`.
 
+### Booking materialisation
+
+Each `schedule_ruleset_slot` declares a recurring weekly *intent*
+(e.g. "Maria works Villa Sud, Monday 09:00–12:00"). The concrete
+materialised time blocks are **`booking` rows** (§09). The
+`materialise_bookings` worker job (daily, with on-write fast-path
+for inline manager edits) walks each active
+`property_work_role_assignment` whose engagement's pay rule is
+`hourly` or `per_task`, computes the slots that fall inside the
+rolling horizon (workspace default 28 days), and inserts a
+`booking` row per (user × property × slot occurrence) not yet
+materialised. Salaried engagements (`pay_rule.kind =
+monthly_salary`) are skipped — their schedule slots remain
+**informational** on `/schedule`. The full creation, amend,
+cancellation, decline, and ad-hoc paths live in §09 "Bookings"; this
+section only owns the recurring intent that feeds them.
+
+Recurring bookings are individually cancellable. A client cancelling
+their Tuesday slot for the next two weeks issues two cancel calls
+(or selects a date range in the UI); the underlying
+`schedule_ruleset_slot` is untouched, only the materialised
+bookings change state.
+
 ### `user_availability_overrides`
 
 A date-specific override of a user's weekly availability pattern.

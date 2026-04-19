@@ -42,11 +42,11 @@ export default function AcceptPage() {
                 <ul className="settings-list">
                   <li>
                     <strong>Housekeeper</strong> at <em>Villa Sud</em>
-                    <span className="muted"> — task assignments, shifts, expenses</span>
+                    <span className="muted"> — task assignments, bookings, expenses</span>
                   </li>
                   <li>
                     <strong>Housekeeper</strong> at <em>Apt 3B</em>
-                    <span className="muted"> — task assignments, shifts, expenses</span>
+                    <span className="muted"> — task assignments, bookings, expenses</span>
                   </li>
                 </ul>
                 <p className="muted">

@@ -338,7 +338,9 @@ inventory.*          low_stock, movement, stock_drift
 chat_channel_binding.* created, verified, revoked, link_expired
 chat_message.*       received, sent, delivered, failed
 chat_thread.*        opened, archived
-shift.*              opened, closed, adjusted, disputed
+booking.*            scheduled, completed, amended, cancelled,
+                     no_show, reassigned, declined,
+                     pending_approval, approved, rejected
 expense.*            submitted, approved, rejected, reimbursed
 payroll.*            period_opened, period_locked, period_paid,
                      payslip_issued, payslip_paid,
@@ -365,7 +367,7 @@ work_order.*         created, state_changed, accept_quote,
 quote.*              submitted, accepted, rejected, superseded
 vendor_invoice.*     submitted, approved, rejected, paid, voided,
                      proof_uploaded, reminder_sent, reminder_exhausted
-shift_billing.*      resolved
+booking_billing.*    resolved
 property_workspace_invite.* created, accepted, rejected, revoked, expired
 agent_preference.*   updated, cleared  (§11)
 exchange_rate.*      refreshed, failed, overridden  (§09)

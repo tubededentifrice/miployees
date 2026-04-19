@@ -154,12 +154,15 @@ expenses, and document invoices correctly.
 
 ## Phase 7 — Time, payroll, expenses
 
-- Shifts with clock-in/out + geofence settings.
+- **Bookings** as the canonical billable / payable atom (no clock-in
+  / clock-out); amend pipeline; per-engagement pay basis;
+  per-client cancellation policy; salaried-vs-hourly distinction.
+  See §09.
 - Pay rules, periods, payslips with PDF.
 - Expense claims with LLM-powered receipt autofill.
 - CSV exports.
 
-**Exit:** a month closes cleanly: shifts → payslips → approved
+**Exit:** a month closes cleanly: bookings → payslips → approved
 expenses → reimbursement included → CSV export.
 
 ## Phase 7b — Clients, vendors, work orders (§22)
@@ -168,7 +171,7 @@ expenses → reimbursement included → CSV export.
   gain `client_org_id`; `work_engagement` (§02) carries
   `engagement_kind` and `supplier_org_id`.
 - **Client rate cards** (`client_rate` + `client_user_rate`) and
-  shift-close rate snapshotting via `shift_billing`.
+  booking-completion rate snapshotting via `booking_billing`.
 - **`work_order`** with child tasks, **`quote`** with owner/manager
   approval gate, **`vendor_invoice`** with OCR autofill and
   approval gate.
@@ -178,8 +181,8 @@ expenses → reimbursement included → CSV export.
 - CLI parity for everything above.
 
 **Exit:** an agency workspace manages three clients, two payroll
-workers, one contractor, and one agency-supplied worker; shifts
-at a client property produce `shift_billing` rows; a repair job
+workers, one contractor, and one agency-supplied worker; bookings
+at a client property produce `booking_billing` rows; a repair job
 flows draft → quoted → accepted → in_progress → completed →
 invoiced → paid with agent-submitted drafts and manager approvals;
 the billable CSV reconciles against the payroll register.
@@ -325,7 +328,18 @@ Items explicitly deferred, in rough priority order:
     text reply parsing across concurrent pending approvals is
     ambiguous. Revisit only when an adapter gains an interactive
     primitive or a disambiguation scheme proves reliable enough.
-14. **Embedded marketplace (§25).** Deployment-scope discovery
+14. **Booking presence enhancements.** A one-tap "Arrived" beacon
+    on the worker PWA that stamps `arrived_at` on the booking
+    (purely informational, never affects pay/bill); door-lock or
+    NFC integration for stronger "she was on premises" proof; a
+    per-day signable-PDF export for jurisdictions that require
+    worker signatures on time records. None ship in v1; all are
+    additive once a real customer asks. See §09 "Out of scope".
+15. **Per-property cancellation override.** A single client owning
+    multiple villas with varying cancellation policy. v1 keeps it
+    per-client (§22); the property layer in the cascade is added
+    when a real customer needs it. See §09 "Cancellation policy".
+16. **Embedded marketplace (§25).** Deployment-scope discovery
     layer where agencies publish `marketplace_listing` rows (with
     GeoJSON service areas) and clients post `service_request`
     rows (with a place of intervention). Accepted matches
@@ -337,5 +351,5 @@ Items explicitly deferred, in rough priority order:
     marketplace routes, entities, or UI — only the design
     reservation in §25 and the capability/setting seams in §01.
     When implemented, the migration is strictly additive and
-    hooks into the existing §10 `shift_billing.resolved` /
+    hooks into the existing §10 `booking_billing.resolved` /
     `vendor_invoice.approved` webhook events.

@@ -264,7 +264,7 @@ def metrics() -> str:
         "# TYPE crewday_tasks_completed_total counter\n"
         'crewday_tasks_completed_total{property="Villa Sud"} 1\n'
         'crewday_tasks_pending{property="Villa Sud"} 4\n'
-        "crewday_shift_active 1\n"
+        "crewday_bookings_active 1\n"
     )
 
 
@@ -704,7 +704,7 @@ def api_employee(eid: str) -> Response:
         "subject_expenses": md.expenses_for_employee(eid),
         "subject_leaves": md.leaves_for_employee(eid),
         "subject_payslips": md.payslips_for_employee(eid),
-        "subject_shifts": md.shifts_for_employee(eid),
+        "subject_bookings": md.bookings_for_employee(eid),
     })
 
 
@@ -1197,7 +1197,7 @@ def api_organization(oid: str) -> Response:
     properties_billed = [p for p in md.PROPERTIES if p.client_org_id == oid]
     rates = [r for r in md.CLIENT_RATES if r.client_org_id == oid]
     user_rates = [r for r in md.CLIENT_USER_RATES if r.client_org_id == oid]
-    billings = [b for b in md.SHIFT_BILLINGS if b.client_org_id == oid]
+    billings = [b for b in md.BOOKING_BILLINGS if b.client_org_id == oid]
     invoices_to = [i for i in md.VENDOR_INVOICES
                    if i.vendor_organization_id == oid
                    or (i.work_order_id and md.work_order_by_id(i.work_order_id)
@@ -1209,7 +1209,7 @@ def api_organization(oid: str) -> Response:
         "properties_billed": properties_billed,
         "client_rates": rates,
         "client_user_rates": user_rates,
-        "recent_shift_billings": billings[-10:],
+        "recent_booking_billings": billings[-10:],
         "vendor_invoices_billed_to": invoices_to,
         "vendor_invoices_billed_from": invoices_from,
         "portal_user": portal_user,
@@ -1253,13 +1253,13 @@ def api_client_user_rates(client_org_id: str = "") -> Response:
     return ok(rows)
 
 
-@app.get("/api/v1/shift_billings")
-def api_shift_billings(
+@app.get("/api/v1/booking_billings")
+def api_booking_billings(
     client_org_id: str = "",
     user_id: str = "",
     work_engagement_id: str = "",
 ) -> Response:
-    rows = md.SHIFT_BILLINGS
+    rows = md.BOOKING_BILLINGS
     if client_org_id:
         rows = [r for r in rows if r.client_org_id == client_org_id]
     if user_id:
@@ -1666,7 +1666,16 @@ def api_week(request: Request) -> Response:
 @app.get("/api/v1/dashboard")
 def api_dashboard(request: Request) -> Response:
     uid = current_user_id(request)
-    on_shift = [e for e in md.EMPLOYEES if e.clocked_in_at]
+    # "Active right now" = workers with a `scheduled` booking whose
+    # window contains md.NOW. With the booking model there is no
+    # clock-in event; presence is derived from the schedule.
+    now = md.NOW
+    active_emp_ids = {
+        b.employee_id for b in md.BOOKINGS
+        if b.status == "scheduled"
+        and b.scheduled_start <= now <= b.scheduled_end
+    }
+    on_booking = [e for e in md.EMPLOYEES if e.id in active_emp_ids]
     today_tasks = [
         t for t in md.TASKS
         if t.scheduled_start.date() == md.TODAY and md.visible_to(t, uid)
@@ -1677,7 +1686,7 @@ def api_dashboard(request: Request) -> Response:
         "pending":     [t for t in today_tasks if t.status == "pending"],
     }
     return ok({
-        "on_shift": on_shift,
+        "on_booking": on_booking,
         "by_status": by_status,
         "pending_approvals": md.APPROVALS,
         "pending_expenses": [x for x in md.EXPENSES if x.status == "submitted"],
@@ -2260,9 +2269,133 @@ def api_payslips() -> Response:
     return ok({"current": current, "previous": previous})
 
 
-@app.get("/api/v1/shifts")
-def api_shifts() -> Response:
-    return ok(md.SHIFTS)
+@app.get("/api/v1/bookings")
+def api_bookings(
+    user_id: str = "",
+    property_id: str = "",
+    status: str = "",
+    pending_amend: bool = False,
+) -> Response:
+    rows = list(md.BOOKINGS)
+    if user_id:
+        rows = [b for b in rows if b.user_id == user_id]
+    if property_id:
+        rows = [b for b in rows if b.property_id == property_id]
+    if status:
+        wanted = set(status.split(","))
+        rows = [b for b in rows if b.status in wanted]
+    if pending_amend:
+        rows = [b for b in rows if b.pending_amend_minutes is not None]
+    return ok(rows)
+
+
+@app.get("/api/v1/bookings/{bid}")
+def api_booking(bid: str) -> Response:
+    bk = next((b for b in md.BOOKINGS if b.id == bid), None)
+    if bk is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    return ok(bk)
+
+
+@app.post("/api/v1/bookings/{bid}/amend")
+def api_booking_amend(bid: str, payload: dict) -> Response:
+    """Mock amend — applies the patch in-memory.
+
+    Real server: enforces `bookings.amend_self` for owner, threshold
+    auto-approve for self-amends, manager queue for larger overruns.
+    The mock applies whatever is sent and marks `adjusted = True`.
+    """
+    bk = next((b for b in md.BOOKINGS if b.id == bid), None)
+    if bk is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    reason = payload.get("reason", "")
+    touched_time = any(
+        k in payload for k in ("scheduled_start", "scheduled_end",
+                                "actual_minutes", "break_seconds")
+    )
+    if touched_time and not reason:
+        return JSONResponse({"detail": "amend_reason_required"}, status_code=422)
+    for k in ("scheduled_start", "scheduled_end"):
+        if k in payload and payload[k]:
+            setattr(bk, k, datetime.fromisoformat(payload[k]))
+    for k in ("actual_minutes", "actual_minutes_paid", "break_seconds", "kind"):
+        if k in payload:
+            setattr(bk, k, payload[k])
+    if touched_time:
+        bk.adjusted = True
+        bk.adjustment_reason = reason
+        if bk.status == "completed":
+            bk.status = "adjusted"
+    hub.publish("booking.amended", {"booking": bk})
+    return ok(bk)
+
+
+@app.post("/api/v1/bookings/{bid}/decline")
+def api_booking_decline(bid: str, payload: dict | None = None) -> Response:
+    bk = next((b for b in md.BOOKINGS if b.id == bid), None)
+    if bk is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    bk.declined_at = md.NOW
+    bk.declined_reason = (payload or {}).get("reason")
+    bk.status = "pending_approval"
+    bk.work_engagement_id = ""
+    hub.publish("booking.declined", {"booking": bk})
+    return ok(bk)
+
+
+@app.post("/api/v1/bookings/{bid}/cancel")
+def api_booking_cancel(bid: str, payload: dict) -> Response:
+    bk = next((b for b in md.BOOKINGS if b.id == bid), None)
+    if bk is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    by = payload.get("by", "client")
+    if by == "client":
+        bk.status = "cancelled_by_client"
+    elif by == "agency":
+        bk.status = "cancelled_by_agency"
+    else:
+        return JSONResponse({"detail": "invalid_by"}, status_code=422)
+    bk.notes_md = (bk.notes_md + " " + payload.get("reason", "")).strip()
+    hub.publish("booking.cancelled", {"booking": bk})
+    return ok(bk)
+
+
+@app.post("/api/v1/bookings/{bid}/approve")
+def api_booking_approve(bid: str) -> Response:
+    bk = next((b for b in md.BOOKINGS if b.id == bid), None)
+    if bk is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    if bk.pending_amend_minutes is not None:
+        bk.actual_minutes_paid = bk.pending_amend_minutes
+        bk.actual_minutes = bk.pending_amend_minutes
+        bk.adjusted = True
+        bk.adjustment_reason = bk.pending_amend_reason
+        bk.pending_amend_minutes = None
+        bk.pending_amend_reason = None
+        if bk.status == "completed":
+            bk.status = "adjusted"
+    elif bk.status == "pending_approval":
+        bk.status = "scheduled" if bk.scheduled_end > md.NOW else "completed"
+    hub.publish("booking.approved", {"booking": bk})
+    return ok(bk)
+
+
+@app.post("/api/v1/bookings/{bid}/reject")
+def api_booking_reject(bid: str, payload: dict | None = None) -> Response:
+    bk = next((b for b in md.BOOKINGS if b.id == bid), None)
+    if bk is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    bk.notes_md = (bk.notes_md + " [rejected: "
+                   + (payload or {}).get("reason", "no reason given") + "]").strip()
+    if bk.status == "pending_approval":
+        # mock: simply soft-delete by removing from the list
+        md.BOOKINGS.remove(bk)
+    else:
+        # for amend rejection, just clear pending_*
+        bk.pending_amend_minutes = None
+        bk.pending_amend_reason = None
+    hub.publish("booking.rejected", {"booking": bk})
+    return ok(bk)
 
 
 @app.get("/api/v1/pay_rules")
@@ -2323,7 +2456,7 @@ def _curl_example(token: md.ApiToken, plaintext: str) -> str:
         "expenses:read": "/api/v1/expenses",
         "stays:read": "/api/v1/stays",
         "me.tasks:read": "/api/v1/me/tasks",
-        "me.shifts:read": "/api/v1/me/shifts",
+        "me.bookings:read": "/api/v1/me/bookings",
         "me.expenses:read": "/api/v1/me/expenses",
         "me.expenses:write": "/api/v1/me/expenses",
         "me.profile:read": "/api/v1/me",
@@ -2947,13 +3080,6 @@ def api_history(request: Request, tab: str = "tasks") -> Response:
 # ══════════════════════════════════════════════════════════════════════
 # JSON API — writes
 # ══════════════════════════════════════════════════════════════════════
-
-@app.post("/api/v1/shifts/toggle")
-def api_shifts_toggle() -> Response:
-    emp = md.employee_by_id(md.DEFAULT_EMPLOYEE_ID)
-    emp.clocked_in_at = None if emp.clocked_in_at else md.NOW
-    return ok(emp)
-
 
 @app.post("/api/v1/tasks/{tid}/check/{idx}")
 def api_task_check(tid: str, idx: int) -> Response:

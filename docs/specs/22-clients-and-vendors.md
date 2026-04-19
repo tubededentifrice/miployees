@@ -40,9 +40,12 @@ a maid" single-workspace default.
   parent of one or more tasks, under which a **`quote`** and one or
   more **`vendor_invoice`** rows live.
 - Agency billing is captured as **billable rates per (client, work_role)**
-  with an optional per-user override; shifts carry a derived
+  with an optional per-user override; bookings carry a derived
   `client_org_id` for fast rollup and CSV export. v1 exports CSV;
   rendering a client-facing invoice PDF is deferred (see §19).
+- Each client carries an optional **cancellation policy** (window +
+  fee %); per-property override is deliberately deferred to v2 (see
+  §09 "Cancellation policy" and §19).
 - All money-routing decisions made by agents — accepting a quote,
   approving a vendor invoice, marking one paid — are
   **unconditionally approval-gated** (§11), like
@@ -69,6 +72,8 @@ or both. One table, role flags.
 | notes_md           | text?     | manager-visible                                                           |
 | portal_user_id     | ULID FK?  | retained as a convenience pointer for "the single natural person for this org" (e.g. sole-trader supplier). Canonical client login goes through `role_grants(grant_role='client', binding_org_id=<org>)`. See "Client surface" below. |
 | default_pay_destination_id | ULID FK? | for suppliers: where vendor_invoice payments route by default (§09) |
+| cancellation_window_hours  | int?      | for clients: hours of lead time inside which a `cancelled_by_client` booking incurs a fee. Null falls through to workspace setting `bookings.cancellation_window_hours` (default 24). See §09 "Cancellation policy". |
+| cancellation_fee_pct       | int?      | for clients: percent of `subtotal_cents` billed when the cancellation falls inside the window. 0..100. Null falls through to workspace setting `bookings.cancellation_fee_pct` (default 50). |
 | created_at/updated_at | tstz    |                                                                          |
 | deleted_at         | tstz?     | soft delete                                                               |
 
@@ -102,7 +107,7 @@ Added to the `property` row (§04):
 - **Null** = workspace-owned, self-managed. Vendor invoices for
   work at this property are paid by the workspace directly; no
   client-billing rollup.
-- **Set** = billable to that client. Shifts and work orders at this
+- **Set** = billable to that client. Bookings and work orders at this
   property carry the client forward; billable-rate resolution
   consults `client_rate` / `client_user_rate` (below).
 - A property can only have one `client_org_id` at a time. Properties
@@ -144,20 +149,38 @@ Semantics:
 A work_engagement's `engagement_kind` is not immutable but changes
 are audited and gated: switching a row from `payroll` to
 `contractor` requires that the engagement have no `pay_rule` active
-on or after the switch date, and any open `pay_period` with shifts
+on or after the switch date, and any open `pay_period` with bookings
 for that engagement must be locked or drained. The reverse switch
 (contractor → payroll) requires at least one `pay_rule` to be
 created in the same transaction.
 
 ### UI and assignment
 
-`engagement_kind` does **not** affect task assignment, shifts,
+`engagement_kind` does **not** affect task assignment, bookings,
 work-role capabilities, or anything in §05 / §06 — the worker is
 still a `users` row with `user_work_role` and
 `property_work_role_assignment` rows driving scheduling and the
 evidence policy. It only affects the pay pipeline and which UI
 surfaces the person appears in when that particular engagement is
 selected.
+
+## Cancellation policy
+
+Two scopes:
+
+- **Per-client** (this section's `organization` table) carries
+  `cancellation_window_hours` + `cancellation_fee_pct`. Either
+  null falls through to the workspace defaults below.
+- **Workspace defaults**, settings-cascade keys
+  `bookings.cancellation_window_hours` (default `24`) and
+  `bookings.cancellation_fee_pct` (default `50`).
+
+Resolution and the cancellation-fee `booking_billing` row are
+documented in §09 "Cancellation policy".
+
+> **Per-property override.** Deliberately deferred — see §19.
+> Workarounds: split a hard-to-clean villa into a separate client,
+> or add a `client_user_rate` row that lifts the per-hour rate.
 
 ## Billable rates
 
@@ -200,11 +223,11 @@ Unique: `(client_org_id, user_id, effective_from)`.
 
 ### Rate resolution
 
-For a shift with `(client_org_id, user_id)` and date `d`:
+For a booking with `(client_org_id, user_id)` and date `d`:
 
 1. `client_user_rate` matching `(client_org_id, user_id)`
    with `effective_from ≤ d < coalesce(effective_to, ∞)`.
-2. For each `user_work_role` the user holds at the shift's
+2. For each `user_work_role` the user holds at the booking's
    workspace (narrowed by `property_work_role_assignment`):
    `client_rate` matching `(client_org_id, work_role_id)` with the
    same effective-range test. If multiple work roles resolve to
@@ -212,38 +235,44 @@ For a shift with `(client_org_id, user_id)` and date `d`:
    roles have an implicit priority by `work_role.key` in the
    catalog; owners/managers may override per client with
    `client_rate.priority` — deferred).
-3. No match → the shift is **not billable** to this client and its
+3. No match → the booking is **not billable** to this client and its
    hours surface in a "unpriced" bucket in the rollup CSV so the
    owner or manager can fix the rate card.
 
-Rate resolution happens at **shift close time** and is snapshotted
-onto a new `shift_billing` row (below) so later rate-card edits do
-not retroactively rewrite history.
+Rate resolution happens at **booking completion** (the
+`scheduled → completed` transition, or the partial cancellation-fee
+write — see §09) and is snapshotted onto a new `booking_billing`
+row (below) so later rate-card edits do not retroactively rewrite
+history.
 
-### `shift_billing`
+### `booking_billing`
 
-A derived, append-only row per `(shift, client_org_id)` pair,
-written when a shift closes against a property with
-`client_org_id IS NOT NULL`.
+A derived, append-only row per `(booking, client_org_id)` pair,
+written when a booking transitions to `completed` against a
+property with `client_org_id IS NOT NULL`. A second variant carries
+the cancellation-fee subtotal when status flips to
+`cancelled_by_client` inside the cancellation window — same shape,
+`is_cancellation_fee = true`.
 
-| field              | type     | notes                                                |
-|--------------------|----------|------------------------------------------------------|
-| id                 | ULID PK  |                                                      |
-| workspace_id       | ULID FK  |                                                      |
-| shift_id           | ULID FK  |                                                      |
-| client_org_id      | ULID FK  | denormalised from `property.client_org_id` at close  |
-| user_id            | ULID FK  | the worker who performed the shift                   |
-| work_engagement_id | ULID FK  | the engagement the shift is earned under (§02, §09)  |
-| currency           | text     |                                                      |
-| billable_minutes   | int      | = duration minus breaks                              |
-| hourly_cents       | int      | snapshot of the resolved rate                        |
-| subtotal_cents     | int      | `billable_minutes / 60 * hourly_cents`, rounded      |
-| rate_source        | enum     | `client_user_rate | client_rate | unpriced`          |
-| rate_source_id     | ULID?    | id of the resolving rate row; null when `unpriced`   |
+| field                | type     | notes                                                |
+|----------------------|----------|------------------------------------------------------|
+| id                   | ULID PK  |                                                      |
+| workspace_id         | ULID FK  |                                                      |
+| booking_id           | ULID FK  |                                                      |
+| client_org_id        | ULID FK  | denormalised from `property.client_org_id` at completion |
+| user_id              | ULID FK  | the worker who performed the booking                 |
+| work_engagement_id   | ULID FK  | the engagement the booking is earned under (§02, §09)|
+| currency             | text     |                                                      |
+| billable_minutes     | int      | `actual_minutes_paid` (or scheduled, if no amend); reduced for cancellation fee |
+| hourly_cents         | int      | snapshot of the resolved rate                        |
+| subtotal_cents       | int      | `billable_minutes / 60 * hourly_cents`, rounded; for cancellation rows: scheduled minutes × rate × `cancellation_fee_pct / 100` |
+| rate_source          | enum     | `client_user_rate | client_rate | unpriced`          |
+| rate_source_id       | ULID?    | id of the resolving rate row; null when `unpriced`   |
+| is_cancellation_fee  | bool     | `false` for normal completion, `true` for late-cancel fee row |
 
-Editing a shift's time fields (`adjusted = true` in §09)
-re-derives its `shift_billing` row inside the same transaction.
-Archiving a property or client never removes `shift_billing` rows;
+Amending a booking's time fields (`adjusted = true` in §09)
+re-derives its `booking_billing` row inside the same transaction.
+Archiving a property or client never removes `booking_billing` rows;
 they are historical.
 
 ## `work_order`
@@ -730,7 +759,7 @@ authority comes from a `role_grants` row of
 `grant_role = 'client'`, either:
 
 - **Workspace-scope with `binding_org_id`** — the client sees
-  everything in the workspace tagged to that org: shifts at
+  everything in the workspace tagged to that org: bookings at
   properties where `property.client_org_id = binding_org_id`,
   work_orders / quotes / vendor_invoices billed to that org.
   This is the usual case for a client with more than one property
@@ -769,7 +798,7 @@ redacted to the level the workspace's owner/manager has configured:
 - Worker display name: visible by default; hideable via workspace
   setting `client.show_worker_names` (default: true).
 - Worker pay_rule / rate: always hidden. Clients see
-  `shift_billing` rates (what the agency charges) not
+  `booking_billing` rates (what the agency charges) not
   `pay_rule` rates (what the agency pays).
 - Worker profile details (phone, address, emergency contact):
   always hidden.
@@ -844,9 +873,15 @@ Appended to §10's catalog:
   `vendor_invoice.proof_uploaded`,
   `vendor_invoice.reminder_sent`,
   `vendor_invoice.reminder_exhausted`.
-- `shift_billing.resolved` (fires when a shift closes and the
-  billing row is written; carries the `rate_source` so a dashboard
-  can surface unpriced shifts).
+- `booking_billing.resolved` (fires when a booking transitions to
+  `completed` and the billing row is written; carries the
+  `rate_source` so a dashboard can surface unpriced bookings).
+- `booking.scheduled`, `booking.completed`, `booking.amended`,
+  `booking.cancelled`, `booking.no_show`, `booking.reassigned`,
+  `booking.declined`, `booking.pending_approval`,
+  `booking.approved` (ad-hoc proposal accepted),
+  `booking.rejected` (ad-hoc proposal rejected). Appended to §10's
+  webhook catalog.
 - `property_workspace_invite.created`,
   `property_workspace_invite.accepted`,
   `property_workspace_invite.rejected`,

@@ -1,8 +1,8 @@
 # 09 — Time, payroll, expenses
 
 Three tightly-linked features for workers who expect to get paid
-correctly and for owners and managers who want to stop keeping shift
-notes in a phone's notes app.
+correctly and for owners and managers who want to stop keeping
+booking notes in a phone's notes app.
 
 ## Scope by `work_engagement.engagement_kind`
 
@@ -11,12 +11,15 @@ claims, payout destinations — all apply to work engagements with
 `engagement_kind = payroll` (§05, §22). **Contractors** and
 **agency-supplied** workers are paid via a separate pipeline
 (`work_order` / `vendor_invoice`, §22) and do **not** get pay rules,
-pay periods, or payslips. They still produce `shift` rows when they
-clock in, which is how their hours are captured for the client-
-billing rollup (§22 "Billable-hour rollup and exports"); a
-contractor's `shift` has no corresponding `pay_period_entry` line
-because their pay runs through their invoices, not the payroll
-cycle.
+pay periods, or payslips. They still produce `booking` rows when an
+owner or manager schedules them for hourly work, which is how their
+hours are captured for the client-billing rollup (§22 "Billable-hour
+rollup and exports"); a contractor's `booking` has no corresponding
+`pay_period_entry` line because their pay runs through their invoices,
+not the payroll cycle. Per-task contractor work — a one-off airport
+run quoted at €50, a quoted repair — flows through `work_order` /
+`vendor_invoice` directly and skips bookings entirely; the invoice is
+the record.
 
 `expense_claim` remains available to any engagement kind — a
 contractor who paid for materials out-of-pocket can still submit
@@ -26,162 +29,375 @@ contractor folds materials into their own `vendor_invoice` line
 items instead of filing claims, and the owner or manager chooses
 per case.
 
-## Time tracking (shifts)
+## Bookings
+
+A **booking** is a worker × property × time-window commitment. It is
+the **canonical billable and payable atom** of crew.day: scheduled
+time *is* paid time and billed time, by default. This replaces the
+v0 clock-in / clock-out shift model — there is no clock state, no
+idle timer, no dispute machine. The booking is the contract; tasks
+done within it are the work; task-completion timestamps (§06) are
+forensic evidence consulted only when the contract is questioned.
+
+> **Why no clock-in / clock-out?** The clock-tap is weak evidence
+> (workers forget, double-tap, can game it by ticking tasks early),
+> and household / cleaning bookings are commercially per-slot anyway:
+> the client books 4h, the agency bills 4h, the maid is paid 4h —
+> regardless of whether the actual broom-time was 3h 40 or 4h 10.
+> Genuine variances (the place was a disaster; client cancelled
+> last-minute) are handled explicitly via the **amend** operation
+> below, with audit trail and policy. Labour-law compliance is
+> satisfied by the booking + (when amended) `actual_minutes`
+> record — no minute-by-minute self-reporting needed.
 
 ### Model
 
 ```
-shift
+booking
 ├── id
 ├── workspace_id
 ├── work_engagement_id       # FK → work_engagement.id (pay pipeline key)
 ├── user_id                  # denormalised from work_engagement.user_id for fast queries
-├── property_id              # optional; unassigned shifts for remote drivers, etc.
-├── client_org_id            # derived cache from property.client_org_id at close; nullable (§22)
-├── status                   # enum: open | closed | disputed (§02)
-├── started_at               # utc
-├── ended_at                 # utc, nullable while status = open
-├── expected_started_at      # nullable; set when clock-in is delayed
-├── method_in                # enum: pwa | web | manager | agent | qr_kiosk
-├── method_out               # same
-├── geo_in_lat/lon/accuracy  # nullable, only if geofencing is enabled by settings + consent
-├── geo_out_lat/lon/accuracy
-├── break_seconds            # owner/manager-entered or self-entered
+├── property_id              # optional; null for "unassigned-property" work (e.g. a driver doing pickups)
+├── client_org_id            # derived cache from property.client_org_id at status=completed; nullable (§22)
+├── kind                     # enum: work | travel (§02). `travel` is optional, agency-only itemisation.
+├── status                   # enum: scheduled | completed | cancelled_by_client | no_show_worker | cancelled_by_agency | adjusted | pending_approval (§02 booking_status)
+├── scheduled_start          # utc
+├── scheduled_end            # utc; scheduled_end > scheduled_start
+├── actual_minutes           # int?; nullable. Set ONLY when amended (overrun, underrun, or worker-submitted close). Defaults derive from (scheduled_end - scheduled_start - break_seconds/60).
+├── actual_minutes_paid      # int; what payroll multiplies. Defaults to scheduled minutes; updated only when an amend is approved (or auto-approved within threshold).
+├── break_seconds            # owner/manager-entered or worker-entered at close. Default 0; set in the same amend operation as actual_minutes.
 ├── notes_md                 # optional
-├── adjusted                 # bool
-├── adjustment_reason        # text? when adjusted == true
+├── adjusted                 # bool; true after any approved amend that touched scheduled or actual time fields
+├── adjustment_reason        # text? required when `adjusted = true`
+├── pending_amend_minutes    # int?; the worker-requested overrun pending manager approval (>= scheduled minutes only). Cleared on approve/reject. Recorded for labour-law compliance even before pay catches up.
+├── pending_amend_reason     # text? mandatory when `pending_amend_minutes` is set
+├── declined_at              # tstz?; set when the assigned worker declines this booking. The booking is bumped to the manager queue (status returns to `pending_approval` for reassignment).
+├── declined_reason          # text? optional; surfaced to the manager
 ├── created_by_actor_kind/id
+├── created_at / updated_at
 └── deleted_at
 ```
 
-`client_org_id` is written at shift close by copying
-`property.client_org_id` at that moment, and is refreshed if the
-manager edits time fields (§ "Manager adjustments"). It is the key
-used by the billable-hour rollup (§22); a sibling `shift_billing`
-row is created in the same transaction with the resolved rate and
-subtotal. A shift whose property has no `client_org_id` leaves the
+`client_org_id` is written when status transitions to `completed`
+(or at the moment an amend is approved on a completed booking) by
+copying `property.client_org_id` at that moment. It is the key used
+by the billable-hour rollup (§22); a sibling `booking_billing` row
+is created in the same transaction with the resolved rate and
+subtotal. A booking whose property has no `client_org_id` leaves the
 field null and skips billing-row creation (self-managed workspaces
 see no change).
 
-`status` transitions: `open` on clock-in; `closed` on clock-out or
-manager close; `disputed` when the worker auto-closes an orphan open
-shift (see "Open shift recovery").
+`status` transitions:
 
-### Clock-in / clock-out
+```
+pending_approval ──► scheduled ──► completed ──► (adjusted)
+       │                 │              ▲
+       │                 ├─► cancelled_by_client
+       │                 ├─► cancelled_by_agency
+       │                 └─► no_show_worker
+       └─ rejected → deleted (manager declines an ad-hoc proposal)
+```
 
-Driven by the resolved setting `time.clock_mode` (§05), which takes
-one of three values: `manual`, `auto`, `disabled`. The companion
-setting `time.auto_clock_idle_minutes` (default `30`) controls the
-idle timer used by `auto` mode. `time.geofence_required` is resolved
-through the same cascade.
+- **`pending_approval`** — created by a worker as an ad-hoc proposal
+  (see "Ad-hoc bookings" below). The manager reviews and either
+  approves into `scheduled` or rejects.
+- **`scheduled`** — the default created shape; the contract is set,
+  the worker is committed.
+- **`completed`** — the booking's `scheduled_end` has passed and no
+  cancellation / no-show flag fired. `client_org_id` and
+  `booking_billing` are written at this transition.
+- **`cancelled_by_client`** — the paying client cancelled. The
+  cancellation policy (per-client; see below) decides the fee.
+- **`cancelled_by_agency`** — the workspace itself cancelled (rare;
+  e.g. property closure, weather, owner request when the workspace
+  *is* the owner). Worker is paid per the engagement's
+  `cancellation_pay_to_worker` rule (default: paid in full if
+  cancellation lead time < 24h, unpaid otherwise).
+- **`no_show_worker`** — the booking's window passed with **zero
+  task activity at the property** and no manager confirmation.
+  Auto-detected by the daily worker job; manager can override
+  back to `completed` if it was a tracking glitch (e.g. tasks done
+  but never ticked).
+- **`adjusted`** — terminal subscript on `completed`: an approved
+  amend changed the time fields after completion. Renders as
+  "Completed (edited)" in the UI.
 
-#### `manual` mode (default)
+`is_pay_bearing` is a derived flag on the booking (not a column):
+`true` for engagements with `engagement_kind = payroll` whose
+`pay_rule.kind ∈ (hourly, per_task)`, **or** for `contractor` /
+`agency_supplied` engagements that produce billing rollups.
+`false` for `monthly_salary` engagements — see "Salaried engagements"
+below.
 
-Same behaviour as today:
+### Creation
 
-- **Clock-in.** Worker taps a big green button on the PWA "home"
-  screen; the server records `started_at = now()`, property defaulted
-  from today's assigned task (or manually picked). If geofence
-  required, the browser's Geolocation API is consulted with a
-  configured accuracy threshold; if the user denies or GPS is poor,
-  clock-in fails with a clear explanation and an option to request
-  an owner or manager override.
-- **Clock-out.** Green button flips to red "Clock out". Prompts for
-  break time if shift > 6h (configurable). Saves `ended_at`.
-- **QR kiosk.** Owners and managers can print a property-specific QR
-  that opens a simple clock-in/out page with passkey assertion.
-  Useful when staff share a family phone.
+Bookings are created by:
 
-#### `auto` mode
+1. **Manager**, via `POST /bookings` (§12). Most common path: the
+   manager fills the calendar from `/scheduler` (§14) by dragging a
+   worker onto a property × time window, or by clicking a recurring
+   slot in `schedule_ruleset_slot` (§06) which materialises the
+   booking. Workers are notified via the agent-message delivery
+   chain (§10).
+2. **Recurrence materialisation.** A daily worker job
+   (`materialise_bookings`) walks each active
+   `property_work_role_assignment` whose `schedule_ruleset` slots
+   fall within the rolling horizon (workspace-configurable, default
+   28 days) and inserts `booking` rows for each (user × property ×
+   slot) occurrence not yet materialised. Mirrors the existing
+   `generate_task_occurrences` pattern (§06). Holidays and approved
+   leaves are honoured via the §06 availability precedence stack.
+3. **Worker**, via the ad-hoc path (see "Ad-hoc bookings" below) —
+   creates with `status = pending_approval` until the manager
+   confirms.
 
-The worker never taps a clock-in button. The server derives the
-shift from work activity:
+A booking does **not** require any tasks to exist. Tasks generated
+from §06 schedules / stay lifecycle rules at the same property and
+time window naturally surface inside the booking on the worker's
+PWA, but they are not foreign-key-linked: the worker's day is
+"the union of bookings I have + tasks at those bookings". If a
+booking exists with no tasks (a 4h chore-time at Villa A with
+nothing pre-planned), the worker can add ad-hoc tasks during the
+booking, or just do their thing.
 
-- The **first** checklist tick or task action (start, complete,
-  comment, evidence upload) of the day opens a shift with
-  `started_at = now()` and `method_in = agent`. The shift's
-  `property_id` is derived from that first-ticked task's villa.
-- Each subsequent action extends an "idle timer" on the open shift.
-  When the timer exceeds `time.auto_clock_idle_minutes` with no
-  further action, the worker closes the shift at
-  `ended_at = last_action_at`, `method_out = agent`.
-- If a subsequent checklist tick happens on a task at a **different
-  villa**, the current shift is closed at the previous action's
-  timestamp and a **new shift segment** is opened on the new villa.
-  Shift segments are independent `shift` rows — one worker can
-  accumulate several segments in a day.
-- The PWA shows an ambient "You're on the clock since 08:12 at
-  Villa Sud" indicator; the worker can still tap "Clock out now"
-  to close the shift early, which overrides the idle timer.
+### Amend operation
 
-#### `disabled` mode
+A single mechanism handles overruns, underruns, extensions, and
+manager corrections. Whether the amend happens **before**, **during**,
+or **after** the booking is just a timestamp — the data shape and
+authorisation are identical.
 
-Hours are not tracked — useful for a salaried worker or a family
-friend who helps out. No shift rows are created; the clock-in
-affordance is hidden; payroll for this work engagement must use a
-`monthly_salary` or `per_task` pay rule (§ "Pay rules") because
-`hourly` has no hours to multiply.
+`POST /bookings/{id}/amend` accepts a partial body of:
 
-#### Disputed auto-close
+- `scheduled_start` / `scheduled_end` — change the contract window.
+- `actual_minutes` — record what really happened (overrun/underrun).
+- `break_seconds` — adjust unpaid break time.
+- `kind` — switch between `work` / `travel`.
+- `reason` — required string; mandatory whenever any time field
+  moves. 422 `amend_reason_required` otherwise.
 
-If the idle timer closes an `auto` shift but the worker resumes
-activity on the **same local calendar day** before midnight, the
-server **re-opens** the shift (`status = open`, `ended_at = NULL`)
-and flags the interval between the auto-close timestamp and the
-resumed action as **disputed**:
+**Authorisation + auto-approve threshold.**
 
-- The shift gets an additional `dispute_gap` row (or a flag on the
-  shift, recorded in `audit_log`) describing the auto-closed window
-  `[auto_close_at, resumed_at)` so an owner or manager can decide
-  whether those minutes count.
-- The shift's `status` transitions to `disputed` on re-open and an
-  owner or manager is notified via the daily digest. Resolution is
-  either "keep the gap as a break" (shift stays re-opened; gap
-  subtracted) or "count it as worked" (shift closed/re-closed with
-  the gap included).
-- Cross-midnight resumes do **not** re-open; the worker is treated
-  as starting a fresh shift on the new day.
+- The worker assigned to the booking holds `bookings.amend_self`. A
+  self-amend that increases time by **at most** the engagement-level
+  `bookings.auto_approve_overrun_minutes` (default `30`) **and**
+  decreases time by any amount is auto-approved: `actual_minutes`
+  and `actual_minutes_paid` move together, `adjusted = true`,
+  `adjustment_reason` is set, audit log records the change, manager
+  sees it in the daily digest. No queue.
+- A self-amend that exceeds the threshold writes
+  `pending_amend_minutes` and `pending_amend_reason` but leaves
+  `actual_minutes_paid` at the scheduled value. The booking's
+  `status` does *not* change; the row appears on the manager's
+  amend queue (`/bookings?pending_amend=true`). On approve,
+  `actual_minutes_paid` advances to the requested value;
+  `pending_*` fields clear. The pending value is recorded for
+  labour-law compliance — the worker's claim is on record from
+  the moment they submit, even if pay is held back.
+- Owners, managers, and any user with `bookings.amend_other` can
+  amend any booking unconditionally, with the same audit hook. No
+  threshold applies — the manager *is* the approval.
 
-#### Per-villa `clock_mode` override
+The same endpoint serves all four shapes: pre-booking window
+extension ("the prep is bigger than I thought, please move my
+end time to 14:00 instead of 13:00"), in-flight extension ("I'm
+running long"), post-booking submission ("I stayed until 13:42
+because of X"), and manager correction ("Maria's break was 30 min
+not 60"). Workers do not have to learn two flows — there is one
+amend.
 
-Clock mode is an instance of the **settings cascade** (§02 "Settings
-cascade"), canonical key `time.clock_mode`. The cascade's generic
-resolution (workspace → property → work_engagement → task, first
-concrete value wins) applies.
+**Re-deriving billing.** Amending time fields on a `completed`
+booking re-derives its `booking_billing` row inside the same
+transaction (§22).
 
-A villa can override the worker's default mode. The resolution
-order is: **villa override → work_engagement setting → workspace
-default**. A villa that sets `clock_mode = manual` forces manual
-clock-in/out even for workers whose default is `auto` (useful
-when a specific property has a shared kiosk or strict audit needs).
-A villa set to `auto` likewise forces auto for visiting workers.
-`disabled` at the villa layer is legal but unusual — it turns off
-tracking on that property even for hourly staff.
+### Pay basis (per-engagement)
 
-The resolved mode is surfaced on the task detail screen so the
-worker knows whether their taps will produce shift rows.
+The setting `bookings.pay_basis` is resolved through the
+`workspace → work_engagement` cascade (§02), enum
+`scheduled | actual`. Default `scheduled`.
+
+- **`scheduled`** (default): payroll multiplies
+  `scheduled_end - scheduled_start - break_seconds/60` (or, when
+  amended, `actual_minutes_paid`). The norm for cleaning agencies
+  and most household contracts. Underruns stay with the agency
+  (productivity gain); overruns go through amend.
+- **`actual`**: payroll multiplies `actual_minutes_paid`, defaulting
+  to the scheduled total only if no amend was made. The norm for
+  direct-employed staff whose owner pays for what was actually
+  worked, not for what was booked. Workers must close the booking
+  with an amend to enable underruns to stick — the default
+  derivation is still scheduled.
+
+The setting affects payroll only. Client billing always reads
+`actual_minutes_paid` (defaults to scheduled), regardless of the
+worker's pay basis — the agency's commercial promise to the client
+is independent of the agency's contract with its workers.
+
+### Cancellation policy
+
+Two scopes:
+
+- **Per-client** (lives on `organization`, §22): two columns
+  `cancellation_window_hours` and `cancellation_fee_pct` on rows
+  with `is_client = true`. Null on either falls through to the
+  workspace defaults below.
+- **Workspace defaults**, settings-cascade keys
+  `bookings.cancellation_window_hours` (default `24`) and
+  `bookings.cancellation_fee_pct` (default `50`).
+
+When a booking is cancelled with status `cancelled_by_client`:
+
+1. Resolve the policy (per-client first, then workspace default).
+2. Compute `lead_hours = booking.scheduled_start - cancelled_at` in
+   property-local hours.
+3. If `lead_hours >= cancellation_window_hours` → no client fee, no
+   worker pay. Booking row remains for history; `booking_billing`
+   is not written.
+4. If `lead_hours < cancellation_window_hours` → bill the client
+   `subtotal_cents = scheduled_minutes * client_hourly_cents *
+   cancellation_fee_pct / 100` (rounded half-to-even). Worker is
+   paid in full per the engagement's
+   `bookings.cancellation_pay_to_worker` setting (default `true`
+   — the worker reserved the slot and may have lost other work).
+5. Audit log records `lead_hours`, the resolved policy, and which
+   layer it came from (per-client / workspace-default).
+
+`cancelled_by_agency` follows the inverse default: worker is paid
+in full only if `lead_hours < cancellation_window_hours`, otherwise
+unpaid (the agency had time to redeploy them). Client is **not**
+billed; if the workspace was billing through to a client, the
+manager has to negotiate the credit out of band.
+
+`no_show_worker` cancels the booking with no client bill and no
+worker pay. The worker's audit row records the auto-detection
+threshold; the manager can override to `completed` from the
+booking detail screen.
+
+**Recurring bookings.** Each materialised occurrence is independently
+cancellable. A client cancelling their Tuesday slot for the next two
+weeks issues two `cancel` calls (or selects a date range in the UI).
+The `schedule_ruleset_slot` row is untouched — only the materialised
+bookings cancel.
+
+> **Per-property cancellation override.** Deliberately not modelled
+> in v1. A single client with multiple villas of varying difficulty
+> can override the policy by issuing two `client_user_rate` rows or
+> two organizations; once a real customer asks for per-property
+> cancellation policy, we add a `property.cancellation_window_hours`
+> override layer to the cascade. See §19.
+
+### Salaried engagements
+
+Engagements with `pay_rule.kind = monthly_salary` do **not** get
+pay-bearing booking rows. Their `/schedule` view still shows the
+recurring weekly pattern (`schedule_ruleset_slot`), approved leaves,
+and any tasks assigned to them — the surface is *informational*,
+showing where they're expected to be without producing a payroll
+ledger entry.
+
+In data terms: the `materialise_bookings` worker job skips
+engagements whose active `pay_rule.kind = monthly_salary`. If the
+engagement's active rule is `per_task`, bookings are materialised
+only for explicit per-task assignments — the worker is paid per
+completed `task` rather than per booked time. If `hourly`, bookings
+are materialised normally.
+
+A salaried worker can still appear on `/scheduler` via their rota
+slots and tasks; the manager can still assign ad-hoc tasks; the
+worker still gets the daily digest. The only thing that does not
+happen is the creation of a `booking` row that would multiply to
+pay.
+
+### Worker decline
+
+A worker may **decline** a `scheduled` booking via
+`POST /bookings/{id}/decline` (verb `bookings.decline_self`). The
+server stamps `declined_at`, `declined_reason`, returns the row to
+`status = pending_approval`, clears the `work_engagement_id`
+(unassigned), and notifies the manager via the daily digest +
+agent-message chain. The original assignee is excluded from the
+auto-reassignment candidate pool for that booking.
+
+Decline is unilateral — no confirmation prompt — but the audit row
+makes the act visible. A worker who declines repeatedly will surface
+in the manager's people view as a flagged engagement.
+
+### Ad-hoc bookings (worker-created)
+
+A worker may propose a booking via `POST /bookings` with body
+`{property_id, scheduled_start, scheduled_end, kind?, notes_md?}`
+(verb `bookings.create_pending`). The server forces
+`status = pending_approval`, `work_engagement_id` to the worker's
+own engagement, and `pay_basis` derives from the engagement.
+
+The manager sees the proposed booking on the amend / pending queue
+and either approves (status flips to `scheduled` or, if the booking
+is already in the past, directly to `completed`) or rejects (soft
+delete with reason; webhook fires).
+
+Use case: the maid swings by Villa A unexpectedly to grab forgotten
+laundry; she logs the visit so it shows up on her schedule and rolls
+into payroll once the manager confirms. Mirrors the
+`expense_claim.submit → approve` shape.
+
+### Coverage / reassignment
+
+Reassigning a booking to a different worker is a
+`PATCH /bookings/{id}` writing a new `work_engagement_id`, gated by
+`bookings.assign_other` (manager). The server:
+
+1. Validates the new assignee's availability through the §06
+   precedence stack; 422 `availability_conflict` if they're on
+   approved leave / outside their rota / on another booking that
+   overlaps.
+2. Re-resolves the pay rule for the new engagement (so Sara's
+   hourly rate replaces Maria's, even though the client rate at
+   Villa A is unchanged).
+3. Fires `booking.reassigned` webhook with `from_user_id` /
+   `to_user_id`. Daily digest surfaces the swap to both workers.
+
+The booking row keeps its id; `booking_billing` (if already written
+for a completed booking) is recomputed in the same transaction.
 
 ### Owner and manager adjustments
 
-Any shift can be adjusted via `PATCH /shifts/{id}` (§12). The server
-computes whether the patch touches time fields (`started_at`,
-`ended_at`, `break_seconds`, `expected_started_at`):
+Any booking field is patchable via `PATCH /bookings/{id}` with the
+same authorisation rules as the amend endpoint. Time fields go
+through the amend pipeline above; non-time fields (`notes_md`,
+`property_id` for a future booking) update directly. The manager UI
+exposes amend as a dialog from the booking detail; the API endpoint
+is shared.
 
-- If yes: sets `adjusted = true` and requires a non-empty
-  `adjustment_reason` in the body; returns 422 otherwise.
-- If the patch only touches `notes_md` / `property_id`: does **not**
-  set `adjusted`; `adjustment_reason` is optional.
+### Labour-law compliance
 
-Original values are preserved in `audit_log.before_json` either way.
-Workers see "(edited)" on shifts with `adjusted = true`; the edit
-is attributed to the acting user in the audit log.
+The booking row plus `actual_minutes` (when amended) **is** a
+compliant time record under FR / EU rules: it carries
+`scheduled_start`, `scheduled_end`, `actual_minutes_paid`, the
+worker, the property, and the manager-verifiable audit trail. The
+worker is not required to perform minute-by-minute self-reporting;
+the booking itself documents the worked period. Jurisdictions that
+require per-day signatures (rare, niche) will need a future export
+that prints the daily booking list as a signable PDF — flagged in
+§19.
 
-### Open shift recovery
+### Out of scope (v1)
 
-If a shift stays open > 16h, the worker process emails a reminder to
-the worker; if still open at 24h, an owner or manager is notified and
-the system auto-closes at `started_at + 8h` with `status = disputed`
-so it shows up in review.
+- **"Arrived" presence beacon.** A one-tap PWA button that stamps
+  `arrived_at` on the booking is in the design space but deferred —
+  we have task-completion timestamps for the same signal at
+  acceptable latency, and adding the column later is purely
+  additive. See §19.
+- **Door-lock / NFC integration** for external "she was on
+  premises" proof. Better than GPS pings, but not v1 — flagged in
+  §19 alongside the marketplace.
+- **GPS geofencing.** Without clock-in, GPS adds nothing; the v0
+  geofence_required setting is removed. PII surface shrinks
+  accordingly (§15).
+- **Real-time presence dashboards.** Owners who want "is Maria at
+  Villa A right now?" see the booking's `scheduled_start`,
+  `scheduled_end`, and the most recent task tick; that's enough
+  for household management. A live presence map is deferred.
 
 ## Pay rules
 
@@ -310,7 +526,10 @@ overlap across engagements when their pay rules diverge.
 
 An owner or manager closes a period ("Lock"):
 
-1. Validate: no open shifts remain in the period.
+1. Validate: no `scheduled` or `pending_approval` bookings remain in
+   the period (and no booking with a non-null `pending_amend_minutes`).
+   The lock refuses with `bookings_unsettled` listing the offenders so
+   the manager can amend or cancel them first.
 2. Compute `pay_period_entry` rows: per work_engagement, per day,
    regular hours / overtime / holiday / per-task counts / piecework
    totals. Holiday hours are identified by querying `public_holidays`
@@ -1005,10 +1224,10 @@ The storage cost is tiny (N workspaces × ~30 currencies × 365 days).
 
 ## Reports and exports
 
-- **Timesheets** — CSV per pay period: user, date, property, hours,
-  overtime, holiday, notes. Includes shifts from all engagement kinds;
-  a column marks whether the hours roll into a payslip or a
-  `vendor_invoice` pipeline.
+- **Timesheets** — CSV per pay period: user, date, property, hours
+  (scheduled / actual_paid), overtime, holiday, notes. Includes
+  bookings from all engagement kinds; a column marks whether the
+  hours roll into a payslip or a `vendor_invoice` pipeline.
 - **Payroll register** — CSV per pay period: user, gross, net,
   expenses, currency. Payroll work engagements only.
 - **Expense ledger** — CSV by date range: claim id, user, vendor,
@@ -1016,7 +1235,7 @@ The storage cost is tiny (N workspaces × ~30 currencies × 365 days).
 - **Hours by property** — rollup useful for owners: hours consumed at
   each property for budgeting.
 - **Billable hours by client** — see §22 "Billable-hour rollup and
-  exports". Per-client CSV driven by `shift_billing` rows.
+  exports". Per-client CSV driven by `booking_billing` rows.
 - **Work-order ledger** — see §22. Per-client work orders with
   aggregate quote and invoice totals.
 
@@ -1026,7 +1245,8 @@ Exports: `GET /api/v1/exports/...csv` (streamed) or via CLI
 ## Out of scope (v1)
 
 - Tax withholding, social contributions, statutory filings.
-- Tip pooling, shift differentials beyond the overtime/holiday rules.
+- Tip pooling, booking differentials (e.g. night-rate uplifts)
+  beyond the overtime / holiday rules.
 - Direct bank transfers or payment execution.
 - **Multi-currency *payroll*** is not implemented in v1.
   `pay_rule.currency` and `payslip.currency` carry per-entity codes,

@@ -8,9 +8,8 @@ import type {
   SelfWeeklyAvailabilitySlot,
 } from "@/types/api";
 
-// Shared leave-request and availability-override dialogs. Both /schedule
-// (§14 "Schedule view") and /me's "My leave" / "My availability
-// overrides" panels render these — same write path, same approval
+// Shared leave-request and availability-override dialogs. `/schedule`
+// (§14 "Schedule view") is the canonical surface; same approval
 // semantics (§06 "Approval logic (hybrid model)"), cross-invalidating
 // the query keys each surface reads from.
 

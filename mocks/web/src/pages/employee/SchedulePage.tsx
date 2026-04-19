@@ -490,25 +490,6 @@ export default function SchedulePage() {
     </div>
   );
 
-  const actions = (
-    <div className="schedule-actions">
-      <button
-        type="button"
-        className="btn btn--ghost btn--sm"
-        onClick={() => setOverrideIso(isoDate(today))}
-      >
-        Adjust a day
-      </button>
-      <button
-        type="button"
-        className="btn btn--moss btn--sm"
-        onClick={() => setLeaveIso(isoDate(today))}
-      >
-        + Request leave
-      </button>
-    </div>
-  );
-
   const body: ReactNode = (() => {
     if (q.isPending) return <Loading />;
     if (!q.data) return <p className="muted">Failed to load schedule.</p>;
@@ -593,14 +574,14 @@ export default function SchedulePage() {
 
   if (role === "manager") {
     return (
-      <DeskPage title={title} sub={sub} actions={actions}>
+      <DeskPage title={title} sub={sub}>
         {body}
       </DeskPage>
     );
   }
   return (
     <>
-      <PageHeader title={title} sub={sub} actions={actions} />
+      <PageHeader title={title} sub={sub} />
       <div className="page-stack">{body}</div>
     </>
   );

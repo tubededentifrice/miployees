@@ -5,7 +5,7 @@ import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
 import { Avatar, Chip, Loading } from "@/components/common";
 import { fmtTime } from "@/lib/dates";
-import type { Employee, Property } from "@/types/api";
+import type { Booking, Employee, Property } from "@/types/api";
 
 export default function EmployeesPage() {
   const empsQ = useQuery({
@@ -15,6 +15,10 @@ export default function EmployeesPage() {
   const propsQ = useQuery({
     queryKey: qk.properties(),
     queryFn: () => fetchJson<Property[]>("/api/v1/properties"),
+  });
+  const bookingsQ = useQuery({
+    queryKey: qk.bookings(),
+    queryFn: () => fetchJson<Booking[]>("/api/v1/bookings"),
   });
 
   if (empsQ.isPending || propsQ.isPending) {
@@ -74,11 +78,21 @@ export default function EmployeesPage() {
                 </td>
                 <td className="table__mono">{e.phone}</td>
                 <td>
-                  {e.clocked_in_at ? (
-                    <Chip tone="moss" size="sm">On shift · {fmtTime(e.clocked_in_at)}</Chip>
-                  ) : (
-                    <Chip tone="ghost" size="sm">Off shift</Chip>
-                  )}
+                  {(() => {
+                    const now = Date.now();
+                    const active = bookingsQ.data?.find(
+                      (b) =>
+                        b.employee_id === e.id &&
+                        b.status === "scheduled" &&
+                        new Date(b.scheduled_start).getTime() <= now &&
+                        new Date(b.scheduled_end).getTime() >= now,
+                    );
+                    return active ? (
+                      <Chip tone="moss" size="sm">Booked · until {fmtTime(active.scheduled_end)}</Chip>
+                    ) : (
+                      <Chip tone="ghost" size="sm">Free</Chip>
+                    );
+                  })()}
                 </td>
                 <td>
                   <Link className="link link--muted" to={"/employee/" + e.id}>View →</Link>

@@ -29,7 +29,7 @@ const TABS: TabDef[] = [
   { to: "/me", glyph: <User size={18} strokeWidth={1.8} />, label: "Me", matchPrefix: "/me" },
 ];
 
-const ME_PATHS = new Set(["/me", "/shifts", "/history"]);
+const ME_PATHS = new Set(["/me", "/bookings", "/history"]);
 
 export default function BottomTabs() {
   const { pathname } = useLocation();

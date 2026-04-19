@@ -33,7 +33,7 @@ export default function DashboardPage() {
   if (!d.data || !me.data) return <DeskPage title="Dashboard">Failed to load.</DeskPage>;
 
   const {
-    on_shift, by_status, pending_approvals, pending_leaves, open_issues, stays_today,
+    on_booking, by_status, pending_approvals, pending_leaves, open_issues, stays_today,
     properties, employees,
   } = d.data;
   const propsById = new Map(properties.map((p) => [p.id, p]));
@@ -62,7 +62,7 @@ export default function DashboardPage() {
           value={<>{by_status.completed.length}<span className="stat-card__divider">/</span>{totalToday}</>}
           sub="completed"
         />
-        <StatCard label="On shift" value={on_shift.length} sub="of 5 staff" />
+        <StatCard label="Working now" value={on_booking.length} sub="of 5 staff" />
         <StatCard
           label="Approvals"
           value={pending_approvals.length}

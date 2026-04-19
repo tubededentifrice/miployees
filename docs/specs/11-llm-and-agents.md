@@ -1789,7 +1789,9 @@ For users whose workspace / work-engagement settings enable chat.
   the current user):
     - `get_tasks_today()`, `mark_task_done(task_id)`,
       `report_issue(area, description)`, `get_instruction(id)`,
-      `start_shift()`, `end_shift()`, `get_inventory_low()`.
+      `get_my_bookings(from?, to?)`, `amend_booking(id, ...)`,
+      `decline_booking(id, reason?)`, `propose_booking(...)`,
+      `get_inventory_low()`.
 - Voice input uses the `voice.enabled` setting plus the
   `voice.transcribe` model assignment; disabled by default.
 - Never fabricates tasks: the assistant cannot create arbitrary rows,

@@ -16,7 +16,7 @@
 ### Timestamps
 
 - `created_at`, `updated_at` on every row. UTC.
-- Business times (shift start/end, task due, stay check-in) that are
+- Business times (booking start/end, task due, stay check-in) that are
   logically local to a property carry a separate `timezone` column
   **on the parent property** — never on each row.
 - `deleted_at` (nullable) implements **soft delete** on user-facing
@@ -201,8 +201,8 @@ erDiagram
     STAY ||--o{ STAY_TASK_BUNDLE : triggers
     STAY_TASK_BUNDLE ||--o{ TASK : materializes
 
-    WORK_ENGAGEMENT ||--o{ SHIFT : clocks
-    SHIFT ||--o{ TASK_COMPLETION : groups
+    WORK_ENGAGEMENT ||--o{ BOOKING : commits
+    BOOKING ||--o{ TASK_COMPLETION : groups
 
     WORK_ENGAGEMENT ||--o{ PAY_RULE : paid_under
     PAY_RULE ||--o{ PAY_PERIOD_ENTRY : accrues
@@ -238,7 +238,7 @@ erDiagram
     USER ||--o{ QUOTE : submits
     USER ||--o{ VENDOR_INVOICE : bills
 
-    SHIFT ||--o| SHIFT_BILLING : rolled_up_to
+    BOOKING ||--o| BOOKING_BILLING : rolled_up_to
 ```
 
 Entities in the diagram but not detailed inline here have their
@@ -274,13 +274,13 @@ catalog pair (see `permission_rule` below and the catalog in
 - **Instructions / SOPs** (§07): `instruction`, `instruction_revision`,
   `instruction_link`.
 - **Inventory** (§08): `inventory_item`, `inventory_movement`.
-- **Time / pay / expenses** (§09): `shift`, `pay_rule`, `pay_period`,
+- **Time / pay / expenses** (§09): `booking`, `pay_rule`, `pay_period`,
   `pay_period_entry`, `payslip`, `payout_destination`, `expense_claim`,
   `expense_line`, `expense_attachment`. All pay-pipeline rows
   reference `work_engagement_id` (not `user_id` directly), so the
   same person on different workspaces bills/accrues independently.
 - **Clients, vendors, work orders** (§22): `organization`,
-  `client_rate`, `client_user_rate`, `shift_billing`,
+  `client_rate`, `client_user_rate`, `booking_billing`,
   `work_order`, `quote`, `vendor_invoice`,
   `property_workspace_invite` (two-sided invite/accept flow for
   sharing a property across workspaces).
@@ -439,7 +439,7 @@ property, not a user permission:
   RLS "home" for orphan-property checks (§15).
 - **`managed_workspace`** — another workspace granted operational
   access by the owner workspace (e.g. an agency managing a client's
-  villa). Tasks, shifts, and work_orders created under this
+  villa). Tasks, bookings, and work_orders created under this
   workspace are tagged with its `workspace_id`.
 - **`observer_workspace`** — read-only access. Rare; useful when a
   consulting party needs visibility without write rights.
@@ -608,7 +608,7 @@ have no UI surface in v1. See §19.
 `(user, workspace)` pair, use the `role_grants` row with
 `scope_kind = 'workspace'` directly, or any property-level
 grant on a property in that workspace (narrower — user sees
-only the tasks/shifts of that property, not the workspace at
+only the tasks/bookings of that property, not the workspace at
 large).
 
 **Revocation.** Revoking a grant writes `revoked_at` and clears
@@ -860,7 +860,7 @@ Partial unique: `(user_id, workspace_id)` where `archived_on IS NULL`
 — at most one active engagement per (user, workspace). Switching
 `engagement_kind` follows the gating rules in §22.
 
-The pay-pipeline rows in §09 (`pay_rule`, `payslip`, `shift`,
+The pay-pipeline rows in §09 (`pay_rule`, `payslip`, `booking`,
 `expense_claim`) reference `work_engagement_id`; they never
 reference `user_id` directly, so the same person in different
 workspaces accrues and bills independently.
@@ -1324,14 +1324,15 @@ read is too expensive:
 
 - `task.scheduled_for_local` — stored alongside UTC for fast day-view
   queries.
-- `shift.duration_seconds` — populated on clock-out.
+- `booking.actual_minutes_paid` — defaults to scheduled minutes minus
+  break, advances only on approved amend (§09).
 - `expense_claim.total_amount_cents` — recomputed on line add/remove.
 - `inventory_item.on_hand` — recomputed on every movement, in the same
   transaction.
 - `asset_action.last_performed_at` — updated when a task with
   `asset_action_id` is completed (§21).
-- `shift_billing.subtotal_cents` — recomputed when the parent
-  shift's time fields change (§22).
+- `booking_billing.subtotal_cents` — recomputed when the parent
+  booking's time fields change via amend (§22).
 - `work_order.state` — transitions driven by child quote/invoice
   state changes (`quoted`/`invoiced`/`paid` derive from child
   rows; see §22 "State machine").
@@ -1348,7 +1349,7 @@ unified cascade** that applies to all entity-level settings.
 ### Key naming
 
 Canonical keys use **dotted namespaces**: `evidence.policy`,
-`time.clock_mode`, `time.geofence_radius_m`. The same dotted form
+`bookings.pay_basis`, `bookings.cancellation_window_hours`. The same dotted form
 is also used by the LLM model-assignment capability catalog in §11,
 but those capability keys are a separate concern: they choose models,
 not runtime policy.
@@ -1364,7 +1365,7 @@ The cascade has five layers, from broadest to most specific:
 3. **Unit** — `units.settings_override_json`.
 4. **Work engagement** — `work_engagements.settings_override_json`.
    Scoped per (user, workspace); settings here apply to every
-   task/shift the user performs under that engagement. Replaces
+   task/booking the user performs under that engagement. Replaces
    what v0 called the "employee layer".
 5. **Task** — `tasks.settings_override_json`.
 
@@ -1403,10 +1404,11 @@ scope, and the spec that defines the feature:
 | key | type | default | scope | spec |
 |-----|------|---------|-------|------|
 | `evidence.policy` | enum | `optional` | W/P/U/WE/T | §05, §06 |
-| `time.clock_mode` | enum | `manual` | W/P/U/WE | §09 |
-| `time.auto_clock_idle_minutes` | int | `30` | W/P/U/WE | §05 |
-| `time.geofence_radius_m` | int | `150` | W/P/U | §09 |
-| `time.geofence_required` | bool | `false` | W/P/U/WE | §05 |
+| `bookings.pay_basis` | enum | `scheduled` | W/WE | §09 |
+| `bookings.auto_approve_overrun_minutes` | int | `30` | W/WE | §09 |
+| `bookings.cancellation_window_hours` | int | `24` | W | §09, §22 |
+| `bookings.cancellation_fee_pct` | int | `50` | W | §09, §22 |
+| `bookings.cancellation_pay_to_worker` | bool | `true` | W/WE | §09 |
 | `pay.frequency` | enum | `monthly` | W | §09 |
 | `pay.allow_self_manage_destinations` | bool | `false` | W/WE | §09 |
 | `pay.week_start` | enum | `monday` | W | — |
@@ -1446,7 +1448,7 @@ The **permission system** (§02 `permission_rule` + §05 action
 catalog) answers *who may do what* on explicit actions
 (`expenses.approve`, `users.invite`, `task_comment.create`, …).
 The settings cascade answers *how a feature behaves once the user is
-allowed to use it* (`time.clock_mode`, `evidence.policy`,
+allowed to use it* (`bookings.pay_basis`, `evidence.policy`,
 `inventory.consume_on_task`, …).
 
 The architectural rule is therefore:
@@ -1612,7 +1614,9 @@ Defined once per document where the enum lives; summarized here.
 - `pay_rule_kind`: `hourly | monthly_salary | per_task | piecework`
 - `pay_period_status`: `open | locked | paid`
 - `payslip_status`: `draft | issued | paid | voided`
-- `shift_status`: `open | closed | disputed`
+- `booking_status`: `pending_approval | scheduled | completed | cancelled_by_client | cancelled_by_agency | no_show_worker | adjusted`
+- `booking_kind`: `work | travel`
+- `booking_pay_basis`: `scheduled | actual` (§09)
 - `expense_state`: `draft | submitted | approved | rejected | reimbursed`
 - `expense_line_source`: `ocr | manual` (see §09 for interaction with `edited_by_user`)
 - `asset_condition`: `new | good | fair | poor | needs_replacement`
@@ -1752,7 +1756,7 @@ a single `users` table and role-grant permissions. Concretely:
   may hold the `maid` role in Workspace A but not in Workspace B).
   `property_role_assignment` → `property_work_role_assignment`.
 - Foreign keys previously keyed off `employee_id` (pay_rule,
-  payslip, shift, expense_claim, task_completion source, etc.) now
+  payslip, booking, expense_claim, task_completion source, etc.) now
   reference either `work_engagement_id` (for pay-pipeline rows;
   see §09) or `user_id` (for identity-oriented rows). Columns
   previously named `assigned_employee_id`, `decided_by_manager_id`,

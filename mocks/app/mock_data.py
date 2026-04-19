@@ -19,7 +19,7 @@ v1 identity + permission model (per §02, §03, §05, §22):
   ``all_workers``, ``all_clients`` (membership derived from
   ``role_grants``).
 - ``work_engagement`` per (user, workspace) carries pay-pipeline data;
-  pay rules / shifts / payslips / expense claims key off
+  pay rules / bookings / payslips / expense claims key off
   ``work_engagement_id`` rather than ``user_id`` directly.
 - ``work_role`` (previously ``role``) lists the jobs a workspace knows
   about. ``user_work_role`` (previously ``employee_role``) binds a
@@ -381,12 +381,9 @@ class Employee:
     phone: str
     email: str
     started_on: date
-    clocked_in_at: datetime | None = None
     capabilities: dict[str, bool | None] = field(default_factory=dict)
     workspaces: list[str] = field(default_factory=list)
     villas: list[str] = field(default_factory=list)
-    clock_mode: Literal["manual", "auto", "disabled"] = "manual"
-    auto_clock_idle_minutes: int = 30
     language: str = "fr"
     weekly_availability: dict[str, tuple[str, str] | None] = field(default_factory=dict)
     evidence_policy: Literal["inherit", "require", "optional", "forbid"] = "inherit"
@@ -893,25 +890,40 @@ class Message:
 # ── Time / payroll entities ─────────────────────────────────────────
 
 @dataclass
-class Shift:
-    """Pay-pipeline row — belongs to a `work_engagement` (§09).
+class Booking:
+    """Worker × property × time-window commitment (§09).
 
-    v1 renames ``employee_id`` to ``work_engagement_id``; the
-    denormalised ``user_id`` is stored alongside for fast "who was
-    working?" queries. The legacy ``employee_id`` alias stays wired
-    to the employee compat row id so the UI keeps working.
+    Replaces the v0 `shift` (clock-in / clock-out) entity. The booking
+    is the canonical billable / payable atom: scheduled time IS paid
+    time and billed time, by default. `actual_minutes` is set only
+    when an amend records a real overrun / underrun.
     """
 
     id: str
-    employee_id: str
+    employee_id: str  # compat alias for the legacy employee row id
     property_id: str
-    started_at: datetime
-    ended_at: datetime | None
-    status: Literal["open", "closed", "disputed"]
-    duration_seconds: int | None = None
+    scheduled_start: datetime
+    scheduled_end: datetime
+    status: Literal[
+        "pending_approval",
+        "scheduled",
+        "completed",
+        "cancelled_by_client",
+        "cancelled_by_agency",
+        "no_show_worker",
+        "adjusted",
+    ]
+    kind: Literal["work", "travel"] = "work"
+    actual_minutes: int | None = None
+    actual_minutes_paid: int | None = None  # defaults derive from scheduled if null
     break_seconds: int = 0
-    method_in: Literal["manual", "auto", "geo"] = "manual"
-    method_out: Literal["manual", "auto", "geo"] | None = None
+    pending_amend_minutes: int | None = None
+    pending_amend_reason: str | None = None
+    declined_at: datetime | None = None
+    declined_reason: str | None = None
+    notes_md: str = ""
+    adjusted: bool = False
+    adjustment_reason: str | None = None
     client_org_id: str | None = None  # §22 — derived cache from property.client_org_id at close
     work_engagement_id: str = ""
     user_id: str = ""
@@ -1113,6 +1125,10 @@ class Organization:
     notes: str | None = None
     default_pay_destination_stub: str | None = None  # e.g. "•• FR-07" when is_supplier
     portal_user_id: str | None = None  # convenience pointer; canonical login is via role_grants
+    # §22 cancellation policy — null falls through to workspace defaults
+    # `bookings.cancellation_window_hours` / `bookings.cancellation_fee_pct`.
+    cancellation_window_hours: int | None = None
+    cancellation_fee_pct: int | None = None
 
 
 @dataclass
@@ -1147,13 +1163,16 @@ class ClientUserRate:
 
 
 @dataclass
-class ShiftBilling:
-    """v1 names (§22): `user_id` + `work_engagement_id`; rate_source
-    uses `client_user_rate` instead of the v0 `client_employee_rate`.
+class BookingBilling:
+    """v1 (§22): per-(booking, client_org_id) snapshot written when a
+    booking transitions to `completed` or, with `is_cancellation_fee`,
+    when status flips to `cancelled_by_client` inside the cancellation
+    window. Rate is snapshot at write time so later rate-card edits do
+    not retroactively rewrite history.
     """
 
     id: str
-    shift_id: str
+    booking_id: str
     client_org_id: str
     user_id: str
     currency: str
@@ -1163,6 +1182,7 @@ class ShiftBilling:
     rate_source: Literal["client_user_rate", "client_rate", "unpriced"]
     rate_source_id: str | None = None
     work_engagement_id: str = ""
+    is_cancellation_fee: bool = False
 
 
 @dataclass
@@ -1245,7 +1265,6 @@ PROPERTIES: list[Property] = [
              areas=["Master bedroom", "Kitchen", "Pool", "Garden", "Entryway", "Living room"],
              settings_override={
                  "evidence.policy": "require",
-                 "time.geofence_radius_m": 200,
                  "tasks.checklist_required": True,
              }),
     Property("p-apt-3b", "Apt 3B", "Paris", "Europe/Paris", "sky", "str",
@@ -1258,7 +1277,6 @@ PROPERTIES: list[Property] = [
              areas=["Kitchen", "Fireplace room", "Master bedroom", "Ski room"],
              settings_override={
                  "evidence.policy": "forbid",
-                 "time.geofence_required": False,
                  "scheduling.horizon_days": 14,
              }),
     # Vincent scenario properties (§05 example).
@@ -1304,7 +1322,6 @@ WORK_ROLES: list[WorkRole] = [
 
 def _caps(**overrides: bool | None) -> dict[str, bool | None]:
     base = {
-        "time.clock_in": True,
         "tasks.photo_evidence": True,
         "tasks.allow_skip_with_reason": True,
         "messaging.comments": True,
@@ -1326,11 +1343,10 @@ EMPLOYEES: list[Employee] = [
     Employee(
         "e-maria", "Maria Alvarez", ["Housekeeper"], ["p-villa-sud", "p-apt-3b"],
         "MA", "+33 6 12 34 56 78", "maria@example.com", date(2024, 3, 1),
-        clocked_in_at=datetime(2026, 4, 15, 8, 12),
         capabilities=_caps(**{"chat.assistant": True}),
         workspaces=["ws-bernard"],
         villas=["p-villa-sud", "p-apt-3b"],
-        clock_mode="auto", auto_clock_idle_minutes=30, language="fr",
+        language="fr",
         weekly_availability={
             "mon": ("08:00", "17:00"),
             "tue": ("08:00", "17:00"),
@@ -1341,21 +1357,19 @@ EMPLOYEES: list[Employee] = [
             "sun": None,
         },
         settings_override={
-            "time.clock_mode": "auto",
-            "time.auto_clock_idle_minutes": 30,
+            "bookings.pay_basis": "scheduled",
+            "bookings.auto_approve_overrun_minutes": 30,
         },
         user_id="u-maria", work_engagement_id="we-maria-bernard", workspace_id="ws-bernard",
     ),
     Employee(
         "e-arun", "Arun Patel", ["Driver"], ["p-villa-sud"],
         "AP", "+33 6 22 45 67 89", "arun@example.com", date(2024, 9, 14),
-        capabilities=_caps(**{"time.geofence_required": True}),
+        capabilities=_caps(),
         workspaces=["ws-bernard"],
         villas=["p-villa-sud"],
-        clock_mode="manual", language="en",
-        settings_override={
-            "time.geofence_required": True,
-        },
+        language="en",
+        settings_override={},
         user_id="u-arun", work_engagement_id="we-arun-bernard", workspace_id="ws-bernard",
     ),
     Employee(
@@ -1364,10 +1378,9 @@ EMPLOYEES: list[Employee] = [
         capabilities=_caps(),
         workspaces=["ws-bernard"],
         villas=["p-villa-sud"],
-        clock_mode="auto", auto_clock_idle_minutes=20, language="fr",
+        language="fr",
         settings_override={
-            "time.clock_mode": "auto",
-            "time.auto_clock_idle_minutes": 20,
+            "bookings.pay_basis": "actual",
         },
         user_id="u-ben", work_engagement_id="we-ben-bernard", workspace_id="ws-bernard",
     ),
@@ -1377,9 +1390,8 @@ EMPLOYEES: list[Employee] = [
         capabilities=_caps(**{"chat.assistant": True, "voice.assistant": True}),
         workspaces=["ws-bernard"],
         villas=["p-apt-3b", "p-chalet"],
-        clock_mode="auto", auto_clock_idle_minutes=30, language="fr",
+        language="fr",
         settings_override={
-            "time.clock_mode": "auto",
             "tasks.allow_skip_with_reason": False,
         },
         # CleanCo-supplied maid; billed to us by the supplier org, not by Ana.
@@ -1393,7 +1405,7 @@ EMPLOYEES: list[Employee] = [
         capabilities=_caps(),
         workspaces=["ws-bernard"],
         villas=["p-villa-sud", "p-chalet"],
-        clock_mode="manual", language="fr",
+        language="fr",
         # Freelance handyman — quotes + vendor invoices, no payslip.
         engagement_kind="contractor",
         user_id="u-sam", work_engagement_id="we-sam-bernard", workspace_id="ws-bernard",
@@ -1409,7 +1421,7 @@ EMPLOYEES: list[Employee] = [
         capabilities=_caps(),
         workspaces=["ws-vincent"],
         villas=["p-villa-lac", "p-seaside"],
-        clock_mode="manual", language="fr",
+        language="fr",
         user_id="u-rachid", work_engagement_id="we-rachid-vincent", workspace_id="ws-vincent",
     ),
     Employee(
@@ -1418,7 +1430,7 @@ EMPLOYEES: list[Employee] = [
         capabilities=_caps(**{"chat.assistant": True}),
         workspaces=["ws-cleanco"],
         villas=["p-villa-lac"],
-        clock_mode="auto", auto_clock_idle_minutes=25, language="es",
+        language="es",
         weekly_availability={
             "mon": ("08:00", "16:00"),
             "tue": ("08:00", "16:00"),
@@ -1436,7 +1448,7 @@ EMPLOYEES: list[Employee] = [
         capabilities=_caps(**{"chat.assistant": True}),
         workspaces=["ws-cleanco"],
         villas=[],
-        clock_mode="manual", language="fr",
+        language="fr",
         user_id="u-julie", work_engagement_id="we-julie-cleanco", workspace_id="ws-cleanco",
     ),
 ]
@@ -1686,12 +1698,21 @@ ACTION_CATALOG: list[ActionCatalogEntry] = [
     ActionCatalogEntry("tasks.skip_other",                "Skip a task on behalf of another user.",
                        ["workspace", "property"],
                        ["owners", "managers"], spec="§06"),
-    ActionCatalogEntry("shifts.view_other",               "View another user's shifts.",
+    ActionCatalogEntry("bookings.view_other",             "View another user's bookings.",
                        ["workspace", "property"],
                        ["owners", "managers"], spec="§09"),
-    ActionCatalogEntry("shifts.edit_other",               "Edit another user's shifts.",
+    ActionCatalogEntry("bookings.amend_other",            "Amend another user's booking time fields.",
                        ["workspace", "property"],
                        ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("bookings.assign_other",           "Reassign a booking to a different worker.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("bookings.cancel",                 "Cancel a booking on behalf of the workspace or a client.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§09"),
+    ActionCatalogEntry("bookings.create_pending",         "Propose an ad-hoc booking (status pending_approval until manager review).",
+                       ["workspace", "property"],
+                       ["owners", "managers", "all_workers"], spec="§09"),
     ActionCatalogEntry("payroll.lock_period",             "Lock a pay period.",
                        ["workspace"],
                        ["owners", "managers"], root_protected_deny=True, spec="§09"),
@@ -2162,7 +2183,7 @@ APPROVALS: list[ApprovalRequest] = [
     ApprovalRequest(
         "a-2", "payroll-agent", "payroll.issue",
         "April payslips — 5 employees",
-        "Monthly pay run. Totals within 4% of last month. No open shifts.",
+        "Monthly pay run. Totals within 4% of last month. No pending bookings or amends.",
         datetime(2026, 4, 15, 8, 2), "medium",
         diff=["5× payslip draft → issued", "period 2026-04: locked → paid (on last payslip pay)"],
         gate_source="workspace_configurable",
@@ -2664,7 +2685,7 @@ LLM_PROMPT_TEMPLATES: list[LlmPromptTemplate] = [
     LlmPromptTemplate("pt-nl",        "tasks.nl_intake",      "Tasks NL intake",         2, True, True,  "a01f2e", "2026-04-10T11:02:00Z", 1,
                       "You convert natural-language household requests into structured task drafts. Prefer conservative assumptions and surface ambiguities..."),
     LlmPromptTemplate("pt-assist",    "tasks.assist",         "Tasks assistant",         1, True, False, "b12e3d", "2026-03-01T14:18:00Z", 0,
-                      "You are the staff chat assistant. Answer concisely about the current user's shift, tasks, and instructions..."),
+                      "You are the staff chat assistant. Answer concisely about the current user's bookings, tasks, and instructions..."),
     LlmPromptTemplate("pt-digest-m",  "digest.manager",       "Manager digest",          1, True, False, "c93a41", "2026-03-02T07:20:00Z", 0,
                       "Compose a short manager digest from the structured data block. Never invent numbers; if the data is empty, say so..."),
     LlmPromptTemplate("pt-digest-e",  "digest.employee",      "Employee digest",         1, True, False, "d72b55", "2026-03-02T07:20:00Z", 0,
@@ -2773,14 +2794,14 @@ AUDIT: list[AuditEntry] = [
                actor_grant_role="manager", actor_was_owner_member=True, actor_action_key="tasks.complete_other", actor_id="u-elodie"),
     AuditEntry(datetime(2026, 4, 15, 9, 47, 2),  "agent",  "digest-agent",   "agent_action.requested", "a-1",  "api", "Auto-reassign pool coverage (Ben on leave)",
                agent_label="digest-agent"),
-    AuditEntry(datetime(2026, 4, 15, 9, 41, 0),  "user",   "Maria Alvarez",  "shift.clock_in",         "sh-…", "web", None,
+    AuditEntry(datetime(2026, 4, 15, 9, 41, 0),  "user",   "Maria Alvarez",  "booking.completed",      "bk-2", "web", None,
                actor_grant_role="worker", actor_id="u-maria"),
     AuditEntry(datetime(2026, 4, 15, 9, 12, 18), "agent",  "digest-agent",   "digest.sent",            "—",    "api", "Morning manager digest",
                agent_label="digest-agent"),
     AuditEntry(datetime(2026, 4, 15, 8, 54, 1),  "agent",  "procurement-agent", "expense.autofill",    "x-1",  "api", None,
                agent_label="procurement-agent"),
     AuditEntry(datetime(2026, 4, 15, 8, 41, 12), "system", "redaction-layer", "llm.call.blocked",      "—",    "worker", "IBAN-like string in receipt text"),
-    AuditEntry(datetime(2026, 4, 15, 8, 12, 0),  "user",   "Maria Alvarez",  "shift.clock_in",         "sh-…", "web", None,
+    AuditEntry(datetime(2026, 4, 15, 8, 12, 0),  "user",   "Maria Alvarez",  "booking.scheduled",      "bk-1", "web", None,
                actor_grant_role="worker", actor_id="u-maria"),
     AuditEntry(datetime(2026, 4, 14, 17, 32, 0), "user",   "Maria Alvarez",  "expense.submit",         "x-1",  "web", None,
                actor_grant_role="worker", actor_id="u-maria"),
@@ -2876,7 +2897,7 @@ API_TOKENS: list[ApiToken] = [
     ApiToken(
         id="tok-pat-maria", name="kitchen-printer", kind="personal",
         prefix="mip_01HV3Z8Q8K",
-        scopes=["me.tasks:read", "me.shifts:read"],
+        scopes=["me.tasks:read", "me.bookings:read"],
         created_by_user_id="u-maria", created_by_display="Maria Alvarez",
         created_at=datetime(2026, 4, 2, 18, 21, 0),
         expires_at=datetime(2026, 7, 1, 0, 0, 0),
@@ -2890,7 +2911,7 @@ API_TOKENS: list[ApiToken] = [
     ApiToken(
         id="tok-pat-elodie", name="pay-review-laptop", kind="personal",
         prefix="mip_01HV51R2PD",
-        scopes=["me.expenses:read", "me.shifts:read"],
+        scopes=["me.expenses:read", "me.bookings:read"],
         created_by_user_id="u-elodie", created_by_display="Élodie Bernard",
         created_at=datetime(2026, 3, 30, 9, 10, 0),
         expires_at=datetime(2026, 6, 30, 0, 0, 0),
@@ -3346,39 +3367,64 @@ AGENT_DOCS: list[AgentDoc] = [
 ]
 
 
-SHIFTS: list[Shift] = [
-    Shift("sh-1", "e-maria", "p-villa-sud", datetime(2026, 4, 15, 8, 12), None, "open",
-          method_in="auto",
-          work_engagement_id="we-maria-bernard", user_id="u-maria"),
-    Shift("sh-2", "e-ben", "p-villa-sud", datetime(2026, 4, 15, 8, 45),
-          datetime(2026, 4, 15, 12, 30), "closed", duration_seconds=13500,
-          method_in="auto", method_out="auto",
-          work_engagement_id="we-ben-bernard", user_id="u-ben"),
-    Shift("sh-3", "e-arun", "p-villa-sud", datetime(2026, 4, 14, 13, 0),
-          datetime(2026, 4, 14, 18, 30), "closed", duration_seconds=19800,
-          method_in="manual", method_out="manual",
-          work_engagement_id="we-arun-bernard", user_id="u-arun"),
-    Shift("sh-4", "e-ana", "p-apt-3b", datetime(2026, 4, 14, 9, 0),
-          datetime(2026, 4, 14, 14, 0), "closed", duration_seconds=18000,
-          method_in="auto", method_out="auto",
-          client_org_id="org-dupont",  # billable to Dupont
-          work_engagement_id="we-ana-bernard", user_id="u-ana"),
-    Shift("sh-5", "e-sam", "p-villa-sud", datetime(2026, 4, 14, 10, 0),
-          datetime(2026, 4, 14, 12, 30), "disputed", duration_seconds=9000,
-          method_in="manual", method_out="auto",
-          work_engagement_id="we-sam-bernard", user_id="u-sam"),
-    # Vincent scenario — same day, same place, two workspaces.
-    # Joselyn (CleanCo / AgencyOps) cleans Villa du Lac.
-    Shift("sh-6", "e-joselyn", "p-villa-lac", datetime(2026, 4, 15, 9, 0),
-          datetime(2026, 4, 15, 13, 0), "closed", duration_seconds=14400,
-          method_in="auto", method_out="auto",
-          client_org_id="org-dupont-vincent",
-          work_engagement_id="we-joselyn-cleanco", user_id="u-joselyn"),
-    # Rachid (VincentOps) drives Vincent around that afternoon.
-    Shift("sh-7", "e-rachid", "p-villa-lac", datetime(2026, 4, 15, 14, 30),
-          datetime(2026, 4, 15, 17, 0), "closed", duration_seconds=9000,
-          method_in="manual", method_out="manual",
-          work_engagement_id="we-rachid-vincent", user_id="u-rachid"),
+BOOKINGS: list[Booking] = [
+    # Maria's morning at Villa Sud — currently in progress (scheduled,
+    # window includes "now"), no actual_minutes set yet.
+    Booking("bk-1", "e-maria", "p-villa-sud",
+            datetime(2026, 4, 15, 8, 0), datetime(2026, 4, 15, 12, 0),
+            "scheduled",
+            work_engagement_id="we-maria-bernard", user_id="u-maria"),
+    # Ben — completed, no amend.
+    Booking("bk-2", "e-ben", "p-villa-sud",
+            datetime(2026, 4, 15, 8, 30), datetime(2026, 4, 15, 12, 30),
+            "completed",
+            work_engagement_id="we-ben-bernard", user_id="u-ben"),
+    # Arun — completed yesterday, manager amended for a small overrun.
+    Booking("bk-3", "e-arun", "p-villa-sud",
+            datetime(2026, 4, 14, 13, 0), datetime(2026, 4, 14, 18, 0),
+            "adjusted",
+            actual_minutes=330, actual_minutes_paid=330,
+            adjusted=True, adjustment_reason="Stayed to finish kitchen reorganisation.",
+            work_engagement_id="we-arun-bernard", user_id="u-arun"),
+    # Ana — completed at the Dupont property; billable.
+    Booking("bk-4", "e-ana", "p-apt-3b",
+            datetime(2026, 4, 14, 9, 0), datetime(2026, 4, 14, 14, 0),
+            "completed",
+            client_org_id="org-dupont",
+            work_engagement_id="we-ana-bernard", user_id="u-ana"),
+    # Sam — worker-requested overrun pending manager approval (>30 min).
+    Booking("bk-5", "e-sam", "p-villa-sud",
+            datetime(2026, 4, 14, 10, 0), datetime(2026, 4, 14, 12, 30),
+            "completed",
+            actual_minutes=150, actual_minutes_paid=150,
+            pending_amend_minutes=210,
+            pending_amend_reason="Pump rebuild needed extra hour.",
+            work_engagement_id="we-sam-bernard", user_id="u-sam"),
+    # Vincent scenario — Joselyn at Villa du Lac, billable to DupontFamily.
+    Booking("bk-6", "e-joselyn", "p-villa-lac",
+            datetime(2026, 4, 15, 9, 0), datetime(2026, 4, 15, 13, 0),
+            "completed",
+            client_org_id="org-dupont-vincent",
+            work_engagement_id="we-joselyn-cleanco", user_id="u-joselyn"),
+    # Rachid driving Vincent — completed.
+    Booking("bk-7", "e-rachid", "p-villa-lac",
+            datetime(2026, 4, 15, 14, 30), datetime(2026, 4, 15, 17, 0),
+            "completed",
+            work_engagement_id="we-rachid-vincent", user_id="u-rachid"),
+    # Worker-proposed ad-hoc booking awaiting manager approval.
+    Booking("bk-8", "e-maria", "p-apt-3b",
+            datetime(2026, 4, 16, 14, 0), datetime(2026, 4, 16, 16, 0),
+            "pending_approval",
+            notes_md="Owner asked me to swing by for laundry pickup.",
+            work_engagement_id="we-maria-bernard", user_id="u-maria"),
+    # Late-cancellation by client (within 24h window) — fee row should
+    # appear in BOOKING_BILLINGS.
+    Booking("bk-9", "e-ana", "p-apt-3b",
+            datetime(2026, 4, 13, 9, 0), datetime(2026, 4, 13, 13, 0),
+            "cancelled_by_client",
+            client_org_id="org-dupont",
+            notes_md="Owner cancelled 6h before — within 24h policy window.",
+            work_engagement_id="we-ana-bernard", user_id="u-ana"),
 ]
 
 PAY_RULES: list[PayRule] = [
@@ -3495,19 +3541,26 @@ CLIENT_USER_RATES: list[ClientUserRate] = [
                    3600, "EUR", date(2026, 1, 1)),
 ]
 
-SHIFT_BILLINGS: list[ShiftBilling] = [
-    ShiftBilling("sb-1", "sh-4", "org-dupont", "u-ana",
-                 "EUR", billable_minutes=300, hourly_cents=3600,
-                 subtotal_cents=18000,
-                 rate_source="client_user_rate", rate_source_id="cur-1",
-                 work_engagement_id="we-ana-bernard"),
-    # Vincent scenario — Joselyn's shift at Villa du Lac billable to
+BOOKING_BILLINGS: list[BookingBilling] = [
+    BookingBilling("bb-1", "bk-4", "org-dupont", "u-ana",
+                   "EUR", billable_minutes=300, hourly_cents=3600,
+                   subtotal_cents=18000,
+                   rate_source="client_user_rate", rate_source_id="cur-1",
+                   work_engagement_id="we-ana-bernard"),
+    # Vincent scenario — Joselyn's booking at Villa du Lac billable to
     # DupontFamily at the CleanCo maid rate.
-    ShiftBilling("sb-2", "sh-6", "org-dupont-vincent", "u-joselyn",
-                 "EUR", billable_minutes=240, hourly_cents=3400,
-                 subtotal_cents=13600,
-                 rate_source="client_rate", rate_source_id="cr-4",
-                 work_engagement_id="we-joselyn-cleanco"),
+    BookingBilling("bb-2", "bk-6", "org-dupont-vincent", "u-joselyn",
+                   "EUR", billable_minutes=240, hourly_cents=3400,
+                   subtotal_cents=13600,
+                   rate_source="client_rate", rate_source_id="cr-4",
+                   work_engagement_id="we-joselyn-cleanco"),
+    # Cancellation fee on bk-9 — 4h scheduled × €36/h × 50% = €72.
+    BookingBilling("bb-3", "bk-9", "org-dupont", "u-ana",
+                   "EUR", billable_minutes=240, hourly_cents=3600,
+                   subtotal_cents=7200,
+                   rate_source="client_user_rate", rate_source_id="cur-1",
+                   work_engagement_id="we-ana-bernard",
+                   is_cancellation_fee=True),
 ]
 
 WORK_ORDERS: list[WorkOrder] = [
@@ -3696,10 +3749,11 @@ TASK_COMMENTS: list[TaskComment] = [
 
 WORKSPACE_SETTINGS: dict[str, Any] = {
     "evidence.policy": "optional",
-    "time.clock_mode": "manual",
-    "time.auto_clock_idle_minutes": 30,
-    "time.geofence_radius_m": 150,
-    "time.geofence_required": False,
+    "bookings.pay_basis": "scheduled",
+    "bookings.auto_approve_overrun_minutes": 30,
+    "bookings.cancellation_window_hours": 24,
+    "bookings.cancellation_fee_pct": 50,
+    "bookings.cancellation_pay_to_worker": True,
     "pay.frequency": "monthly",
     "pay.week_start": "monday",
     "retention.audit_days": 730,
@@ -3875,23 +3929,27 @@ SETTINGS_CATALOG: list[SettingDefinition] = [
                       override_scope="W/P/E/T",
                       description="Whether photo evidence is required, optional, or forbidden on task completions.",
                       spec="05, 06"),
-    SettingDefinition("time.clock_mode", "Clock mode", "enum", "manual",
-                      enum_values=["manual", "auto", "disabled"],
-                      override_scope="W/P/E",
-                      description="How shift tracking works: manual button, auto from activity, or disabled.",
+    SettingDefinition("bookings.pay_basis", "Pay basis", "enum", "scheduled",
+                      enum_values=["scheduled", "actual"],
+                      override_scope="W/E",
+                      description="Whether payroll multiplies the booked time (scheduled) or the amended actual_minutes_paid.",
                       spec="09"),
-    SettingDefinition("time.auto_clock_idle_minutes", "Auto-clock idle timeout", "int", 30,
-                      override_scope="W/P/E",
-                      description="Minutes of inactivity before an auto-clock shift closes.",
-                      spec="05"),
-    SettingDefinition("time.geofence_radius_m", "Geofence radius (m)", "int", 150,
-                      override_scope="W/P",
-                      description="Radius in metres for property geofence checks.",
+    SettingDefinition("bookings.auto_approve_overrun_minutes", "Auto-approve overrun (min)", "int", 30,
+                      override_scope="W/E",
+                      description="Self-amend overruns up to this many minutes are auto-approved; beyond that, the request is queued for manager review.",
                       spec="09"),
-    SettingDefinition("time.geofence_required", "Geofence required", "bool", False,
-                      override_scope="W/P/E",
-                      description="Whether clock-in requires being within the property geofence.",
-                      spec="05"),
+    SettingDefinition("bookings.cancellation_window_hours", "Cancellation window (h)", "int", 24,
+                      override_scope="W",
+                      description="Lead time inside which a cancellation by the client incurs a fee (workspace default; per-client override on organization).",
+                      spec="09, 22"),
+    SettingDefinition("bookings.cancellation_fee_pct", "Cancellation fee (%)", "int", 50,
+                      override_scope="W",
+                      description="Percent of the booking subtotal billed to the client when cancellation falls inside the window.",
+                      spec="09, 22"),
+    SettingDefinition("bookings.cancellation_pay_to_worker", "Pay worker on agency cancel", "bool", True,
+                      override_scope="W/E",
+                      description="Pay the worker their booked amount when the workspace itself cancels with under cancellation_window_hours of notice.",
+                      spec="09"),
     SettingDefinition("pay.frequency", "Pay frequency", "enum", "monthly",
                       enum_values=["monthly", "bi_weekly"],
                       override_scope="W",
@@ -4063,7 +4121,7 @@ MANAGER_AGENT_ACTIONS: list[AgentAction] = [
     ),
     AgentAction(
         "aa-3", "Draft April payslips",
-        "Period closed; all shifts reconciled. Totals within 4% of March.", "medium",
+        "Period closed; all bookings reconciled. Totals within 4% of March.", "medium",
         card_summary="Draft April payslips (5 employees)?",
         card_fields=[("period", "2026-04"), ("count", "5")],
         gate_source="workspace_configurable",
@@ -4463,8 +4521,8 @@ def search_kb(
     return hits[:limit]
 
 
-def shifts_for_employee(eid: str) -> list[Shift]:
-    return [s for s in SHIFTS if s.employee_id == eid]
+def bookings_for_employee(eid: str) -> list[Booking]:
+    return [b for b in BOOKINGS if b.employee_id == eid]
 
 
 def comments_for_task(tid: str) -> list[TaskComment]:

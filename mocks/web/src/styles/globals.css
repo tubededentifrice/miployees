@@ -57,14 +57,13 @@
 /* ══════════════════════════════════════════════════════════════
    EMPLOYEE (phone) layout.
 
-   On an actual phone (<520px) the container is edge-to-edge so the
-   app feels native. On tablet and desktop it renders inside a centred
-   "device" frame sat on a warm-paper backdrop, so the mock still
-   reads as a mobile app rather than a narrow column adrift in a sea
-   of whitespace.
+   Below 720px the container is edge-to-edge: the screen is already
+   small, so every horizontal pixel has to earn its keep. The old
+   480px "device frame" letterbox at tablet-ish widths wasted real
+   estate without adding clarity. At 720px+ the layout switches to
+   the three-column desktop grid (see below).
    ══════════════════════════════════════════════════════════════ */
 .phone {
-  max-width: 480px; margin: 0 auto;
   min-height: calc(100dvh - var(--banner-h, 40px));
   padding-bottom: 132px; position: relative; z-index: 1;
 }
@@ -83,26 +82,24 @@
 }
 .me-greet__date { color: var(--ink-3); font-size: 13px; }
 
-/* Clock-in / On shift toggle. Used twice: in the sidebar action slot
-   (desktop) and in the `.phone__dock` above the tab bar (phone). Base
-   styling is shared; container styles handle placement. */
-.clock-toggle {
+/* Booking hint pill. Replaces the v0 clock-in toggle: under §09's
+   booking model the booking IS the time record (no clock-in / clock-out
+   tap). The hint shows the user's next scheduled booking and links to
+   /bookings. Used twice: sidebar action slot (desktop) and
+   `.phone__dock` above the tab bar (phone). */
+.booking-hint {
   display: inline-flex; align-items: center; justify-content: center;
   gap: 6px; padding: 10px 16px; border-radius: 999px;
-  border: 1px solid var(--line); background: var(--card);
+  border: 1px solid var(--moss-soft); background: var(--moss-soft);
   font-family: inherit; font-size: 14px; font-weight: 600;
-  color: var(--ink-1); cursor: pointer; white-space: nowrap;
+  color: var(--moss); cursor: pointer; white-space: nowrap;
+  text-decoration: none;
   transition: background 120ms ease, color 120ms ease,
               border-color 120ms ease;
 }
-.clock-toggle:disabled { opacity: 0.6; cursor: progress; }
-.clock-toggle--on {
-  background: var(--moss-soft); color: var(--moss);
-  border-color: var(--moss-soft);
-}
-.clock-toggle--off:hover { border-color: var(--moss); color: var(--moss); }
+.booking-hint:hover { border-color: var(--moss); }
 
-/* Phone dock: hosts the clock toggle just above the fixed tab bar.
+/* Phone dock: hosts the booking hint just above the fixed tab bar.
    On chat the composer takes this space, so the dock is not rendered
    at all there. */
 .phone__dock {
@@ -113,12 +110,9 @@
   background: linear-gradient(to top, var(--paper) 70%, transparent);
   pointer-events: none;
 }
-.phone__dock > .clock-toggle {
+.phone__dock > .booking-hint {
   pointer-events: auto;
   box-shadow: 0 6px 18px rgba(22, 34, 22, 0.12);
-}
-@media (min-width: 480px) {
-  .phone__dock { max-width: 480px; left: 50%; transform: translateX(-50%); }
 }
 
 .section-title {
@@ -251,7 +245,7 @@
   }
   .phone__section { padding: 16px 0; width: 100%; max-width: 880px; margin: 0 auto; }
   .phone__section--detail { padding-bottom: 32px; max-width: 880px; margin: 0 auto; }
-  /* Shared routes (/today, /week, /my/expenses, /shifts, /history,
+  /* Shared routes (/today, /week, /my/expenses, /bookings, /history,
      /issues/new, /task/:tid) also mount inside .desk__main when a
      manager views them. Drop the 880px cap there so they fill the
      manager column like /me; the cap applies only to the .phone
@@ -442,9 +436,6 @@
   background: linear-gradient(180deg, transparent, var(--paper) 30%, var(--paper) 100%);
   display: flex; gap: 10px;
 }
-@media (min-width: 480px) {
-  .task-detail__sticky { max-width: 480px; left: 50%; transform: translateX(-50%); }
-}
 @media (min-width: 720px) {
   /* Desktop: sticky CTA flows inline instead of pinning to the
      viewport. The main column is wide enough that the primary action
@@ -622,14 +613,49 @@
 .cap-list li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
 .cap-list__key { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--ink-2); }
 
-/* ── Shifts / expenses / messages ─────────────────────────── */
-.shift-card {
-  background: var(--card); border: 1px solid var(--line);
-  border-radius: 10px; padding: 18px; box-shadow: var(--shadow); text-align: center;
+/* ── Bookings / expenses / messages ───────────────────────── */
+.booking-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
 }
-.shift-card--active { border-color: var(--moss); }
-.shift-card__state { font-weight: 600; font-family: "Fraunces", serif; font-size: 1.1rem; margin-bottom: 4px; }
-.shift-card__dur { color: var(--ink-3); margin-bottom: 14px; }
+.booking-card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.booking-card--scheduled { border-color: var(--moss); }
+.booking-card--completed { opacity: 0.92; }
+.booking-card--adjusted { border-color: var(--sand); }
+.booking-card--cancelled_by_client,
+.booking-card--cancelled_by_agency,
+.booking-card--no_show_worker { border-color: var(--rust); opacity: 0.85; }
+.booking-card--pending_approval { border-style: dashed; border-color: var(--sand); }
+.booking-card__head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  font-family: "Fraunces", serif;
+}
+.booking-card__time {
+  font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--ink-2);
+}
+.booking-card__meta {
+  display: flex; align-items: center; gap: 10px;
+}
+.booking-card__pill {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: var(--paper-2); color: var(--ink-2);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.booking-card__dur {
+  font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--ink-3);
+  margin-left: auto;
+}
+.booking-card__note { color: var(--ink-3); font-size: 13px; margin: 0; }
+.booking-card__pending {
+  color: var(--sand-deep, var(--rust)); font-size: 12px; margin: 0;
+}
+.booking-card__actions {
+  display: flex; gap: 8px; padding-top: 4px;
+}
 
 .expense-list { list-style: none; padding: 0; margin: 0; }
 .expense-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
@@ -1855,29 +1881,7 @@
   background: var(--paper-2);
   border-top: 1px solid var(--line);
   display: flex; align-items: flex-end; gap: 8px;
-  z-index: 15; max-width: 480px; margin: 0 auto;
-}
-@media (min-width: 480px) {
-  /* Scoped to non-chat surfaces (e.g. `/task/:id` inline composer
-     placeholder) so the phone-frame letterbox stays put there. On
-     `/chat` the composer fills the viewport — see
-     `.phone--chat .chat-composer` below. The `--inline` modifier is
-     excluded because the shared <AgentSidebar /> also lives under
-     `.phone` on the employee shell; its composer must flow inside
-     the rail, not be centered against the phone frame. */
-  .phone:not(.phone--chat) .chat-composer:not(.chat-composer--inline) {
-    left: 50%; right: auto; transform: translateX(-50%);
-    border-left: 1px solid var(--line); border-right: 1px solid var(--line);
-  }
-}
-.phone--chat .chat-composer {
-  max-width: none;
-  left: 0;
-  right: 0;
-  transform: none;
-  margin: 0;
-  border-left: 0;
-  border-right: 0;
+  z-index: 15;
 }
 .chat-composer__icon {
   flex: 0 0 auto;
@@ -1941,20 +1945,11 @@
    section (e.g. task detail) rather than at the viewport bottom. */
 .chat-composer--inline {
   position: static;
-  max-width: none;
   margin: 0;
-  transform: none;
   padding: 8px 0 0;
   border-top: 0;
   background: transparent;
   z-index: auto;
-}
-@media (min-width: 480px) {
-  .chat-composer--inline {
-    left: auto; right: auto;
-    transform: none;
-    border-left: 0; border-right: 0;
-  }
 }
 
 /* Desktop/tablet chat overrides — placed after all .phone--chat /
@@ -1995,25 +1990,6 @@
     padding: 12px 56px calc(12px + env(safe-area-inset-bottom, 0px));
   }
 }
-
-.avail-grid {
-  display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
-  margin-top: 8px;
-}
-.avail-cell {
-  background: var(--card); border: 1px solid var(--line);
-  border-radius: 8px; padding: 8px 4px; text-align: center;
-  font-size: 11px;
-  display: flex; flex-direction: column; gap: 2px;
-  align-items: center; justify-content: center;
-  min-height: 64px;
-}
-.avail-cell--off { background: var(--paper-2); color: var(--ink-3); }
-.avail-cell__day {
-  font-family: "JetBrains Mono", monospace; font-size: 9px;
-  color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.08em;
-}
-.avail-cell__hours { font-weight: 500; font-family: "Fraunces", serif; }
 
 /* ── Permissions admin surface (§14) ─────────────────────────────── */
 .permissions__tabs { display: inline-flex; gap: 4px; }
@@ -3732,12 +3708,6 @@
 }
 
 /* ── /schedule — self-only schedule view (§14 "Schedule view") ─────── */
-
-.schedule-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
 
 .schedule {
   display: flex;

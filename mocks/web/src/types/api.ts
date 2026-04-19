@@ -81,12 +81,9 @@ export interface Employee {
   phone: string;
   email: string;
   started_on: string;
-  clocked_in_at: string | null;
   capabilities: Record<string, boolean | null>;
   workspaces: string[];
   villas: string[];
-  clock_mode: "manual" | "auto" | "disabled";
-  auto_clock_idle_minutes: number;
   language: string;
   weekly_availability: Record<string, [string, string] | null>;
   evidence_policy: "inherit" | "require" | "optional" | "forbid";
@@ -153,19 +150,39 @@ export interface Task {
 
 // ── Time / payroll ────────────────────────────────────────────────
 
-export type ShiftStatus = "open" | "closed" | "disputed";
+// §02, §09 — booking_status. Replaces the v0 shift_status enum.
+export type BookingStatus =
+  | "pending_approval"
+  | "scheduled"
+  | "completed"
+  | "cancelled_by_client"
+  | "cancelled_by_agency"
+  | "no_show_worker"
+  | "adjusted";
 
-export interface Shift {
+export type BookingKind = "work" | "travel";
+
+export interface Booking {
   id: string;
   employee_id: string;
   property_id: string;
-  started_at: string;
-  ended_at: string | null;
-  status: ShiftStatus;
-  duration_seconds: number | null;
+  scheduled_start: string;
+  scheduled_end: string;
+  status: BookingStatus;
+  kind: BookingKind;
+  actual_minutes: number | null;
+  actual_minutes_paid: number | null;
   break_seconds: number;
-  method_in: "manual" | "auto" | "geo";
-  method_out: "manual" | "auto" | "geo" | null;
+  pending_amend_minutes: number | null;
+  pending_amend_reason: string | null;
+  declined_at: string | null;
+  declined_reason: string | null;
+  notes_md: string;
+  adjusted: boolean;
+  adjustment_reason: string | null;
+  client_org_id: string | null;
+  work_engagement_id: string;
+  user_id: string;
 }
 
 export type PayRuleKind = "hourly" | "monthly_salary" | "per_task" | "piecework";
@@ -686,6 +703,10 @@ export interface Organization {
   notes: string | null;
   default_pay_destination_stub: string | null;
   portal_user_id: string | null;
+  /** §22 cancellation policy. Null falls through to workspace defaults
+   *  `bookings.cancellation_window_hours` / `bookings.cancellation_fee_pct`. */
+  cancellation_window_hours: number | null;
+  cancellation_fee_pct: number | null;
 }
 
 export interface ClientRate {
@@ -708,9 +729,9 @@ export interface ClientUserRate {
   effective_to: string | null;
 }
 
-export interface ShiftBilling {
+export interface BookingBilling {
   id: string;
-  shift_id: string;
+  booking_id: string;
   client_org_id: string;
   user_id: string;
   currency: string;
@@ -720,6 +741,7 @@ export interface ShiftBilling {
   rate_source: "client_user_rate" | "client_rate" | "unpriced";
   rate_source_id: string | null;
   work_engagement_id: string;
+  is_cancellation_fee: boolean;
 }
 
 export type WorkOrderState =
@@ -1203,7 +1225,7 @@ export interface HistoryPayload {
 }
 
 export interface DashboardPayload {
-  on_shift: Employee[];
+  on_booking: Employee[];
   by_status: { completed: Task[]; in_progress: Task[]; pending: Task[] };
   pending_approvals: ApprovalRequest[];
   pending_expenses: Expense[];

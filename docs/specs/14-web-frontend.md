@@ -135,7 +135,7 @@ below are relative to `/w/<slug>/`.
 ```
 today            schedule         task/<id>
 my/expenses      me               history          issues/new
-shifts           asset/<id>
+bookings         asset/<id>
 ```
 
 The legacy routes `/week` and `/me/schedule` both 302-redirect to
@@ -157,8 +157,12 @@ full-screen `/chat` page. On desktop (≥720px) the worker shell drops
 the bottom-nav (the shared `<SideNav />` takes over) and the agent
 moves to the right-hand `.desk__agent` rail (§14 "Desktop shell")
 shared with the manager layout, so `Chat` is no longer listed in the
-left-nav. The `/shifts` tab is hidden when `time.clock_mode` is `auto`
-or `disabled`.
+left-nav. The `/bookings` page is the worker's view of their booked
+hours (per §09): it lists every booking they have within the rolling
+window, lets them tap a row to amend (overrun / underrun reason),
+decline a future booking, or propose an ad-hoc booking. There is no
+clock-in / clock-out button — the booking *is* the time record (see
+§09 "Bookings").
 
 ### Owner/Manager (under /w/<slug>/)
 
@@ -224,9 +228,10 @@ The worker and manager surface `/schedule` (self-only; also the
 target of the legacy `/me/schedule` and `/week` URLs) is the hub
 for "my time". It renders the same calendar feed as `/scheduler`
 narrowed to the caller, and adds the self-service edit affordances
-described below. It replaces the flat `/week` task list and the
-thin `Weekly availability` panel currently on `/me` (which
-becomes a link into `/schedule`).
+described below. It replaces the flat `/week` task list; `/me` no
+longer carries weekly-availability, leave, or availability-override
+panels — those move here, and `/me` surfaces a single card link
+into `/schedule`.
 
 **Layout responsiveness.** Mobile (`<720px`) renders a vertical
 **agenda**: one row per day across a 14-day window, each row showing
@@ -590,7 +595,7 @@ WCAG 2.2 AA. Concretely:
   a visible "could not keep queued for longer" warning.
 - **Manifest.** `display: standalone`, `theme_color: #3F6E3B`,
   `background_color: #FAF7F2`. Shortcuts are workspace-scoped
-  (`/w/<slug>/today`, `/w/<slug>/shifts/clock-in`,
+  (`/w/<slug>/today`, `/w/<slug>/bookings`,
   `/w/<slug>/my/expenses/new`); on multi-workspace devices the
   install prompt is offered per workspace, so each installs as a
   distinct PWA with its own name (`crew.day — <workspace.name>`)
@@ -782,7 +787,7 @@ Settings. It surfaces the multi-belonging model from §02 + §04:
 The Organizations page (`/organizations`) under ADMIN lists every
 organization in the active workspace, with a detail panel
 showing rate cards (`client_rate` / `client_user_rate`), recent
-`shift_billing` rows, and inbound / outbound `vendor_invoice`
+`booking_billing` rows, and inbound / outbound `vendor_invoice`
 entries. Empty state guides the operator to "agency mode" via
 the property page.
 
@@ -796,7 +801,7 @@ the user's `binding_org_id`s on the active workspace), **Scheduler**
 user cells render **first name + work role only** per §15
 cross-workspace visibility — no last names, no contact, no tasks
 the client has no business seeing), Billable hours (read-only
-`shift_billing` rollup), Quotes (with accept / reject controls —
+`booking_billing` rollup), Quotes (with accept / reject controls —
 acceptance still routes through the unconditionally
 approval-gated set in §22 in production; the mock applies it
 in-memory), Invoices (read-only `vendor_invoice` list, no mark-paid

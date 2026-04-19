@@ -632,7 +632,7 @@ script that prints today's tasks on her home printer.
 POST /api/v1/me/tokens
 {
   "name": "kitchen-printer",
-  "scopes": ["me.tasks:read", "me.shifts:read"],
+  "scopes": ["me.tasks:read", "me.bookings:read"],
   "expires_at": "2026-06-01T00:00:00Z",
   "note": "Raspberry Pi in the kitchen"
 }
@@ -725,7 +725,7 @@ workspace scopes on the same token:
 - `me.tasks:{read}` — tasks assigned to the token's subject, plus
   unassigned tasks on properties in scope matching their
   `user_work_role`.
-- `me.shifts:{read}` — the subject's own shifts and payslips.
+- `me.bookings:{read}` — the subject's own bookings and payslips.
 - `me.expenses:{read,write}` — read own expense claims; write creates
   or edits drafts scoped to the subject. Never `expenses:approve`.
 - `me.profile:{read,write}` — the subject's `users` row, limited to

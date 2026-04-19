@@ -167,7 +167,7 @@ v1 archive semantics distinguish three scopes:
    archives every `user_work_role` they hold in that workspace,
    and removes them from forward-looking task assignments for that
    workspace. Fires `work_engagement.archived`. Historical pay,
-   shifts, and payslips are preserved. Other workspaces where the
+   bookings, and payslips are preserved. Other workspaces where the
    same user has engagements are untouched.
 3. **Archive a `users` row** — the person is off-boarded
    deployment-wide. Revokes passkeys and sessions immediately
@@ -271,8 +271,8 @@ action catalog + `permission_rule` rows.
 |-----------|-----------------------------------------------|--------------------------------------------------------------|
 | `admin`   | deployment operator (self-host owner, SaaS ops) | the bare-host `/admin` shell (§14): LLM + provider config, deployment-wide usage, workspace lifecycle, signup settings, admin-team management, deployment audit. Only valid on `scope_kind = 'deployment'` grants. |
 | `manager` | head of household, co-manager, agency staff   | full admin dashboard (properties, tasks, payroll, orgs). Which actions they may *perform* depends on rules + owners-group membership. |
-| `worker`  | a maid, driver, cook, contractor              | PWA: assigned tasks, own shifts, own expenses, own profile   |
-| `client`  | a villa owner who pays an agency              | read-only portal for shifts/invoices billed to them; accept/reject quotes (gated) |
+| `worker`  | a maid, driver, cook, contractor              | PWA: assigned tasks, own bookings, own expenses, own profile |
+| `client`  | a villa owner who pays an agency              | read-only portal for bookings/invoices billed to them; accept/reject quotes (gated) |
 | `guest`   | a short-term stay occupant (post-v1)          | reserved; v1 uses tokenized `guest_link` (§04) not grants    |
 
 Governance (archive the workspace, transfer it to another person,
@@ -340,7 +340,7 @@ Admins see:
 
 Admins never see (from the `/admin` surface alone):
 
-- The contents of any workspace (tasks, shifts, PII, stays).
+- The contents of any workspace (tasks, bookings, PII, stays).
   RLS still filters by `workspace_id`; the deployment grant does
   not widen workspace reads. A user who needs both views holds a
   workspace grant too, switches through the workspace picker,
@@ -361,7 +361,7 @@ Users whose highest surface grant in a scope is `worker` see only:
 - Tasks assigned to them, plus unassigned tasks at properties in
   their scope that match their `user_work_role`s.
 - Instructions scoped to those properties/areas/global (read-only).
-- Their own shifts, payslips (read-only), and expense claims.
+- Their own bookings, payslips (read-only), and expense claims.
 - Staff-visible subset of property notes (§04) — not access codes or
   wifi passwords unless an owners-group member explicitly shares.
 - Comments on tasks they can see, plus authoring comments on those.
@@ -391,8 +391,8 @@ Users whose grant in a scope is `client` see only:
 - Properties they are billed for (property-scope grant) or
   properties tagged with their `binding_org_id` (workspace-scope
   grant). Read-only view: name, address, a sanitized work log.
-- Shifts at those properties: date, role_key, duration, rate,
-  amount (via `shift_billing` rollups).
+- Bookings at those properties: date, role_key, duration, rate,
+  amount (via `booking_billing` rollups).
 - Work orders and quotes billed to them: full detail so they can
   accept (gated — see §11) or reject.
 - Vendor invoices billed to them: full detail, including
@@ -507,8 +507,11 @@ configuration.
 | `tasks.assign_other`                    | `workspace`, `property`        | `owners, managers`            | —  | §06 |
 | `tasks.complete_other`                  | `workspace`, `property`        | `owners, managers`            | —  | §06 |
 | `tasks.skip_other`                      | `workspace`, `property`        | `owners, managers`            | —  | §06 |
-| `shifts.view_other`                     | `workspace`, `property`        | `owners, managers`            | —  | §09 |
-| `shifts.edit_other`                     | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `bookings.view_other`                   | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `bookings.amend_other`                  | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `bookings.assign_other`                 | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `bookings.cancel`                       | `workspace`, `property`        | `owners, managers`            | —  | §09 |
+| `bookings.create_pending`               | `workspace`, `property`        | `owners, managers, all_workers` | — | §09 |
 | `payroll.lock_period`                   | `workspace`                    | `owners, managers`            | ✅ | §09 |
 | `payroll.issue_payslip`                 | `workspace`                    | `owners, managers`            | ✅ | §09 |
 | `payroll.view_other`                    | `workspace`, `property`        | `owners, managers`            | —  | §09 |
@@ -568,13 +571,16 @@ Notes:
 - Workers, clients, and contractors **default** to the actions
   they need to do their job:
   - `all_workers` carries `expenses.submit`,
-    `messaging.comments.author_global`, `tasks.create`, and any
-    task/shift actions scoped to themselves (viewing / editing
-    *your own* shift is not in this catalog — it is an
-    identity-scoped action, not scope-scoped, and does not flow
+    `messaging.comments.author_global`, `tasks.create`,
+    `bookings.create_pending`, and any task/booking actions
+    scoped to themselves (viewing / amending / declining
+    *your own* booking is not in this catalog — those are
+    identity-scoped actions, not scope-scoped, and do not flow
     through the resolver). Workers may create tasks; if
     `is_personal = true` (the quick-add default) the task is
     private to the creator; otherwise it is a normal team task.
+    Workers may propose ad-hoc bookings via `bookings.create_pending`
+    (status `pending_approval` — see §09).
   - `all_clients` carries `quotes.accept` (subject to §11
     gating), `work_orders.view`, and
     `vendor_invoices.approve_as_client`.
@@ -586,12 +592,13 @@ Notes:
   all_workers, all_clients` is intentional — it means "every
   surface-entitled user may see the scope exists". RLS still
   filters which rows they can read (§15).
-- Identity-scoped actions ("edit my own profile", "clock in/out
-  my own shift", "view my own payslip") are **not** listed as
-  workspace-assignable action keys; they are self-service verbs
-  anchored on the authenticated `users` / `work_engagement`
-  record. Their runtime behaviour still follows the settings
-  cascade (`time.clock_mode`, `evidence.policy`, etc.).
+- Identity-scoped actions ("edit my own profile", "amend my own
+  booking", "decline my own booking", "view my own payslip") are
+  **not** listed as workspace-assignable action keys; they are
+  self-service verbs anchored on the authenticated `users` /
+  `work_engagement` record. Their runtime behaviour still follows
+  the settings cascade (`bookings.pay_basis`,
+  `bookings.auto_approve_overrun_minutes`, `evidence.policy`, etc.).
 
 ### How a rule narrows or widens a default
 
@@ -651,8 +658,8 @@ Covered in §03. Three token kinds:
 - **Personal access token (PAT)** — limited to the `me:*` scope
   family, mints are row-filtered to the creating user's own data.
   Creating a PAT is an **identity-scoped self-service verb**
-  (same category as "edit my own profile" and "clock in my own
-  shift"); it has **no entry in the action catalog** and cannot
+  (same category as "edit my own profile" and "amend my own
+  booking"); it has **no entry in the action catalog** and cannot
   be assigned through a `permission_rule`. Every authenticated
   user — worker, client, or manager — may create up to 5 PATs
   for themselves. A manager cannot create a PAT for someone
@@ -663,8 +670,9 @@ Covered in §03. Three token kinds:
 
 > Maria is a maid at Villa Sud (twice a week) and a nanny at the
 > main residence (once a week). The manager expects photo evidence
-> for cleaning but not for nannying; at Villa Sud Maria clocks in,
-> at the main residence she does not.
+> for cleaning but not for nannying; her bookings are scheduled by
+> the manager, and pay derives from the booked hours regardless of
+> exact arrival / departure time.
 
 Both properties live in the same workspace `HomeOps`. This is
 modeled as:
@@ -685,11 +693,11 @@ Maria's behavioural differences are expressed through the settings
 cascade, not a live capability chain. Example overrides:
 
 - `work_engagement.settings_override_json`:
-  `{time.clock_mode: "auto", notifications.email_digest: true}`
+  `{bookings.pay_basis: "scheduled", notifications.email_digest: true}`
 - `property(Villa_Sud).settings_override_json`:
   `{evidence.policy: "require"}`
 - `property(Main_Residence).settings_override_json`:
-  `{time.clock_mode: "manual"}`
+  `{evidence.policy: "optional"}`
 
 Pay rules are separate and attach to `pay_rule.work_engagement_id`
 pointing at Maria's `HomeOps` engagement (§09).
@@ -769,14 +777,14 @@ Rachid's driver role to `Villa_du_Lac` and `Seaside_Apt`.
       inventory, assets, finances, and a "billed from CleanCo"
       panel fed from his client grant on `AgencyOps`.
     - `AgencyOps` (client, binding DupontFamily) — read-only view
-      of Joselyn's shifts at Villa du Lac, vendor invoices
+      of Joselyn's bookings at Villa du Lac, vendor invoices
       CleanCo has raised against DupontFamily, accept/reject
       quotes.
 - **Rachid** logs in and sees only `VincentOps`, his assigned
-  tasks at Villa du Lac and Seaside Apt, his shifts, his profile.
+  tasks at Villa du Lac and Seaside Apt, his bookings, his profile.
 - **Joselyn** logs in and sees only `AgencyOps`, her assigned
   tasks at the properties she has `property_work_role_assignment`
-  rows for (including Villa du Lac), her shifts, her profile. She
+  rows for (including Villa du Lac), her bookings, her profile. She
   does not see Rachid or Vincent's direct operation; the shared
   property `Villa_du_Lac` appears in her list because it sits in
   `AgencyOps` via the junction, but its `owner_workspace` metadata

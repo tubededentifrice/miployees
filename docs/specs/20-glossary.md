@@ -4,7 +4,7 @@ Terms used across the spec. Definitive form; if code or doc disagrees,
 fix the offender.
 
 - **Actor.** The kind of principal responsible for an action, recorded
-  on `audit_log` and shift/claim rows: `user | agent | system`. The
+  on `audit_log` and booking/claim rows: `user | agent | system`. The
   v0 `manager` and `employee` actor kinds collapse into `user`;
   `actor_grant_role` captures the role under which the action was
   taken.
@@ -90,11 +90,13 @@ fix the offender.
   agent proposes a gated action. The same row also appears on
   `/approvals` for owner/manager oversight. See §11 "Inline approval
   UX".
-- **Auto-clock.** The `auto` value of `time.clock_mode` (§05, §09).
-  First checklist tick or task action of the day opens a shift;
-  `time.auto_clock_idle_minutes` of inactivity closes it. Per-property
-  override can force `manual` or `disabled`. See §09 "Disputed
-  auto-close" for the re-open semantics.
+- **Amend (booking).** The single mechanism that changes a booking's
+  time fields (`scheduled_start`, `scheduled_end`, `actual_minutes`,
+  `break_seconds`). Works before, during, or after the booking — only
+  the timestamp differs. Self-amend within the engagement-resolved
+  `bookings.auto_approve_overrun_minutes` (default 30) is auto-applied;
+  beyond that, the request is recorded for labour-law compliance and
+  queued for `bookings.amend_other`. See §09 "Amend operation".
 - **Anomaly suppression.** A manager-recorded rule that silences a
   specific `(anomaly_kind, subject_id)` pair until a required
   `suppressed_until` timestamp (§11). Permanent suppression is not
@@ -338,7 +340,30 @@ fix the offender.
 - **Surface grant.** Synonym for the `role_grants.grant_role`
   persona — `manager | worker | client | guest`. Names the UI
   shell and the RLS filter, not the authority.
-- **Pay period.** A date-bucket inside which shifts roll up into a
+- **Booking.** A worker × property × time-window commitment; the
+  canonical billable and payable atom of crew.day. Replaces the v0
+  `shift` (clock-in / clock-out) entity. Status:
+  `pending_approval | scheduled | completed | cancelled_by_client |
+  cancelled_by_agency | no_show_worker | adjusted`. Pay defaults to
+  scheduled time; `actual_minutes` is recorded only when amended. See
+  §09 "Bookings".
+- **Booking billing.** Append-only derived row capturing a booking's
+  resolved billable rate, currency, minutes, and subtotal at the
+  moment the booking transitions to `completed`. A second variant
+  carries the cancellation-fee subtotal when status flips to
+  `cancelled_by_client` inside the cancellation window. Drives the
+  "billable hours by client" CSV. See §22.
+- **Cancellation policy.** Per-client `cancellation_window_hours` +
+  `cancellation_fee_pct` on `organization` (§22), with workspace-level
+  defaults via cascade keys `bookings.cancellation_window_hours`
+  (default 24) and `bookings.cancellation_fee_pct` (default 50). When
+  a booking is `cancelled_by_client` inside the window, a
+  `booking_billing` fee row is written. Per-property override is
+  deferred (§19).
+- **Pay basis.** Per-engagement enum `scheduled | actual` (default
+  `scheduled`) controlling whether payroll multiplies the booked
+  duration or the amended `actual_minutes_paid`. See §09 "Pay basis".
+- **Pay period.** A date-bucket inside which bookings roll up into a
   payslip. `open → locked → paid`; `paid` is set automatically when
   every contained payslip reaches `paid`.
 - **Payout destination.** A per-user **or** per-organization record
@@ -382,7 +407,7 @@ fix the offender.
   See §03.
 - **Personal access token (PAT).** A self-service bearer token
   minted by a user for themselves, limited to the `me:*` scope
-  family (`me.tasks:read`, `me.shifts:read`,
+  family (`me.tasks:read`, `me.bookings:read`,
   `me.expenses:read|write`, `me.profile:read|write`). Row
   filtering is anchored on the token's `subject_user_id` — a
   PAT can only reach the subject's own data regardless of which
@@ -503,9 +528,9 @@ fix the offender.
   `global` (all properties), `property` (one property), `area` (one
   area within a property), or linked via `instruction_link`. See §07.
 - **Session.** Browser-bound server-side record tied to a passkey.
-- **Shift.** A clocked-in interval tied to a
-  `work_engagement` (which identifies the user × workspace).
-  `status` is `open | closed | disputed`.
+- **Shift.** *(Removed in v1.)* Replaced by **Booking** (above).
+  Historical references to "shift" in older specs / commits map 1:1
+  to `booking` post-rename; the user-facing term is now "booking" too.
 - **SKU / item.** An inventory entry per property.
 - **Stay.** A reservation of a unit within a property (guest, owner,
   staff, other — see `guest_kind`) for a date range. Overlap
@@ -815,9 +840,9 @@ fix the offender.
   constraint. See §23.
 - **Client rate / billable rate.** Per-client hourly rate keyed to
   a work_role (`client_rate`) with optional per-user override
-  (`client_user_rate`). Resolved at shift close and snapshotted
-  onto `shift_billing`. Rate-card edits do not rewrite history.
-  See §22.
+  (`client_user_rate`). Resolved at booking completion and
+  snapshotted onto `booking_billing`. Rate-card edits do not rewrite
+  history. See §22.
 - **User.** A single login identity row (`users`); every human in
   v1 has exactly one. Authority comes from `role_grants`; pay
   pipelines come from `work_engagement`. No `kind` column,
@@ -825,7 +850,7 @@ fix the offender.
 - **Work engagement.** The per-(user, workspace) employment
   relationship carrying `engagement_kind` (payroll / contractor /
   agency_supplied), `supplier_org_id`, and pay-destination
-  defaults. Pay-pipeline tables (pay_rule, payslip, shift,
+  defaults. Pay-pipeline tables (pay_rule, payslip, booking,
   expense_claim) key off `work_engagement_id`. See §02, §22.
 - **Work role.** A named job bundle (maid, cook, driver, …),
   formerly `role` in v0. Resolved against a user in a given
@@ -834,10 +859,6 @@ fix the offender.
   Requires at least one `user_work_role` on a workspace-scope
   grant; surface narrows further via
   `property_work_role_assignment`.
-- **Shift billing.** Append-only derived row capturing a shift's
-  resolved billable rate, currency, minutes, and subtotal at the
-  moment the shift closes. Drives the "billable hours by client"
-  CSV. See §22.
 - **Marketplace (deferred).** Deployment-scope discovery layer in
   which agencies publish `marketplace_listing` rows (service area
   as GeoJSON polygon) and clients post `service_request` rows
@@ -865,7 +886,7 @@ fix the offender.
   handle the fee ledger references. See §25.
 - **Platform fee event.** Append-only row in `platform_fee_event`
   recording a fee accrual against a `marketplace_match`, keyed to
-  a billable source (`shift_billing` or `vendor_invoice`). Fee %
+  a billable source (`booking_billing` or `vendor_invoice`). Fee %
   is snapshotted from the match. crew.day records the accrual;
   collection is out of scope (same pattern as payroll and vendor
   invoices). See §25.

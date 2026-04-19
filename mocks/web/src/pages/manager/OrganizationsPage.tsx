@@ -7,12 +7,12 @@ import DeskPage from "@/components/DeskPage";
 import { Chip, Loading } from "@/components/common";
 import { formatMoney } from "@/lib/money";
 import type {
+  BookingBilling,
   ClientRate,
   ClientUserRate,
   Me,
   Organization,
   Property,
-  ShiftBilling,
   User,
   VendorInvoice,
 } from "@/types/api";
@@ -22,7 +22,7 @@ interface OrganizationDetailPayload {
   properties_billed: Property[];
   client_rates: ClientRate[];
   client_user_rates: ClientUserRate[];
-  recent_shift_billings: ShiftBilling[];
+  recent_booking_billings: BookingBilling[];
   vendor_invoices_billed_to: VendorInvoice[];
   vendor_invoices_billed_from: VendorInvoice[];
   portal_user: User | null;
@@ -37,7 +37,7 @@ interface WorkRoleLite {
 
 // §22 — Organizations directory. Lists every organization in the active
 // workspace (clients we bill, suppliers that bill us, or both) and lets
-// the manager drill into one to see its rate card, recent shift
+// the manager drill into one to see its rate card, recent booking
 // billings, and the vendor invoices flowing through it.
 export default function OrganizationsPage() {
   const { workspaceId } = useWorkspace();
@@ -230,21 +230,34 @@ function OrganizationDetail({
 
           <section className="org-section">
             <h3>Recent billings</h3>
-            {detail.recent_shift_billings.length === 0 ? (
-              <p className="muted">No shift billings yet.</p>
+            {detail.recent_booking_billings.length === 0 ? (
+              <p className="muted">No booking billings yet.</p>
             ) : (
               <table className="table">
                 <thead>
                   <tr><th>Worker</th><th>Minutes</th><th>Hourly</th><th>Subtotal</th><th>Source</th></tr>
                 </thead>
                 <tbody>
-                  {detail.recent_shift_billings.map((b) => (
+                  {detail.recent_booking_billings.map((b) => (
                     <tr key={b.id}>
                       <td>{usersById.get(b.user_id)?.display_name ?? b.user_id}</td>
                       <td className="table__mono">{b.billable_minutes}</td>
                       <td className="table__mono">{formatMoney(b.hourly_cents, b.currency)}</td>
                       <td className="table__mono">{formatMoney(b.subtotal_cents, b.currency)}</td>
-                      <td><Chip size="sm" tone={b.rate_source === "unpriced" ? "rust" : "ghost"}>{b.rate_source}</Chip></td>
+                      <td>
+                        <Chip
+                          size="sm"
+                          tone={
+                            b.is_cancellation_fee
+                              ? "rust"
+                              : b.rate_source === "unpriced"
+                                ? "rust"
+                                : "ghost"
+                          }
+                        >
+                          {b.is_cancellation_fee ? "cancel fee" : b.rate_source}
+                        </Chip>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

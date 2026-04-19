@@ -63,7 +63,8 @@ export const qk = {
     scope === "task" && taskId
       ? (["agent", "typing", "task", taskId] as const)
       : (["agent", "typing", scope] as const),
-  shifts: () => ["shifts"] as const,
+  bookings: () => ["bookings"] as const,
+  booking: (bid: string) => ["booking", bid] as const,
   guest: () => ["guest"] as const,
   assetTypes: () => ["asset_types"] as const,
   assets: () => ["assets"] as const,
@@ -76,7 +77,7 @@ export const qk = {
   workOrders: (workspaceId?: string) => ["work_orders", workspaceId ?? "active"] as const,
   workOrder: (woid: string) => ["work_order", woid] as const,
   vendorInvoices: (workspaceId?: string) => ["vendor_invoices", workspaceId ?? "active"] as const,
-  shiftBillings: (clientOrgId?: string) => ["shift_billings", clientOrgId ?? "all"] as const,
+  bookingBillings: (clientOrgId?: string) => ["booking_billings", clientOrgId ?? "all"] as const,
   clientRates: (clientOrgId?: string) => ["client_rates", clientOrgId ?? "all"] as const,
   propertyWorkspaces: (propertyId?: string, workspaceId?: string) =>
     ["property_workspaces", propertyId ?? "all", workspaceId ?? "all"] as const,

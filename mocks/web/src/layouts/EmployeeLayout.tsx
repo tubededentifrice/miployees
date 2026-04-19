@@ -1,42 +1,32 @@
-import { Outlet, useLocation } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import AgentSidebar from "@/components/AgentSidebar";
 import BottomTabs from "@/components/BottomTabs";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { initialAgentCollapsed } from "@/lib/preferences";
-import type { Me } from "@/types/api";
+import type { Booking, Me } from "@/types/api";
 
 function roleLabel(role: string): string {
   return role.charAt(0).toUpperCase() + role.slice(1).replace(/_/g, " ");
 }
 
-// Phone-frame layout. Body (<Outlet />) + a bottom dock that hosts the
-// clock-in toggle, plus a fixed bottom tab bar that includes the Chat
-// button (mobile entry to the agent). On the dedicated /chat route the
-// dock is suppressed so the composer can claim the bottom band.
+// Phone-frame layout. Body (<Outlet />) + a fixed bottom tab bar that
+// includes the Chat button (mobile entry to the agent). The v0 clock-in
+// dock is gone — under §09's booking model, the booking IS the time
+// record (no clock-in / clock-out tap). The dock now renders the
+// "next booking" hint and a one-tap shortcut to /bookings.
 //
 // At tablet / desktop widths (>=720px) the phone becomes a three-column
 // grid: shared <SideNav /> on the left (Chat is removed from its items
 // — the agent lives on the right), the page <Outlet /> in the middle,
-// and the shared <AgentSidebar /> on the right (mounted as a SIBLING
-// of <Outlet /> so the chat log/draft survive route changes). The
-// clock-in button rides in the sidebar's `action` slot at this width;
-// the phone-mode dock + bottom tab bar stay in the DOM and are hidden
-// by CSS.
+// and the shared <AgentSidebar /> on the right.
 
-// /chat lives on the right-rail AgentSidebar at every non-phone width
-// (the rail is always present and user-toggleable above 720px) and on
-// the bottom tab bar at phone widths. No side-nav entry needed.
-//
-// `phoneHidden` removes items from the off-canvas hamburger drawer at
-// phone widths because they're already in the bottom tab bar; they
-// still render in the desktop side nav. With everything phone-hidden
-// the employee shell renders no hamburger / mobile top bar at all.
 const NAV_ITEMS: SideNavItem[] = [
   { type: "link", to: "/today", label: "Today", phoneHidden: true },
   { type: "link", to: "/schedule", label: "Schedule", phoneHidden: true },
+  { type: "link", to: "/bookings", label: "Bookings", phoneHidden: true },
   { type: "link", to: "/my/expenses", label: "Expenses", phoneHidden: true },
   { type: "link", to: "/me", matchPrefix: "/me", label: "Me", phoneHidden: true },
 ];
@@ -46,40 +36,41 @@ function initialsOf(name: string): string {
   return parts.map((p) => p.charAt(0).toUpperCase()).join("") || "·";
 }
 
+function fmtBookingHint(b: Booking | undefined): string {
+  if (!b) return "No bookings today";
+  const start = new Date(b.scheduled_start);
+  const end = new Date(b.scheduled_end);
+  const t = (d: Date) =>
+    `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `Next booking · ${t(start)}–${t(end)}`;
+}
+
 export default function EmployeeLayout() {
   const { pathname } = useLocation();
   const isChat = pathname === "/chat";
   const { data } = useQuery({ queryKey: qk.me(), queryFn: () => fetchJson<Me>("/api/v1/me") });
-  const qc = useQueryClient();
+  const bookingsQ = useQuery({
+    queryKey: qk.bookings(),
+    queryFn: () => fetchJson<Booking[]>("/api/v1/bookings"),
+  });
   const collapsed = initialAgentCollapsed();
 
-  const toggleShift = useMutation({
-    mutationFn: () => fetchJson<Me>("/api/v1/shifts/toggle", { method: "POST" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.me() });
-      qc.invalidateQueries({ queryKey: qk.today() });
-    },
-  });
-
-  const clockedIn = data?.employee.clocked_in_at;
-  const clockedAt = clockedIn
-    ? new Date(clockedIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : null;
+  const myEmpId = data?.employee.id;
+  const now = Date.now();
+  const myNext = bookingsQ.data
+    ?.filter((b) => b.employee_id === myEmpId && b.status === "scheduled")
+    .filter((b) => new Date(b.scheduled_end).getTime() >= now)
+    .sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start))[0];
 
   const footerName = data?.employee.name ?? "…";
   const footerRole = data?.employee.roles[0] ? roleLabel(data.employee.roles[0]) : "Employee";
   const footerInitials = data?.employee.avatar_initials
     ?? (data ? initialsOf(data.employee.name) : "·");
 
-  const clockButton = (
-    <button
-      type="button"
-      className={"clock-toggle " + (clockedIn ? "clock-toggle--on" : "clock-toggle--off")}
-      onClick={() => toggleShift.mutate()}
-      disabled={toggleShift.isPending}
-    >
-      {clockedIn ? `● On shift · ${clockedAt}` : "Clock in"}
-    </button>
+  const bookingHint = (
+    <NavLink to="/bookings" className="booking-hint">
+      {fmtBookingHint(myNext)}
+    </NavLink>
   );
 
   return (
@@ -89,7 +80,7 @@ export default function EmployeeLayout() {
     >
       <SideNav
         items={NAV_ITEMS}
-        action={clockButton}
+        action={bookingHint}
         footer={{
           initials: footerInitials,
           avatarUrl: data?.employee.avatar_url ?? null,
@@ -102,7 +93,7 @@ export default function EmployeeLayout() {
         <Outlet />
       </div>
 
-      {!isChat && <div className="phone__dock">{clockButton}</div>}
+      {!isChat && <div className="phone__dock">{bookingHint}</div>}
 
       <BottomTabs />
 

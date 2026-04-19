@@ -12,7 +12,7 @@ import TaskDetailPage from "@/pages/employee/TaskDetailPage";
 import ChatPage from "@/pages/employee/ChatPage";
 import MyExpensesPage from "@/pages/employee/MyExpensesPage";
 import MePage from "@/pages/employee/MePage";
-import ShiftsPage from "@/pages/employee/ShiftsPage";
+import BookingsPage from "@/pages/employee/BookingsPage";
 import HistoryPage from "@/pages/employee/HistoryPage";
 import IssueNewPage from "@/pages/employee/IssueNewPage";
 import EmployeeAssetPage from "@/pages/employee/EmployeeAssetPage";
@@ -112,7 +112,11 @@ export default function App() {
           <Route path="/my/expenses" element={<MyExpensesPage />} />
           <Route path="/me" element={<MePage />} />
           <Route path="/scheduler" element={<SchedulerPage />} />
-          <Route path="/shifts" element={<ShiftsPage />} />
+          <Route path="/bookings" element={<BookingsPage />} />
+          {/* Legacy /shifts URL — spec §09 collapses shifts into
+              bookings. Redirect for any saved bookmarks / agent
+              tool refs. */}
+          <Route path="/shifts" element={<Navigate to="/bookings" replace />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/issues/new" element={<IssueNewPage />} />
         </Route>

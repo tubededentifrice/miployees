@@ -816,10 +816,53 @@ GET    /inventory/reports/burn_rate
 ### Time, payroll, expenses
 
 ```
-GET    /shifts
-POST   /shifts/clock_in
-POST   /shifts/{id}/clock_out
-PATCH  /shifts/{id}                # manager adjust
+GET    /bookings                   # filter: ?user_id=…&property_id=…&from=…&to=…&status=…&pending_amend=true
+GET    /bookings/{id}
+POST   /bookings                   # body: {property_id?, work_engagement_id?,
+                                   #   scheduled_start, scheduled_end, kind?,
+                                   #   notes_md?}. When the caller is a worker
+                                   #   (verb bookings.create_pending), the row
+                                   #   is forced to status=pending_approval,
+                                   #   work_engagement_id = caller's engagement.
+                                   #   When manager-authored, defaults
+                                   #   status=scheduled.
+PATCH  /bookings/{id}              # non-time fields only (notes_md, kind, area).
+                                   #   Time-field changes go through /amend.
+DELETE /bookings/{id}              # soft-delete; allowed only on
+                                   #   `pending_approval`, `cancelled_*`, or
+                                   #   `no_show_worker` rows. Completed
+                                   #   bookings are immutable history.
+POST   /bookings/{id}/amend        # body: {scheduled_start?, scheduled_end?,
+                                   #   actual_minutes?, break_seconds?, kind?,
+                                   #   reason}. `reason` mandatory when any
+                                   #   time field moves (422
+                                   #   `amend_reason_required` otherwise).
+                                   #   Self-amend within
+                                   #   `bookings.auto_approve_overrun_minutes`
+                                   #   is auto-approved; beyond the threshold,
+                                   #   writes `pending_amend_*` and waits for
+                                   #   `bookings.amend_other`.
+POST   /bookings/{id}/amend/approve  # manager accepts a worker's pending amend
+POST   /bookings/{id}/amend/reject   # manager rejects with reason
+POST   /bookings/{id}/decline      # worker self-decline; body: {reason?}
+POST   /bookings/{id}/cancel       # body: {by: "client"|"agency", reason}.
+                                   #   Server computes lead_hours and resolves
+                                   #   the cancellation policy (per-client →
+                                   #   workspace default), writing a
+                                   #   `booking_billing` fee row when inside
+                                   #   the window. See §09 "Cancellation
+                                   #   policy".
+POST   /bookings/{id}/approve      # manager accepts a `pending_approval`
+                                   #   ad-hoc booking → `scheduled` (or
+                                   #   `completed` if scheduled_end is past)
+POST   /bookings/{id}/reject       # manager rejects a `pending_approval`
+                                   #   ad-hoc booking → soft-delete with reason
+POST   /bookings/{id}/no_show      # manager records `no_show_worker` (or
+                                   #   confirms the auto-detected one)
+GET    /me/bookings                # self-only list; ?from=…&to=…
+                                   #   Mirrors /me/schedule but returns the
+                                   #   booking rows (with derived
+                                   #   billable_minutes / pay_basis / status).
 
 GET    /pay_rules
 POST   /pay_rules
@@ -866,9 +909,11 @@ POST   /exchange_rates/manual                        # manager-only; body {base,
 `images[]` (1..2, ≤ 5 MB total), optional `hint_currency` /
 `hint_vendor`; response shape is `llm_autofill_json` (§09).
 
-`PATCH /shifts/{id}` requires a non-empty `adjustment_reason` when
-the patch touches `started_at`, `ended_at`, `break_seconds`, or
-`expected_started_at` — see §09 for the adjustment contract.
+`POST /bookings/{id}/amend` requires a non-empty `reason` whenever
+the body moves any time field (`scheduled_start`, `scheduled_end`,
+`actual_minutes`, `break_seconds`); 422 `amend_reason_required`
+otherwise. The amend pipeline (auto-approve threshold + manager
+queue) is documented in §09 "Amend operation".
 
 ### Assets / documents
 

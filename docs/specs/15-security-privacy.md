@@ -140,7 +140,8 @@ See §16 for deployment details.
 - `Strict-Transport-Security` (once HSTS opted in).
 - `Referrer-Policy: strict-origin-when-cross-origin`.
 - `Permissions-Policy`: allow `camera=(self)` only on worker pages
-  (for evidence), `geolocation=(self)` only on clock-in page.
+  (for task evidence). `geolocation` is **not** granted anywhere in
+  v1 (the v0 clock-in geofence is gone — see §09 "Out of scope").
 - `X-Content-Type-Options: nosniff`.
 - `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-
   Policy: same-origin`.
@@ -488,6 +489,24 @@ does not require it, and v1 does not ship it.
 Even though this is self-hosted, GDPR-like practices apply because
 much of the data is personal.
 
+**Data-minimisation note: no clock GPS.** v1 deliberately drops
+the v0 `geofence_required` setting and the `shift.geo_in_*` /
+`shift.geo_out_*` columns — bookings (§09) are the time record,
+and a per-tap GPS coordinate added no commercial signal beyond
+what task-completion timestamps already provide. The PII surface
+is correspondingly smaller: no historical worker location data,
+no Geolocation API consent prompt on clock-in, nothing to redact
+on `crewday admin purge`.
+
+**Labour-law compliance.** A booking row plus its
+`actual_minutes` (when amended) constitutes a compliant time
+record under FR / EU rules: it captures `scheduled_start`,
+`scheduled_end`, `actual_minutes_paid`, the worker, the property,
+and a manager-verifiable audit trail. The worker is not required
+to perform minute-by-minute self-reporting. Jurisdictions
+requiring per-day signatures need a future export (flagged in
+§19).
+
 - **Access export**: any user can request their own data as JSON +
   attached files — `POST /api/v1/me/export` queues a file; email
   delivery when ready.
@@ -496,7 +515,7 @@ much of the data is personal.
 - **Right to erasure**: owner/manager-triggered; `crewday admin
   purge --person <id>` anonymizes the user row (name/email/phone
   nulled) and scrubs free-text fields in their tasks, comments,
-  shifts, expenses. Financial rows retain amounts and dates (legal
+  bookings, expenses. Financial rows retain amounts and dates (legal
   retention trumps erasure for payroll).
 
   Payout-specific erasure steps (§09):
@@ -872,7 +891,7 @@ The boundary is expressed by the
   `guest_email`, `guest_phone_e164`, external channel id
   (iCal UID), per-stay notes authored on the owner side,
   welcome-page overrides.
-- Tasks, shifts, work_orders, quotes, vendor_invoices: only the
+- Tasks, bookings, work_orders, quotes, vendor_invoices: only the
   rows whose `workspace_id` matches the viewing workspace. A task
   created by workspace A on the shared property is invisible to
   workspace B.
