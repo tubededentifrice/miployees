@@ -29,3 +29,6 @@ __pycache__/
 /*.webp
 /*.mp4
 /*.webm
+
+# bv (beads viewer) local config and caches
+.bv/
