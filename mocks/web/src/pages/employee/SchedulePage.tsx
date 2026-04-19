@@ -1,7 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import PageHeader from "@/components/PageHeader";
@@ -23,15 +36,17 @@ import type {
 
 // §14 "Schedule view". Self-only calendar hub that replaces the old
 // `/week` flat list, the `/me/schedule` alias, and the retired
-// `/bookings` page. Phone renders an agenda (one row per day, 14-day
-// window); desktop renders a week grid (Mon..Sun, one row). Click a
-// day anywhere to open the shared day drawer with rota, tasks,
-// bookings (§09, amend/decline inline), plus the Request-leave /
-// Request-override forms. A pending banner sits above the weeknav
-// whenever any booking in the window is pending_approval or has a
-// pending self-amend — so a stale approval can't fall off-screen.
-// See spec §06 for the approval rules and §09 for the booking
-// lifecycle.
+// `/bookings` page. Phone renders a continuous agenda backed by a
+// bidirectional infinite query (7-day pages): the worker lands on
+// today, scrolls up to past weeks, scrolls down to load the next.
+// Desktop renders a Mon..Sun week grid with explicit prev/next
+// navigation. Click a day anywhere to open the shared day drawer
+// with rota, tasks, bookings (§09, amend/decline inline), plus the
+// Request-leave / Request-override forms. A pending banner sits
+// above the agenda whenever any booking in the loaded window is
+// pending_approval or has a pending self-amend — so a stale
+// approval can't fall off-screen. See spec §06 for the approval
+// rules and §09 for the booking lifecycle.
 
 const BOOKING_STATUS_LABEL: Record<BookingStatus, string> = {
   pending_approval: "Pending approval",
@@ -102,7 +117,37 @@ function addDays(d: Date, n: number): Date {
 }
 
 function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  // Local-date ISO. `toISOString` would shift to UTC and could drop
+  // a day for users west of UTC — every cell key, scroll target, and
+  // page-param compare in the agenda relies on `YYYY-MM-DD` matching
+  // the user's wall clock.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseIsoDate(s: string): Date {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y!, (m ?? 1) - 1, d ?? 1);
+}
+
+// Phone vs desktop split. Mirrors the `(min-width: 720px)` breakpoint
+// used by `.schedule__agenda` / `.schedule__grid-panel` in CSS so the
+// JS-side fetching strategy lines up with what is actually visible.
+function useIsPhone(): boolean {
+  const query = "(max-width: 719px)";
+  const [isPhone, setIsPhone] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia(query).matches;
+  });
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const handler = (e: MediaQueryListEvent) => setIsPhone(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return isPhone;
 }
 
 function dayLabel(d: Date): { weekday: string; day: string; month: string } {
@@ -185,6 +230,43 @@ function buildCells(
     });
   }
   return cells;
+}
+
+// Concatenate `useInfiniteQuery` pages into the same shape one /me/
+// schedule call would return. Per-page collections (tasks, bookings,
+// leaves, overrides) get id-deduped — the API filters by date so
+// duplicates are unlikely, but a refetch overlap shouldn't crash the
+// drawer. Workspace-stable rows (properties, rulesets, assignments,
+// slots, weekly_availability) come from the first page.
+function mergeSchedulePages(pages: MySchedulePayload[]): MySchedulePayload | null {
+  if (pages.length === 0) return null;
+  const first = pages[0]!;
+  if (pages.length === 1) return first;
+  const last = pages[pages.length - 1]!;
+  const dedup = <T,>(items: T[], key: (t: T) => string): T[] => {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const it of items) {
+      const k = key(it);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(it);
+    }
+    return out;
+  };
+  return {
+    window: { from: first.window.from, to: last.window.to },
+    user_id: first.user_id,
+    weekly_availability: first.weekly_availability,
+    rulesets: dedup(pages.flatMap((p) => p.rulesets), (r) => r.id),
+    slots: dedup(pages.flatMap((p) => p.slots), (s) => s.id),
+    assignments: dedup(pages.flatMap((p) => p.assignments), (a) => a.id),
+    tasks: dedup(pages.flatMap((p) => p.tasks), (t) => t.id),
+    properties: dedup(pages.flatMap((p) => p.properties), (p) => p.id),
+    leaves: dedup(pages.flatMap((p) => p.leaves), (lv) => lv.id),
+    overrides: dedup(pages.flatMap((p) => p.overrides), (o) => o.id),
+    bookings: dedup(pages.flatMap((p) => p.bookings), (b) => b.id),
+  };
 }
 
 function propertyColor(pid: string, data: MySchedulePayload): string {
@@ -634,22 +716,18 @@ function DayDrawer({
 
 export default function SchedulePage() {
   const { role } = useRole();
+  const isPhone = useIsPhone();
+  // Manager always renders inside `.desk__main` (own scroll
+  // container); the phone agenda assumes the document scrolls. So we
+  // only run the phone code path for non-manager workers viewing on
+  // a narrow viewport.
+  const phoneMode = isPhone && role !== "manager";
   const today = useMemo(() => new Date(), []);
-  const [weekStart, setWeekStart] = useState<Date>(() => startOfIsoWeek(today));
+  const todayIso = useMemo(() => isoDate(today), [today]);
   const [selectedIso, setSelectedIso] = useState<string | null>(null);
   const [leaveIso, setLeaveIso] = useState<string | null>(null);
   const [overrideIso, setOverrideIso] = useState<string | null>(null);
   const [proposeIso, setProposeIso] = useState<string | null>(null);
-
-  const windowDays = 14;
-  const windowEnd = addDays(weekStart, windowDays - 1);
-  const from = isoDate(weekStart);
-  const to = isoDate(windowEnd);
-
-  const q = useQuery({
-    queryKey: qk.mySchedule(from, to),
-    queryFn: () => fetchJson<MySchedulePayload>(`/api/v1/me/schedule?from_=${from}&to=${to}`),
-  });
 
   // Fetched for invalidation scope on dialog submits — /me's leave
   // panel reads `/api/v1/employees/{empId}/leaves`, which is keyed
@@ -660,183 +738,39 @@ export default function SchedulePage() {
   });
   const empId = meQ.data?.employee.id ?? null;
 
-  const cells = useMemo(
-    () => (q.data ? buildCells(weekStart, windowDays, q.data) : []),
-    [q.data, weekStart],
-  );
-  const selectedCell = useMemo(
-    () => (selectedIso ? cells.find((c) => c.iso === selectedIso) ?? null : null),
-    [selectedIso, cells],
-  );
-
   const title = "Schedule";
   const sub = role === "manager"
     ? "Your rota, hours, and time off — request changes inline."
     : "Your week at a glance. Tap a day to see tasks or request time off.";
 
-  const weekNav = (
-    <div className="scheduler-weeknav">
-      <button
-        type="button"
-        className="btn btn--ghost btn--sm"
-        onClick={() => setWeekStart((w) => addDays(w, -7))}
-      >
-        ← Previous
-      </button>
-      <span className="scheduler-weeknav__label">
-        {weekStart.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
-        {" – "}
-        {windowEnd.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
-      </span>
-      <button
-        type="button"
-        className="btn btn--ghost btn--sm"
-        onClick={() => setWeekStart(startOfIsoWeek(today))}
-      >
-        This week
-      </button>
-      <button
-        type="button"
-        className="btn btn--ghost btn--sm"
-        onClick={() => setWeekStart((w) => addDays(w, 7))}
-      >
-        Next →
-      </button>
-    </div>
+  const body: ReactNode = phoneMode ? (
+    <PhoneAgendaBody
+      today={today}
+      todayIso={todayIso}
+      empId={empId}
+      selectedIso={selectedIso}
+      setSelectedIso={setSelectedIso}
+      leaveIso={leaveIso}
+      setLeaveIso={setLeaveIso}
+      overrideIso={overrideIso}
+      setOverrideIso={setOverrideIso}
+      proposeIso={proposeIso}
+      setProposeIso={setProposeIso}
+    />
+  ) : (
+    <DesktopWeekBody
+      today={today}
+      empId={empId}
+      selectedIso={selectedIso}
+      setSelectedIso={setSelectedIso}
+      leaveIso={leaveIso}
+      setLeaveIso={setLeaveIso}
+      overrideIso={overrideIso}
+      setOverrideIso={setOverrideIso}
+      proposeIso={proposeIso}
+      setProposeIso={setProposeIso}
+    />
   );
-
-  const body: ReactNode = (() => {
-    if (q.isPending) return <Loading />;
-    if (!q.data) return <p className="muted">Failed to load schedule.</p>;
-
-    const nextWeek = cells.slice(7);
-
-    // §14 "Pending banner" — count of bookings in the window that
-    // need manager attention. Empty means no banner (no false
-    // urgency). Two buckets: proposal (pending_approval) and
-    // self-amend (pending_amend_minutes). The first day that has
-    // any of either is the scroll target; on click we open its
-    // drawer so the worker can see the specific row.
-    const pendingProposal = q.data.bookings.filter((b) => b.status === "pending_approval");
-    const pendingAmend = q.data.bookings.filter((b) => b.pending_amend_minutes != null);
-    const allPending = [...pendingProposal, ...pendingAmend];
-    const firstPendingIso = allPending
-      .map((b) => b.scheduled_start.slice(0, 10))
-      .sort()[0] ?? null;
-    const bannerParts: string[] = [];
-    if (pendingProposal.length > 0) {
-      bannerParts.push(
-        `${pendingProposal.length} awaiting manager approval`,
-      );
-    }
-    if (pendingAmend.length > 0) {
-      bannerParts.push(
-        `${pendingAmend.length} amendment${pendingAmend.length === 1 ? "" : "s"} pending`,
-      );
-    }
-
-    return (
-      <>
-        {bannerParts.length > 0 && (
-          <div className="schedule-banner schedule-banner--pending" role="status">
-            <span className="schedule-banner__text">
-              <strong>
-                {allPending.length} booking{allPending.length === 1 ? "" : "s"}{" "}
-                need{allPending.length === 1 ? "s" : ""} attention
-              </strong>
-              <span className="schedule-banner__detail"> · {bannerParts.join(" · ")}</span>
-            </span>
-            {firstPendingIso && (
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                onClick={() => setSelectedIso(firstPendingIso)}
-              >
-                Review
-              </button>
-            )}
-          </div>
-        )}
-        {weekNav}
-        <div className="schedule">
-          <div className="schedule__agenda" role="list">
-            {cells.map((cell) => (
-              <div key={cell.iso} role="listitem">
-                <DayCellView cell={cell} data={q.data!} onOpen={setSelectedIso} today={today} />
-              </div>
-            ))}
-          </div>
-
-          <div className="schedule__grid-panel panel">
-            <ScheduleWeekGrid
-              cells={cells.slice(0, 7)}
-              data={q.data}
-              today={today}
-              onOpen={setSelectedIso}
-              label="This week"
-            />
-            {nextWeek.length > 0 && (
-              <ScheduleWeekGrid
-                cells={nextWeek}
-                data={q.data}
-                today={today}
-                onOpen={setSelectedIso}
-                label="Next week"
-              />
-            )}
-            <div className="schedule__legend">
-              {q.data.properties.map((p) => (
-                <span
-                  key={p.id}
-                  className="schedule__legend-item"
-                  style={{ "--rota-tint": propertyColor(p.id, q.data!) } as React.CSSProperties}
-                >
-                  <span className="schedule__legend-swatch" aria-hidden />
-                  {p.name}
-                </span>
-              ))}
-            </div>
-            <p className="muted">
-              Click any day to see tasks, adjust hours, or request leave.
-              Reducing availability needs manager approval (§06).
-            </p>
-          </div>
-        </div>
-
-        <DayDrawer
-          cell={selectedCell}
-          data={q.data}
-          onClose={() => setSelectedIso(null)}
-          onRequestLeave={(iso) => { setSelectedIso(null); setLeaveIso(iso); }}
-          onRequestOverride={(iso) => { setSelectedIso(null); setOverrideIso(iso); }}
-          onProposeBooking={(iso) => { setSelectedIso(null); setProposeIso(iso); }}
-        />
-
-        <OverrideDialog
-          iso={overrideIso}
-          employeeId={empId}
-          pattern={
-            overrideIso
-              ? (q.data.weekly_availability.find(
-                  (w) => w.weekday === isoWeekday(new Date(overrideIso)),
-                ) ?? null)
-              : null
-          }
-          onClose={() => setOverrideIso(null)}
-        />
-        <LeaveDialog
-          iso={leaveIso}
-          employeeId={empId}
-          onClose={() => setLeaveIso(null)}
-        />
-        <BookingProposeDialog
-          iso={proposeIso}
-          properties={q.data.properties}
-          onClose={() => setProposeIso(null)}
-        />
-      </>
-    );
-  })();
 
   if (role === "manager") {
     return (
@@ -849,6 +783,684 @@ export default function SchedulePage() {
     <>
       <PageHeader title={title} sub={sub} />
       <div className="page-stack">{body}</div>
+    </>
+  );
+}
+
+interface BodyProps {
+  today: Date;
+  empId: string | null;
+  selectedIso: string | null;
+  setSelectedIso: (iso: string | null) => void;
+  leaveIso: string | null;
+  setLeaveIso: (iso: string | null) => void;
+  overrideIso: string | null;
+  setOverrideIso: (iso: string | null) => void;
+  proposeIso: string | null;
+  setProposeIso: (iso: string | null) => void;
+}
+
+// ── Desktop body — Mon..Sun grid (current behaviour preserved) ────────
+
+function DesktopWeekBody({
+  today,
+  empId,
+  selectedIso,
+  setSelectedIso,
+  leaveIso,
+  setLeaveIso,
+  overrideIso,
+  setOverrideIso,
+  proposeIso,
+  setProposeIso,
+}: BodyProps) {
+  const [weekStart, setWeekStart] = useState<Date>(() => startOfIsoWeek(today));
+  const windowDays = 14;
+  const windowEnd = addDays(weekStart, windowDays - 1);
+  const from = isoDate(weekStart);
+  const to = isoDate(windowEnd);
+
+  const q = useQuery({
+    queryKey: qk.mySchedule(from, to),
+    queryFn: () => fetchJson<MySchedulePayload>(`/api/v1/me/schedule?from_=${from}&to=${to}`),
+  });
+
+  const cells = useMemo(
+    () => (q.data ? buildCells(weekStart, windowDays, q.data) : []),
+    [q.data, weekStart],
+  );
+  const selectedCell = useMemo(
+    () => (selectedIso ? cells.find((c) => c.iso === selectedIso) ?? null : null),
+    [selectedIso, cells],
+  );
+
+  if (q.isPending) return <Loading />;
+  if (!q.data) return <p className="muted">Failed to load schedule.</p>;
+  const data = q.data;
+
+  const nextWeek = cells.slice(7);
+  const { allPending, firstPendingIso, bannerParts } = computePendingState(data.bookings);
+
+  return (
+    <>
+      {bannerParts.length > 0 && (
+        <ScheduleBanner
+          allPending={allPending}
+          bannerParts={bannerParts}
+          firstPendingIso={firstPendingIso}
+          onReview={setSelectedIso}
+        />
+      )}
+      <div className="scheduler-weeknav">
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => setWeekStart((w) => addDays(w, -7))}
+        >
+          ← Previous
+        </button>
+        <span className="scheduler-weeknav__label">
+          {weekStart.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+          {" – "}
+          {windowEnd.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+        </span>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => setWeekStart(startOfIsoWeek(today))}
+        >
+          This week
+        </button>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => setWeekStart((w) => addDays(w, 7))}
+        >
+          Next →
+        </button>
+      </div>
+      <div className="schedule">
+        <div className="schedule__grid-panel panel">
+          <ScheduleWeekGrid
+            cells={cells.slice(0, 7)}
+            data={data}
+            today={today}
+            onOpen={setSelectedIso}
+            label="This week"
+          />
+          {nextWeek.length > 0 && (
+            <ScheduleWeekGrid
+              cells={nextWeek}
+              data={data}
+              today={today}
+              onOpen={setSelectedIso}
+              label="Next week"
+            />
+          )}
+          <div className="schedule__legend">
+            {data.properties.map((p) => (
+              <span
+                key={p.id}
+                className="schedule__legend-item"
+                style={{ "--rota-tint": propertyColor(p.id, data) } as React.CSSProperties}
+              >
+                <span className="schedule__legend-swatch" aria-hidden />
+                {p.name}
+              </span>
+            ))}
+          </div>
+          <p className="muted">
+            Click any day to see tasks, adjust hours, or request leave.
+            Reducing availability needs manager approval (§06).
+          </p>
+        </div>
+      </div>
+
+      <ScheduleDialogsFooter
+        data={data}
+        empId={empId}
+        selectedCell={selectedCell}
+        setSelectedIso={setSelectedIso}
+        leaveIso={leaveIso}
+        setLeaveIso={setLeaveIso}
+        overrideIso={overrideIso}
+        setOverrideIso={setOverrideIso}
+        proposeIso={proposeIso}
+        setProposeIso={setProposeIso}
+      />
+    </>
+  );
+}
+
+// ── Phone body — bidirectional infinite agenda ────────────────────────
+//
+// Loads 7-day pages on demand. On first paint the worker lands on
+// today (centred under the sticky monthbar). IntersectionObserver
+// sentinels at the top and bottom of the list trigger
+// `fetchPreviousPage` / `fetchNextPage`. Scroll position is
+// preserved when prepending so the world doesn't jump under the
+// thumb.
+//
+// Why this matters: this is the single view a worker hits to know
+// where they are working today and tomorrow — it has to feel fast,
+// it has to land in the right place, and it has to keep working
+// when the worker idly thumbs back to last Tuesday. A weekNav
+// "Prev / Next" button that stalls for a network round-trip is
+// strictly worse on a phone, and a manual page paginator means a
+// busy worker can miss tomorrow's booking sitting one tap away.
+
+function PhoneAgendaBody({
+  today,
+  todayIso,
+  empId,
+  selectedIso,
+  setSelectedIso,
+  leaveIso,
+  setLeaveIso,
+  overrideIso,
+  setOverrideIso,
+  proposeIso,
+  setProposeIso,
+}: BodyProps & { todayIso: string }) {
+  const initialMondayIso = useMemo(
+    () => isoDate(startOfIsoWeek(today)),
+    [today],
+  );
+
+  const q = useInfiniteQuery({
+    // Single key for the whole infinite stream so React Query keeps
+    // accumulated pages across re-renders. Mutations elsewhere
+    // invalidate `["my-schedule", ...]` by prefix and pick this one
+    // up too.
+    queryKey: ["my-schedule", "infinite", initialMondayIso] as const,
+    initialPageParam: initialMondayIso,
+    queryFn: ({ pageParam }) => {
+      const fromIso = pageParam;
+      const toIso = isoDate(addDays(parseIsoDate(pageParam), 6));
+      return fetchJson<MySchedulePayload>(
+        `/api/v1/me/schedule?from_=${fromIso}&to=${toIso}`,
+      );
+    },
+    getNextPageParam: (_last, _all, lastParam) =>
+      isoDate(addDays(parseIsoDate(lastParam), 7)),
+    getPreviousPageParam: (_first, _all, firstParam) =>
+      isoDate(addDays(parseIsoDate(firstParam), -7)),
+  });
+
+  const merged = useMemo(
+    () => (q.data ? mergeSchedulePages(q.data.pages) : null),
+    [q.data],
+  );
+
+  const firstParam = (q.data?.pageParams[0] as string | undefined) ?? initialMondayIso;
+  const totalDays = (q.data?.pageParams.length ?? 1) * 7;
+
+  const cells = useMemo(() => {
+    if (!merged) return [];
+    return buildCells(parseIsoDate(firstParam), totalDays, merged);
+  }, [merged, firstParam, totalDays]);
+
+  const selectedCell = useMemo(
+    () => (selectedIso ? cells.find((c) => c.iso === selectedIso) ?? null : null),
+    [selectedIso, cells],
+  );
+
+  // ── Scroll plumbing ────────────────────────────────────────────────
+
+  const topSentinelRef = useRef<HTMLDivElement | null>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Preserve scroll position when prepending. Captured BEFORE
+  // `fetchPreviousPage` runs and consumed once the new first page
+  // appears in `q.data.pages`.
+  const heightBeforePrependRef = useRef<number | null>(null);
+  const prevFirstParamRef = useRef<string | null>(null);
+
+  // The initial paint loads today's week, but the bottom (and top)
+  // sentinels then fire concurrently and pull in 1-3 adjacent weeks.
+  // Each prepend shifts the document, and a single
+  // `scrollIntoView({block:"start"})` only positions today *once* —
+  // by the time the prefetches settle today has drifted ~half a
+  // screen down. So we keep re-anchoring today to the top until
+  // either (a) all the auto-prefetches have settled or (b) the
+  // worker has scrolled today out of view themselves.
+  const settledRef = useRef(false);
+
+  // Bottom sentinel — extend the future when the worker thumbs down.
+  useEffect(() => {
+    const node = bottomSentinelRef.current;
+    if (!node) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (
+            e.isIntersecting
+            && q.hasNextPage
+            && !q.isFetchingNextPage
+            && !q.isFetching
+          ) {
+            q.fetchNextPage();
+          }
+        }
+      },
+      { rootMargin: "600px 0px 600px 0px" },
+    );
+    obs.observe(node);
+    return () => obs.disconnect();
+  }, [q.hasNextPage, q.isFetchingNextPage, q.isFetching, q.fetchNextPage]);
+
+  // Top sentinel — extend the past, capturing scroll height so we
+  // can compensate after the prepend.
+  useEffect(() => {
+    const node = topSentinelRef.current;
+    if (!node) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (
+            e.isIntersecting
+            && q.hasPreviousPage
+            && !q.isFetchingPreviousPage
+            && !q.isFetching
+          ) {
+            heightBeforePrependRef.current =
+              document.documentElement.scrollHeight;
+            q.fetchPreviousPage();
+          }
+        }
+      },
+      { rootMargin: "600px 0px 600px 0px" },
+    );
+    obs.observe(node);
+    return () => obs.disconnect();
+  }, [
+    q.hasPreviousPage,
+    q.isFetchingPreviousPage,
+    q.isFetching,
+    q.fetchPreviousPage,
+  ]);
+
+  // After a prepend lands and we are *past* the initial settle, keep
+  // the worker's visual position by compensating for the document
+  // growth. During settle the re-anchor below takes priority instead
+  // — running both isn't harmful but the re-anchor is what actually
+  // pins today, so we skip the scrollBy work then.
+  useLayoutEffect(() => {
+    if (!q.data) return;
+    const first = q.data.pageParams[0] as string;
+    if (
+      settledRef.current
+      && prevFirstParamRef.current !== null
+      && prevFirstParamRef.current !== first
+      && heightBeforePrependRef.current !== null
+    ) {
+      const delta =
+        document.documentElement.scrollHeight - heightBeforePrependRef.current;
+      if (delta > 0) {
+        window.scrollBy({ top: delta, behavior: "instant" as ScrollBehavior });
+      }
+    }
+    if (
+      prevFirstParamRef.current !== null
+      && prevFirstParamRef.current !== first
+    ) {
+      heightBeforePrependRef.current = null;
+    }
+    prevFirstParamRef.current = first;
+  }, [q.data]);
+
+  // Re-anchor today on every cells change while we are still in the
+  // initial settle window. Bails out as soon as the worker scrolls
+  // today materially out of view — they are now driving.
+  useLayoutEffect(() => {
+    if (settledRef.current) return;
+    if (cells.length === 0) return;
+    const node = document.querySelector(
+      `[data-schedule-iso="${todayIso}"]`,
+    ) as HTMLElement | null;
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    const drift = rect.top;
+    // If today has drifted off-screen by more than ~one viewport in
+    // either direction, the worker is actively reading another week.
+    // Stop fighting them.
+    if (drift > window.innerHeight * 1.5 || rect.bottom < -window.innerHeight * 0.5) {
+      settledRef.current = true;
+      return;
+    }
+    node.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
+  }, [cells, todayIso]);
+
+  // End the settle window 200ms after all initial fetches have
+  // calmed down. Past that point auto-anchoring stops and the
+  // prepend scroll-preserver above takes over.
+  useEffect(() => {
+    if (settledRef.current) return;
+    if (cells.length === 0) return;
+    const stillFetching =
+      q.isFetching || q.isFetchingPreviousPage || q.isFetchingNextPage;
+    if (stillFetching) return;
+    const t = window.setTimeout(() => {
+      settledRef.current = true;
+    }, 200);
+    return () => window.clearTimeout(t);
+  }, [
+    cells.length,
+    q.isFetching,
+    q.isFetchingPreviousPage,
+    q.isFetchingNextPage,
+  ]);
+
+  // ── Sticky month label + Today FAB ─────────────────────────────────
+
+  const [topVisibleIso, setTopVisibleIso] = useState<string>(todayIso);
+  const [todayInView, setTodayInView] = useState<boolean>(true);
+
+  // One observer per cell row — the topmost intersecting cell drives
+  // the monthbar label, and the today cell drives the FAB visibility.
+  useEffect(() => {
+    if (cells.length === 0) return;
+    const nodes = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-schedule-iso]"),
+    );
+    if (nodes.length === 0) return;
+
+    const intersecting = new Set<string>();
+    const obs = new IntersectionObserver(
+      (entries) => {
+        let nextTodayInView: boolean | null = null;
+        for (const e of entries) {
+          const iso = (e.target as HTMLElement).dataset.scheduleIso;
+          if (!iso) continue;
+          if (e.isIntersecting) intersecting.add(iso);
+          else intersecting.delete(iso);
+          if (iso === todayIso) nextTodayInView = e.isIntersecting;
+        }
+        if (intersecting.size > 0) {
+          let earliest: string | null = null;
+          for (const iso of intersecting) {
+            if (earliest === null || iso < earliest) earliest = iso;
+          }
+          if (earliest) setTopVisibleIso(earliest);
+        }
+        if (nextTodayInView !== null) setTodayInView(nextTodayInView);
+      },
+      // Crop to the area between the sticky monthbar and the bottom
+      // of the viewport. ≈64px is the monthbar height; adjust here
+      // if the bar grows.
+      { rootMargin: "-64px 0px -40% 0px", threshold: [0, 1] },
+    );
+    nodes.forEach((n) => obs.observe(n));
+    return () => obs.disconnect();
+  }, [cells, todayIso]);
+
+  const monthLabel = useMemo(() => {
+    const d = parseIsoDate(topVisibleIso);
+    return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  }, [topVisibleIso]);
+
+  const scrollToToday = useCallback(() => {
+    const node = document.querySelector(
+      `[data-schedule-iso="${todayIso}"]`,
+    ) as HTMLElement | null;
+    if (!node) return;
+    // The worker explicitly tapped Today — they want a deliberate,
+    // smoothly-animated jump back. Mark settled so the auto-anchor
+    // doesn't snap them somewhere else mid-scroll.
+    settledRef.current = true;
+    node.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [todayIso]);
+
+  // ── Render ─────────────────────────────────────────────────────────
+
+  if (q.isPending) return <Loading />;
+  if (!merged) return <p className="muted">Failed to load schedule.</p>;
+  const data = merged;
+
+  const { allPending, firstPendingIso, bannerParts } = computePendingState(
+    data.bookings,
+  );
+
+  // Group cells by ISO week so we can drop a small separator between
+  // weeks ("20 Apr – 26 Apr"). Workers reading across a 3-week span
+  // otherwise lose the week boundary; the separator keeps them
+  // oriented without inflating row height.
+  const groups: { weekStartIso: string; weekLabel: string; cells: DayCell[] }[] = [];
+  for (const cell of cells) {
+    const ws = isoDate(startOfIsoWeek(cell.date));
+    const last = groups[groups.length - 1];
+    if (!last || last.weekStartIso !== ws) {
+      const wsDate = parseIsoDate(ws);
+      const weDate = addDays(wsDate, 6);
+      const label =
+        wsDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+        + " – "
+        + weDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+      groups.push({ weekStartIso: ws, weekLabel: label, cells: [cell] });
+    } else {
+      last.cells.push(cell);
+    }
+  }
+
+  return (
+    <>
+      {bannerParts.length > 0 && (
+        <ScheduleBanner
+          allPending={allPending}
+          bannerParts={bannerParts}
+          firstPendingIso={firstPendingIso}
+          onReview={setSelectedIso}
+        />
+      )}
+
+      <div className="schedule schedule--phone">
+        <div
+          className="schedule__monthbar"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span className="schedule__monthbar-label">{monthLabel}</span>
+          {!todayInView && (
+            <button
+              type="button"
+              className="schedule__monthbar-jump"
+              onClick={scrollToToday}
+            >
+              Today
+            </button>
+          )}
+        </div>
+
+        <div className="schedule__agenda" role="list">
+          <div
+            ref={topSentinelRef}
+            className="schedule__sentinel schedule__sentinel--top"
+            aria-hidden
+          >
+            {q.isFetchingPreviousPage ? (
+              <span className="schedule__sentinel-spinner">Loading earlier…</span>
+            ) : (
+              <span className="schedule__sentinel-hint">Scroll up for past weeks</span>
+            )}
+          </div>
+
+          {groups.map((group, gi) => (
+            <Fragment key={group.weekStartIso}>
+              {gi > 0 && (
+                <div className="schedule__weekgap" aria-hidden>
+                  <span>{group.weekLabel}</span>
+                </div>
+              )}
+              {group.cells.map((cell) => (
+                <div key={cell.iso} role="listitem" data-schedule-iso={cell.iso}>
+                  <DayCellView
+                    cell={cell}
+                    data={data}
+                    onOpen={setSelectedIso}
+                    today={today}
+                  />
+                </div>
+              ))}
+            </Fragment>
+          ))}
+
+          <div
+            ref={bottomSentinelRef}
+            className="schedule__sentinel schedule__sentinel--bot"
+            aria-hidden
+          >
+            {q.isFetchingNextPage ? (
+              <span className="schedule__sentinel-spinner">Loading next week…</span>
+            ) : (
+              <span className="schedule__sentinel-hint">Keep scrolling for more</span>
+            )}
+          </div>
+        </div>
+
+        {!todayInView && (
+          <button
+            type="button"
+            className="schedule__today-fab"
+            onClick={scrollToToday}
+            aria-label="Jump to today"
+          >
+            Today
+          </button>
+        )}
+      </div>
+
+      <ScheduleDialogsFooter
+        data={data}
+        empId={empId}
+        selectedCell={selectedCell}
+        setSelectedIso={setSelectedIso}
+        leaveIso={leaveIso}
+        setLeaveIso={setLeaveIso}
+        overrideIso={overrideIso}
+        setOverrideIso={setOverrideIso}
+        proposeIso={proposeIso}
+        setProposeIso={setProposeIso}
+      />
+    </>
+  );
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────
+
+function computePendingState(bookings: Booking[]): {
+  allPending: Booking[];
+  firstPendingIso: string | null;
+  bannerParts: string[];
+} {
+  // §14 "Pending banner" — count of bookings in the visible window
+  // that need manager attention. Two buckets: proposal
+  // (pending_approval) and self-amend (pending_amend_minutes). The
+  // first day with any of either is the scroll target.
+  const pendingProposal = bookings.filter((b) => b.status === "pending_approval");
+  const pendingAmend = bookings.filter((b) => b.pending_amend_minutes != null);
+  const allPending = [...pendingProposal, ...pendingAmend];
+  const firstPendingIso =
+    allPending.map((b) => b.scheduled_start.slice(0, 10)).sort()[0] ?? null;
+  const bannerParts: string[] = [];
+  if (pendingProposal.length > 0) {
+    bannerParts.push(`${pendingProposal.length} awaiting manager approval`);
+  }
+  if (pendingAmend.length > 0) {
+    bannerParts.push(
+      `${pendingAmend.length} amendment${pendingAmend.length === 1 ? "" : "s"} pending`,
+    );
+  }
+  return { allPending, firstPendingIso, bannerParts };
+}
+
+function ScheduleBanner({
+  allPending,
+  bannerParts,
+  firstPendingIso,
+  onReview,
+}: {
+  allPending: Booking[];
+  bannerParts: string[];
+  firstPendingIso: string | null;
+  onReview: (iso: string) => void;
+}) {
+  return (
+    <div className="schedule-banner schedule-banner--pending" role="status">
+      <span className="schedule-banner__text">
+        <strong>
+          {allPending.length} booking{allPending.length === 1 ? "" : "s"}{" "}
+          need{allPending.length === 1 ? "s" : ""} attention
+        </strong>
+        <span className="schedule-banner__detail"> · {bannerParts.join(" · ")}</span>
+      </span>
+      {firstPendingIso && (
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => onReview(firstPendingIso)}
+        >
+          Review
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ScheduleDialogsFooter({
+  data,
+  empId,
+  selectedCell,
+  setSelectedIso,
+  leaveIso,
+  setLeaveIso,
+  overrideIso,
+  setOverrideIso,
+  proposeIso,
+  setProposeIso,
+}: {
+  data: MySchedulePayload;
+  empId: string | null;
+  selectedCell: DayCell | null;
+  setSelectedIso: (iso: string | null) => void;
+  leaveIso: string | null;
+  setLeaveIso: (iso: string | null) => void;
+  overrideIso: string | null;
+  setOverrideIso: (iso: string | null) => void;
+  proposeIso: string | null;
+  setProposeIso: (iso: string | null) => void;
+}) {
+  return (
+    <>
+      <DayDrawer
+        cell={selectedCell}
+        data={data}
+        onClose={() => setSelectedIso(null)}
+        onRequestLeave={(iso) => { setSelectedIso(null); setLeaveIso(iso); }}
+        onRequestOverride={(iso) => { setSelectedIso(null); setOverrideIso(iso); }}
+        onProposeBooking={(iso) => { setSelectedIso(null); setProposeIso(iso); }}
+      />
+      <OverrideDialog
+        iso={overrideIso}
+        employeeId={empId}
+        pattern={
+          overrideIso
+            ? (data.weekly_availability.find(
+                (w) => w.weekday === isoWeekday(parseIsoDate(overrideIso)),
+              ) ?? null)
+            : null
+        }
+        onClose={() => setOverrideIso(null)}
+      />
+      <LeaveDialog
+        iso={leaveIso}
+        employeeId={empId}
+        onClose={() => setLeaveIso(null)}
+      />
+      <BookingProposeDialog
+        iso={proposeIso}
+        properties={data.properties}
+        onClose={() => setProposeIso(null)}
+      />
     </>
   );
 }

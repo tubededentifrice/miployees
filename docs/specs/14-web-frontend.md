@@ -241,15 +241,27 @@ entry (present on every employee and manager surface per the
 which makes an extra card on `/me` redundant.
 
 **Layout responsiveness.** Mobile (`<720px`) renders a vertical
-**agenda**: one row per day across a 14-day window, each row showing
-the day's rota band (coloured by property per §05), the day's
-assigned tasks as compact chips (title + time, up to N before an
-"+M more" collapse), and any leave / override / public-holiday /
-closure markers. Desktop (`≥720px`) renders the existing
-**week grid** (Mon..Sun columns) with rota as the background band
-and tasks tiled inside; a "next/prev/this week" navigator matches
-`/scheduler`. Both layouts drill into the same **day drawer** on
-click (mobile sheet, desktop side panel).
+**agenda**: one row per day, each row showing the day's rota band
+(coloured by property per §05), the day's assigned tasks as compact
+chips (title + time, up to N before an "+M more" collapse), and
+any leave / override / public-holiday / closure markers. The agenda
+is backed by a **bidirectional infinite query** (one network page =
+one ISO week, 7 days): on first paint the worker lands on today —
+auto-anchored under a sticky **month/year ribbon** — and can scroll
+in either direction without paging. Top and bottom
+`IntersectionObserver` sentinels extend the past / future a week
+at a time as they approach the viewport edge; scroll position is
+preserved across prepends so the world doesn't jump under the
+thumb. A floating **"Today" pill** (FAB + duplicate inline jump in
+the ribbon) appears whenever today scrolls out of view, taking the
+worker back to "now" in one tap. There is no Prev/Next paginator on
+phone — a network-blocking weekNav button is strictly worse than
+infinite scroll for the surface a worker checks twenty times a day.
+Desktop (`≥720px`) renders the existing **week grid** (Mon..Sun
+columns) with rota as the background band and tasks tiled inside;
+a "next/prev/this week" navigator matches `/scheduler`. Both
+layouts drill into the same **day drawer** on click (mobile sheet,
+desktop side panel).
 
 **Day drawer.** Shows, for the focused date: rota slots
 (read-only), the day's tasks (each linking to `/task/<id>`,
@@ -333,10 +345,11 @@ feed (`GET /bookings`, `?pending_amend=true`) is unchanged and
 remains the audit-and-admin surface (§12).
 
 **Past-booking recap.** There is deliberately no flat "recent
-bookings" list in the worker UI. The 14-day agenda already
-renders history day-by-day (scroll back, open the drawer); the
-formal payroll recap lives on `/pay` (owner-managers) and the
-settled-period payslips on `/me` (§09 "Pay rollup and exports").
+bookings" list in the worker UI. The bidirectional infinite
+agenda already renders history day-by-day (scroll up, open the
+drawer); the formal payroll recap lives on `/pay` (owner-
+managers) and the settled-period payslips on `/me` (§09 "Pay
+rollup and exports").
 If a future customer asks for a per-day booking export, that's
 a new surface — it does not mean reintroducing a standalone
 `/bookings` page.
@@ -597,6 +610,28 @@ the platform must guarantee*.
   component so a single upload updates every surface after the
   `me` / `employees` query invalidates. No presentational
   classes on the `<img>` — the circular crop lives on `.avatar`.
+
+## Icons
+
+- **Lucide only.** Every UI glyph (buttons, chips, banners, empty
+  states, navigation) uses a [Lucide](https://lucide.dev) icon
+  rendered from `lucide-react`. No emoji, no heroicons, no inline
+  SVG, no icon fonts.
+- **Data fields that reference an icon store the Lucide name**
+  (PascalCase string, e.g. `Snowflake`, `Refrigerator`,
+  `BrushCleaning`). The web renders them through a small whitelist
+  (`components/AssetIcon.tsx`) — unknown names fall back to a
+  generic glyph. This keeps server payloads string-based and keeps
+  the bundle from pulling every Lucide icon.
+- **Typographic unicode** (`✓`, `⊘`, `←`, `→`, `·`) is allowed —
+  these are font glyphs, not decorative emoji, and they colour with
+  `currentColor`. Prefer a Lucide icon when the glyph lives in JSX
+  and carries semantic weight (e.g. a "done" banner); keep unicode
+  for `::before`/`::after` CSS content and for directional text
+  affordances in link labels.
+- `aria-hidden="true"` on any icon that is purely decorative; a
+  text label must sit alongside or be provided via `aria-label` on
+  the parent.
 
 ## Accessibility (v1 gate)
 

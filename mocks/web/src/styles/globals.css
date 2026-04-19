@@ -494,6 +494,7 @@
   width: 100%; padding: 14px; background: var(--moss-soft);
   color: var(--moss); border-radius: 10px; text-align: center; font-weight: 600;
   margin-top: 16px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
 }
 .done-banner--rust { background: var(--rust-soft); color: var(--rust); }
 
@@ -1428,7 +1429,15 @@
   border-radius: 10px;
 }
 .empty-state--celebrate { color: var(--moss); }
-.empty-state__glyph { display: block; font-size: 32px; margin-bottom: 6px; }
+.empty-state__glyph {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; margin: 0 auto 6px; color: var(--ink-3);
+}
+.empty-state--celebrate .empty-state__glyph {
+  color: var(--moss);
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--moss-softer);
+}
 .empty-state--quiet { background: transparent; border: 0; padding: 10px 0; }
 
 .completed-group summary {
@@ -1445,10 +1454,14 @@
   padding: 16px; box-shadow: var(--shadow);
 }
 .tpl-card__head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-.tpl-card__title { font-family: "Fraunces", serif; font-size: 1.15rem; }
+.tpl-card__title {
+  font-family: "Fraunces", serif; font-size: 1.15rem;
+  display: inline-flex; align-items: center; gap: 8px;
+}
 .tpl-card__chips { display: flex; gap: 4px; flex-wrap: wrap; }
 .tpl-card__desc { color: var(--ink-2); font-size: 13px; margin-bottom: 8px; }
 .tpl-card__meta { color: var(--ink-3); font-size: 12px; margin-bottom: 10px; font-family: "JetBrains Mono", monospace; }
+.tpl-card__duration { display: inline-flex; align-items: center; gap: 4px; }
 .tpl-card__checklist { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
 .tpl-card__checklist li { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 13px; border-bottom: 1px dashed var(--line); }
 .tpl-card__checklist li:last-child { border-bottom: 0; }
@@ -1512,6 +1525,17 @@
 .asset-kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; }
 .asset-kv dt { color: var(--ink-3); font-size: 13px; }
 .asset-kv dd { margin: 0; font-size: 14px; }
+
+/* Inline Lucide wrapper used by <AssetIcon/>. Every call-site sits
+ * inside a flex parent, so spacing is owned by the parent's `gap`
+ * rather than a per-icon margin — that prevents the gap from
+ * doubling up differently per surface. */
+.asset-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--ink-2);
+}
+.asset-name-link { display: inline-flex; align-items: center; gap: 6px; }
+.asset-type-line { display: inline-flex; align-items: center; gap: 6px; }
 
 .action-row {
   display: grid; grid-template-columns: 1fr auto auto auto;
@@ -4081,11 +4105,162 @@
   gap: 18px;
 }
 
-/* Phone agenda: stacked day rows. Hidden on desktop. */
+/* Phone-only: gutter the whole agenda column so cells, monthbar, and
+   sentinels all share a consistent inset against the viewport edge.
+   `.page-stack` and `.phone__body { display: contents }` give us no
+   horizontal padding by default, so without this rule every row sits
+   flush at x=0. 12px (half of `.phone__section`'s 20px) because
+   `.schedule-day` already pads its content 12px internally — stacking
+   a 20px outer with a 12px inner would waste thumb real-estate on a
+   dense calendar surface. */
+.schedule.schedule--phone {
+  padding: 0 12px;
+}
+
+/* Phone agenda: stacked day rows backed by a bidirectional infinite
+   query. The whole document scrolls (`.phone__body { display: contents }`),
+   so `position: sticky` on the monthbar pins it under the dev banner.
+   Hidden on desktop. */
 .schedule__agenda {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Sticky month/year ribbon. Drives orientation as the worker thumbs
+   through weeks: the topmost-visible day's month is mirrored here, plus
+   an inline "Today" jump when today has scrolled out of view.
+   No negative side margin — it would bleed past the `.schedule--phone`
+   gutter and cause a 4-8px horizontal scrollbar. */
+.schedule__monthbar {
+  position: sticky;
+  top: var(--banner-h, 40px);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  margin: 0 0 8px;
+  background: color-mix(in oklab, var(--paper) 88%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+  font-family: "Fraunces", ui-serif, serif;
+  font-size: 1.05rem;
+  letter-spacing: 0.005em;
+  color: var(--ink);
+}
+.schedule__monthbar-label { font-weight: 600; }
+.schedule__monthbar-jump {
+  font: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--moss-soft);
+  color: var(--moss);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.schedule__monthbar-jump:hover { border-color: var(--moss); }
+
+/* Each day-row wrapper needs to clear the sticky monthbar when
+   scrolled into view by the JS scroll-to-today pass. The wrapper is
+   `[data-schedule-iso]` (the element passed to `scrollIntoView`);
+   targeting the inner `.schedule-day` would be a no-op because
+   scroll-margin only applies to the element actually being scrolled
+   into view. */
+.schedule__agenda > [data-schedule-iso] {
+  scroll-margin-top: calc(var(--banner-h, 40px) + 72px);
+}
+
+/* Top/bottom sentinels watched by IntersectionObserver. The hint text
+   doubles as scaffolding so the row has enough height to be reliably
+   intersected (a 0px node can be skipped on Safari). The spinner copy
+   appears while the matching `fetchPreviousPage` / `fetchNextPage` is
+   in flight. */
+.schedule__sentinel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 12px 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.schedule__sentinel--top { padding-top: 4px; }
+.schedule__sentinel--bot { padding-bottom: 80px; }
+.schedule__sentinel-spinner {
+  position: relative;
+  padding-left: 22px;
+}
+.schedule__sentinel-spinner::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 50%;
+  width: 14px; height: 14px;
+  margin-top: -7px;
+  border-radius: 50%;
+  border: 2px solid var(--paper-3);
+  border-top-color: var(--moss);
+  animation: schedule-spin 0.8s linear infinite;
+}
+@keyframes schedule-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Quiet separator between consecutive ISO weeks. Anchors the reader
+   when the agenda spans 3+ weeks; without it the week boundary blurs
+   into "another Monday somewhere". */
+.schedule__weekgap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px 2px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.schedule__weekgap::before,
+.schedule__weekgap::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+/* Floating "Today" pill. Only mounted while today is off-screen
+   (workers spend most of their schedule glances on today; if they
+   scroll away by accident, this brings them back in one tap). Sits
+   above `.phone__dock` and `BottomTabs`. */
+.schedule__today-fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(124px + env(safe-area-inset-bottom, 0px));
+  z-index: 18;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--paper);
+  background: var(--moss);
+  border: 1px solid var(--moss);
+  box-shadow: 0 8px 22px rgba(22, 34, 22, 0.22);
+  cursor: pointer;
+  animation: schedule-fab-in 220ms ease-out;
+}
+.schedule__today-fab:hover { filter: brightness(1.05); }
+@keyframes schedule-fab-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* Desktop week grid: hidden on phone. */
@@ -4097,7 +4272,9 @@
 }
 
 @media (min-width: 720px) {
-  .schedule__agenda { display: none; }
+  /* Above the breakpoint the desktop grid takes over. The phone-only
+     monthbar / FAB / sentinels are mounted only when `useIsPhone` is
+     true, so no display:none rule is needed for them. */
   .schedule__grid-panel { display: flex; }
 }
 
