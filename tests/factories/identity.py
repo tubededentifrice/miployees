@@ -1,9 +1,9 @@
 """Identity-context factories.
 
-Builders for the identity primitives (workspace, user membership)
-shared across every test tier. Production signup (cd-3i5) ships its
-own flow; the helpers here exist purely to seed a DB for the
-integration + API suites before that flow lands.
+Builders for the identity primitives (workspace, user membership,
+``User``) shared across every test tier. Production signup (cd-3i5)
+ships its own flow; the helpers here exist purely to seed a DB for
+the integration + API suites before that flow lands.
 
 See ``docs/specs/17-testing-quality.md`` §"Unit" and
 ``docs/specs/03-auth-and-tokens.md`` §"WorkspaceContext".
@@ -14,13 +14,16 @@ from __future__ import annotations
 import factory
 from sqlalchemy.orm import Session
 
+from app.adapters.db.identity.models import User, canonicalise_email
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.tenancy import WorkspaceContext, tenant_agnostic
 from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
 
 __all__ = [
+    "UserFactory",
     "WorkspaceContextFactory",
+    "bootstrap_user",
     "bootstrap_workspace",
     "build_workspace_context",
 ]
@@ -58,6 +61,76 @@ def build_workspace_context(**overrides: object) -> WorkspaceContext:
     built = WorkspaceContextFactory(**overrides)
     assert isinstance(built, WorkspaceContext)
     return built
+
+
+class UserFactory(factory.Factory):
+    """Build a :class:`~app.adapters.db.identity.models.User` with
+    deterministic defaults.
+
+    factory-boy is not annotated, so the class-level attributes look
+    untyped; the built instance is still a ``User`` at runtime.
+    ``email_lower`` is deliberately omitted — the SQLAlchemy
+    ``before_insert`` / ``before_update`` listeners keep it in sync
+    with ``email``. Tests that need the canonical value before a
+    flush can call :func:`~app.adapters.db.identity.models.canonicalise_email`
+    directly.
+    """
+
+    class Meta:
+        model = User
+
+    id = factory.LazyFunction(new_ulid)
+    email = factory.Sequence(lambda n: f"user-{n}@example.com")
+    # Set eagerly so unit-level construction (no SQLAlchemy flush) still
+    # sees a value that satisfies the NOT NULL column. The event listener
+    # overwrites it on insert / update if ``email`` drifts.
+    email_lower = factory.LazyAttribute(lambda o: canonicalise_email(o.email))
+    display_name = factory.Sequence(lambda n: f"User {n}")
+    locale = None
+    timezone = None
+    avatar_blob_hash = None
+    last_login_at = None
+    # Pinned to a fixed UTC moment so ULID ordering inside a single test
+    # stays deterministic even without a ``Clock`` fixture; tests that
+    # care about the exact wall-clock value override explicitly.
+    created_at = factory.LazyFunction(lambda: SystemClock().now())
+
+
+def bootstrap_user(
+    session: Session,
+    *,
+    email: str,
+    display_name: str,
+    clock: Clock | None = None,
+) -> User:
+    """Insert a :class:`User` row with the canonical email lookup.
+
+    Test-only. Production signup (cd-3i5) ships its own flow that
+    also seeds the first ``role_grant`` + audit trail; this helper
+    exists purely to unblock integration tests that need a live
+    identity row before that flow lands.
+
+    The helper doesn't wrap itself in :func:`tenant_agnostic` because
+    ``user`` is **not** registered as workspace-scoped (see
+    :mod:`app.adapters.db.identity`) — the ORM tenant filter
+    ignores the table entirely.
+    """
+    now = (clock if clock is not None else SystemClock()).now()
+    user = User(
+        id=new_ulid(),
+        email=email,
+        # ``email_lower`` is set eagerly so a pre-flush read round-trips
+        # the canonical form; the event listener will reassert it on
+        # flush. Duplicating the rule here keeps the helper honest
+        # against future changes that might skip the listener (e.g. a
+        # bulk INSERT via Core).
+        email_lower=canonicalise_email(email),
+        display_name=display_name,
+        created_at=now,
+    )
+    session.add(user)
+    session.flush()
+    return user
 
 
 def bootstrap_workspace(
