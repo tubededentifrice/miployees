@@ -3,6 +3,8 @@
 // users who have lost every passkey device recover via /recover
 // (§03 "Self-service lost-device recovery").
 
+import { KeyRound } from "lucide-react";
+
 export default function LoginPage() {
   return (
     <div className="surface surface--login">
@@ -14,7 +16,9 @@ export default function LoginPage() {
           </div>
           <h1 className="login__headline">Sign in with your passkey</h1>
           <p className="login__sub">No passwords, ever. Tap once to unlock the house.</p>
-          <button className="btn btn--moss btn--lg login__primary" type="button">🔑 Use passkey</button>
+          <button className="btn btn--moss btn--lg login__primary" type="button">
+            <KeyRound size={18} strokeWidth={1.8} aria-hidden="true" /> Use passkey
+          </button>
           <a href="/recover" className="login__recover">Lost your device? Recover access →</a>
         </div>
         <p className="login__footnote">

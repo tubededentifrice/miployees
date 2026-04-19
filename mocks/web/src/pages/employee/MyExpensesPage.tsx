@@ -4,6 +4,7 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { formatMoney } from "@/lib/money";
 import { fmtDate } from "@/lib/dates";
+import { Search } from "lucide-react";
 import { Chip, Loading } from "@/components/common";
 import PageHeader from "@/components/PageHeader";
 import AutoGrowTextarea from "@/components/AutoGrowTextarea";
@@ -234,7 +235,9 @@ export default function MyExpensesPage() {
         {/* ── Processing phase ─────────────────────────── */}
         {phase === "processing" && (
           <div className="empty-state">
-            <span className="empty-state__glyph">🔍</span>
+            <span className="empty-state__glyph" aria-hidden="true">
+              <Search size={28} strokeWidth={1.8} />
+            </span>
             Reading your receipt...
           </div>
         )}

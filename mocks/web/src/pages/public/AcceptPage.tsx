@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
+import { KeyRound } from "lucide-react";
 
 // Static (mock) click-to-accept invitation surface (§03
 // "Additional users (invite → click-to-accept)"). One URL,
@@ -99,7 +100,7 @@ export default function AcceptPage() {
                       itself. No password to remember.
                     </p>
                     <button type="button" className="btn btn--moss btn--lg">
-                      🔑 Register this device
+                      <KeyRound size={18} strokeWidth={1.8} aria-hidden="true" /> Register this device
                     </button>
                   </div>
                 </li>

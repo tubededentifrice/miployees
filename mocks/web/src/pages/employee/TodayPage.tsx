@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { Camera, Check } from "lucide-react";
 import { Chip, EmptyState, Loading, ProgressBar } from "@/components/common";
 import PageHeader from "@/components/PageHeader";
 import TaskListCard from "@/components/TaskListCard";
@@ -57,7 +58,9 @@ export default function TodayPage() {
         {now_task ? (
           <NowCard task={now_task} property={propsById.get(now_task.property_id) ?? null} />
         ) : (
-          <EmptyState glyph="✓" variant="celebrate">All done for now. Nice work.</EmptyState>
+          <EmptyState glyph={<Check size={28} strokeWidth={2} aria-hidden="true" />} variant="celebrate">
+            All done for now. Nice work.
+          </EmptyState>
         )}
       </section>
 
@@ -113,7 +116,7 @@ function NowCard({ task, property }: { task: Task; property: Property | null }) 
           <Chip tone="rust">{cap(task.priority)} priority</Chip>
         )}
         {task.photo_evidence === "required" && (
-          <Chip tone="sand" size="sm">📷 photo required</Chip>
+          <Chip tone="sand"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> photo required</Chip>
         )}
         <span className="task-card__when">{fmtTime(task.scheduled_start)} · {task.estimated_minutes} min</span>
       </div>

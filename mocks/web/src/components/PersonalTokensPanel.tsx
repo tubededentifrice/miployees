@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Trash2 } from "lucide-react";
+import { Check, KeyRound, Trash2 } from "lucide-react";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { fmtDateTime } from "@/lib/dates";
@@ -152,7 +152,9 @@ export default function PersonalTokensPanel() {
                           checked={on}
                           onChange={() => togglePick(s.key)}
                         />
-                        <span className="tokens-scope-list__check" aria-hidden="true">✓</span>
+                        <span className="tokens-scope-list__check" aria-hidden="true">
+                          <Check size={12} strokeWidth={2.5} />
+                        </span>
                         <span className="tokens-scope-list__key">{s.key}</span>
                         <span className="tokens-scope-list__badge">{s.verb}</span>
                         <span className="tokens-scope-list__hint">{s.hint}</span>

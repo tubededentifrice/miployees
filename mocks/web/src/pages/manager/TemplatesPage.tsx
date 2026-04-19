@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
+import { Camera, Timer } from "lucide-react";
 import { Chip, Loading } from "@/components/common";
 import type { TaskPriority, TaskTemplate } from "@/types/api";
 
@@ -50,13 +51,15 @@ export default function TemplatesPage() {
                 <Chip tone="ghost" size="sm">{tpl.role}</Chip>
                 <Chip tone={PRIORITY_TONE[tpl.priority]} size="sm">{tpl.priority}</Chip>
                 {tpl.photo_evidence !== "disabled" && (
-                  <Chip tone="sky" size="sm">📷 {tpl.photo_evidence}</Chip>
+                  <Chip tone="sky" size="sm"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> {tpl.photo_evidence}</Chip>
                 )}
               </div>
             </header>
             <p className="tpl-card__desc">{tpl.description}</p>
             <div className="tpl-card__meta">
-              <span>⏱ {tpl.duration_minutes} min</span>
+              <span className="tpl-card__duration">
+                <Timer size={14} strokeWidth={1.75} aria-hidden="true" /> {tpl.duration_minutes} min
+              </span>
               <span>· scope {tpl.property_scope}</span>
             </div>
             {tpl.checklist.length > 0 && (

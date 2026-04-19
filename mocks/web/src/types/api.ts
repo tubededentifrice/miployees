@@ -1248,7 +1248,7 @@ export interface AssetType {
   key: string;
   name: string;
   category: AssetCategory;
-  icon: string;
+  icon_name: string;
   default_actions: {
     key: string;
     label: string;

@@ -2,6 +2,8 @@
 // drifts, the pixel diff on /styleguide is the fastest signal.
 // Keep this page static and self-contained.
 
+import { Camera } from "lucide-react";
+
 export default function StyleguidePage() {
   return (
     <main className="styleguide">
@@ -123,7 +125,9 @@ export default function StyleguidePage() {
             <div className="task-card__head">
               <span className="chip chip--moss">Villa Sud</span>
               <span className="chip chip--rust">High priority</span>
-              <span className="chip chip--sand chip--sm">📷 photo required</span>
+              <span className="chip chip--sand chip--sm">
+                <Camera size={12} strokeWidth={1.8} aria-hidden="true" /> photo required
+              </span>
               <span className="task-card__when">10:30 · 25 min</span>
             </div>
             <h3 className="task-card__title">Change linen — master bedroom</h3>

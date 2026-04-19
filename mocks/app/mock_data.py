@@ -223,7 +223,7 @@ class WorkRole:
     key: str
     name: str
     description_md: str = ""
-    icon_glyph: str = ""
+    icon_name: str = ""
     default_capabilities: dict[str, Any] = field(default_factory=dict)
 
 
@@ -1010,7 +1010,7 @@ class AssetType:
         "climate", "appliance", "plumbing", "pool", "heating",
         "outdoor", "safety", "security", "vehicle", "other",
     ]
-    icon: str
+    icon_name: str
     default_actions: list[dict[str, Any]]
     default_lifespan_years: int | None = None
 
@@ -1307,16 +1307,16 @@ ROLES: list[Role] = [
 
 WORK_ROLES: list[WorkRole] = [
     # Bernard workspace catalog (matches existing UI).
-    WorkRole("r-housekeeper", "ws-bernard", "maid",        "Housekeeper", icon_glyph="broom"),
-    WorkRole("r-cook",        "ws-bernard", "cook",        "Cook",        icon_glyph="flame"),
-    WorkRole("r-driver",      "ws-bernard", "driver",      "Driver",      icon_glyph="car"),
-    WorkRole("r-gardener",    "ws-bernard", "gardener",    "Gardener",    icon_glyph="sprout"),
-    WorkRole("r-handyman",    "ws-bernard", "handyman",    "Handyman",    icon_glyph="wrench"),
-    WorkRole("r-poolcare",    "ws-bernard", "pool_tech",   "Pool care",   icon_glyph="pool"),
+    WorkRole("r-housekeeper", "ws-bernard", "maid",        "Housekeeper", icon_name="BrushCleaning"),
+    WorkRole("r-cook",        "ws-bernard", "cook",        "Cook",        icon_name="Flame"),
+    WorkRole("r-driver",      "ws-bernard", "driver",      "Driver",      icon_name="Car"),
+    WorkRole("r-gardener",    "ws-bernard", "gardener",    "Gardener",    icon_name="Sprout"),
+    WorkRole("r-handyman",    "ws-bernard", "handyman",    "Handyman",    icon_name="Wrench"),
+    WorkRole("r-poolcare",    "ws-bernard", "pool_tech",   "Pool care",   icon_name="WavesLadder"),
     # VincentOps — Vincent's own workspace (just a driver for Rachid).
-    WorkRole("wr-vincent-driver", "ws-vincent", "driver", "Driver", icon_glyph="car"),
+    WorkRole("wr-vincent-driver", "ws-vincent", "driver", "Driver", icon_name="Car"),
     # CleanCo — serves many clients, exposes a maid role.
-    WorkRole("wr-cleanco-maid",   "ws-cleanco", "maid",   "Maid",   icon_glyph="broom"),
+    WorkRole("wr-cleanco-maid",   "ws-cleanco", "maid",   "Maid",   icon_name="BrushCleaning"),
 ]
 
 
@@ -2973,78 +2973,78 @@ API_TOKEN_AUDIT: dict[str, list[ApiTokenAuditEntry]] = {
 # ── Asset type catalog (18 pre-seeded) ──────────────────────────────
 
 ASSET_TYPES: list[AssetType] = [
-    AssetType("at-air-conditioner", "air_conditioner", "Air conditioner", "climate", "❄️", [
+    AssetType("at-air-conditioner", "air_conditioner", "Air conditioner", "climate", "Snowflake", [
         {"key": "clean_filters", "label": "Clean filters", "interval_days": 90, "estimated_duration_minutes": 30},
         {"key": "service_unit", "label": "Annual service", "interval_days": 365, "estimated_duration_minutes": 120},
     ], default_lifespan_years=12),
-    AssetType("at-oven-range", "oven_range", "Oven / range", "appliance", "🍳", [
+    AssetType("at-oven-range", "oven_range", "Oven / range", "appliance", "CookingPot", [
         {"key": "deep_clean", "label": "Deep clean", "interval_days": 90, "estimated_duration_minutes": 45},
         {"key": "check_burners", "label": "Check burners", "interval_days": 365, "estimated_duration_minutes": 30},
     ], default_lifespan_years=15),
-    AssetType("at-refrigerator", "refrigerator", "Refrigerator", "appliance", "🧊", [
+    AssetType("at-refrigerator", "refrigerator", "Refrigerator", "appliance", "Refrigerator", [
         {"key": "clean_coils", "label": "Clean coils", "interval_days": 180, "estimated_duration_minutes": 30},
         {"key": "replace_water_filter", "label": "Replace water filter", "interval_days": 180, "estimated_duration_minutes": 15},
         {"key": "check_seals", "label": "Check door seals", "interval_days": 365, "estimated_duration_minutes": 15},
     ], default_lifespan_years=15),
-    AssetType("at-dishwasher", "dishwasher", "Dishwasher", "appliance", "🍽️", [
+    AssetType("at-dishwasher", "dishwasher", "Dishwasher", "appliance", "Utensils", [
         {"key": "clean_filter", "label": "Clean filter", "interval_days": 30, "estimated_duration_minutes": 15},
         {"key": "descale", "label": "Descale", "interval_days": 90, "estimated_duration_minutes": 20},
     ], default_lifespan_years=10),
-    AssetType("at-washing-machine", "washing_machine", "Washing machine", "appliance", "👕", [
+    AssetType("at-washing-machine", "washing_machine", "Washing machine", "appliance", "WashingMachine", [
         {"key": "clean_drum", "label": "Clean drum", "interval_days": 30, "estimated_duration_minutes": 15},
         {"key": "check_hoses", "label": "Check hoses", "interval_days": 365, "estimated_duration_minutes": 20},
     ], default_lifespan_years=10),
-    AssetType("at-dryer", "dryer", "Dryer", "appliance", "🌀", [
+    AssetType("at-dryer", "dryer", "Dryer", "appliance", "Fan", [
         {"key": "clean_vent", "label": "Clean vent", "interval_days": 90, "estimated_duration_minutes": 30},
         {"key": "inspect_duct", "label": "Inspect duct", "interval_days": 365, "estimated_duration_minutes": 30},
     ], default_lifespan_years=12),
-    AssetType("at-water-heater", "water_heater", "Water heater", "climate", "🔥", [
+    AssetType("at-water-heater", "water_heater", "Water heater", "climate", "Flame", [
         {"key": "flush_tank", "label": "Flush tank", "interval_days": 365, "estimated_duration_minutes": 60},
         {"key": "check_anode", "label": "Check anode rod", "interval_days": 730, "estimated_duration_minutes": 45},
     ], default_lifespan_years=12),
-    AssetType("at-boiler", "boiler", "Boiler / furnace", "heating", "🏠", [
+    AssetType("at-boiler", "boiler", "Boiler / furnace", "heating", "Heater", [
         {"key": "annual_service", "label": "Annual service", "interval_days": 365, "estimated_duration_minutes": 90},
         {"key": "bleed_radiators", "label": "Bleed radiators", "interval_days": 180, "estimated_duration_minutes": 45},
     ], default_lifespan_years=15),
-    AssetType("at-pool-pump", "pool_pump", "Pool pump", "pool", "🏊", [
+    AssetType("at-pool-pump", "pool_pump", "Pool pump", "pool", "Waves", [
         {"key": "clean_basket", "label": "Clean basket", "interval_days": 7, "estimated_duration_minutes": 10},
         {"key": "inspect_seals", "label": "Inspect seals", "interval_days": 180, "estimated_duration_minutes": 20},
         {"key": "service_pump", "label": "Full service", "interval_days": 365, "estimated_duration_minutes": 120},
     ], default_lifespan_years=8),
-    AssetType("at-pool-heater", "pool_heater", "Pool heater", "pool", "♨️", [
+    AssetType("at-pool-heater", "pool_heater", "Pool heater", "pool", "ThermometerSun", [
         {"key": "check_thermostat", "label": "Check thermostat", "interval_days": 30, "estimated_duration_minutes": 10},
         {"key": "annual_service", "label": "Annual service", "interval_days": 365, "estimated_duration_minutes": 90},
     ], default_lifespan_years=10),
-    AssetType("at-smoke-detector", "smoke_detector", "Smoke detector", "safety", "🔔", [
+    AssetType("at-smoke-detector", "smoke_detector", "Smoke detector", "safety", "AlarmSmoke", [
         {"key": "test", "label": "Test alarm", "interval_days": 30, "estimated_duration_minutes": 5},
         {"key": "replace_battery", "label": "Replace battery", "interval_days": 365, "estimated_duration_minutes": 10},
     ], default_lifespan_years=10),
-    AssetType("at-fire-extinguisher", "fire_extinguisher", "Fire extinguisher", "safety", "🧯", [
+    AssetType("at-fire-extinguisher", "fire_extinguisher", "Fire extinguisher", "safety", "FireExtinguisher", [
         {"key": "check_pressure", "label": "Check pressure", "interval_days": 30, "estimated_duration_minutes": 5},
         {"key": "annual_inspection", "label": "Annual inspection", "interval_days": 365, "estimated_duration_minutes": 15},
     ], default_lifespan_years=12),
-    AssetType("at-generator", "generator", "Generator", "outdoor", "⚡", [
+    AssetType("at-generator", "generator", "Generator", "outdoor", "Zap", [
         {"key": "test_run", "label": "Test run", "interval_days": 30, "estimated_duration_minutes": 15},
         {"key": "oil_change", "label": "Oil change", "interval_days": 180, "estimated_duration_minutes": 30},
         {"key": "annual_service", "label": "Annual service", "interval_days": 365, "estimated_duration_minutes": 120},
     ], default_lifespan_years=20),
-    AssetType("at-solar-panel", "solar_panel", "Solar panels", "outdoor", "☀️", [
+    AssetType("at-solar-panel", "solar_panel", "Solar panels", "outdoor", "Sun", [
         {"key": "clean_panels", "label": "Clean panels", "interval_days": 90, "estimated_duration_minutes": 60},
         {"key": "check_inverter", "label": "Check inverter", "interval_days": 30, "estimated_duration_minutes": 10},
     ], default_lifespan_years=25),
-    AssetType("at-septic-tank", "septic_tank", "Septic tank", "plumbing", "🪠", [
+    AssetType("at-septic-tank", "septic_tank", "Septic tank", "plumbing", "Biohazard", [
         {"key": "pump_tank", "label": "Pump tank", "interval_days": 1095, "estimated_duration_minutes": 120},
         {"key": "inspection", "label": "Inspection", "interval_days": 365, "estimated_duration_minutes": 30},
     ], default_lifespan_years=30),
-    AssetType("at-irrigation", "irrigation", "Irrigation system", "outdoor", "💧", [
+    AssetType("at-irrigation", "irrigation", "Irrigation system", "outdoor", "Droplets", [
         {"key": "winterize", "label": "Winterize", "interval_days": 365, "estimated_duration_minutes": 60},
         {"key": "inspect_heads", "label": "Inspect heads", "interval_days": 90, "estimated_duration_minutes": 30},
     ], default_lifespan_years=15),
-    AssetType("at-alarm-system", "alarm_system", "Alarm / security", "security", "🔒", [
+    AssetType("at-alarm-system", "alarm_system", "Alarm / security", "security", "ShieldCheck", [
         {"key": "test_sensors", "label": "Test sensors", "interval_days": 90, "estimated_duration_minutes": 30},
         {"key": "replace_batteries", "label": "Replace batteries", "interval_days": 365, "estimated_duration_minutes": 20},
     ], default_lifespan_years=10),
-    AssetType("at-vehicle", "vehicle", "Vehicle", "vehicle", "🚗", [
+    AssetType("at-vehicle", "vehicle", "Vehicle", "vehicle", "Car", [
         {"key": "oil_change", "label": "Oil change", "interval_days": 180, "estimated_duration_minutes": 30},
         {"key": "tire_rotation", "label": "Tire rotation", "interval_days": 180, "estimated_duration_minutes": 30},
         {"key": "annual_inspection", "label": "Annual inspection", "interval_days": 365, "estimated_duration_minutes": 60},

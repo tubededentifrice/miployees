@@ -19,7 +19,7 @@ rows (`workspace_id = NULL`); managers add workspace-custom types.
 | key                    | text    | unique per workspace (composite `(workspace_id, key)`) |
 | name                   | text    | "Air conditioner", "Pool pump"        |
 | category               | enum    | `climate | appliance | plumbing | pool | heating | outdoor | safety | security | vehicle | other` |
-| icon_glyph             | text?   | optional icon identifier              |
+| icon_name              | text?   | Lucide icon name, PascalCase (e.g. `Snowflake`, `Refrigerator`). NULL → generic asset glyph. See §14 "Icons". |
 | description_md         | text?   |                                       |
 | default_lifespan_years | int?    | hint for replacement planning         |
 | default_actions_json   | jsonb   | see shape below                       |

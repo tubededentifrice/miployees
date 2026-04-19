@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { Ban, Camera, Check } from "lucide-react";
 import { Chip, Loading } from "@/components/common";
 import AutoGrowTextarea from "@/components/AutoGrowTextarea";
 import ChatLog from "@/components/chat/ChatLog";
@@ -148,7 +149,11 @@ export default function TaskDetailPage() {
               onSubmit={(e) => { e.preventDefault(); complete.mutate(); }}
             >
               <button className="btn btn--moss btn--lg" type="submit">
-                {task.photo_evidence === "required" ? "📷 Complete with photo" : "Mark done"}
+                {task.photo_evidence === "required" ? (
+                  <><Camera size={18} strokeWidth={1.8} aria-hidden="true" /> Complete with photo</>
+                ) : (
+                  "Mark done"
+                )}
               </button>
             </form>
             <button
@@ -174,9 +179,9 @@ export default function TaskDetailPage() {
             <Chip tone="rust">{cap(task.priority)}</Chip>
           )}
           {task.photo_evidence === "required" ? (
-            <Chip tone="sand">📷 required</Chip>
+            <Chip tone="sand"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> required</Chip>
           ) : task.photo_evidence === "optional" ? (
-            <Chip tone="ghost" size="sm">📷 optional</Chip>
+            <Chip tone="ghost" size="sm"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> optional</Chip>
           ) : null}
           <Chip tone={STATUS_TONE[task.status]} size="sm">
             {task.status.replace("_", " ")}
@@ -198,7 +203,7 @@ export default function TaskDetailPage() {
                 className={"checklist__item" + (item.done ? " checklist__item--done" : "")}
                 onClick={() => checkMutation.mutate(idx)}
               >
-                <span className="checklist__box" aria-hidden="true">✓</span>
+                <span className="checklist__box" aria-hidden="true"><Check size={12} strokeWidth={2.5} /></span>
                 <span className="checklist__label">{item.label}</span>
               </li>
             ))}
@@ -236,7 +241,7 @@ export default function TaskDetailPage() {
           </h3>
           <label className="evidence__picker">
             <input type="file" accept="image/*" capture="environment" />
-            <span className="evidence__picker-cta">📷 Take photo</span>
+            <span className="evidence__picker-cta"><Camera size={16} strokeWidth={1.8} aria-hidden="true" /> Take photo</span>
             <span className="evidence__picker-sub">or choose from your gallery</span>
           </label>
           <p className="evidence__note-hint muted">
@@ -270,8 +275,16 @@ export default function TaskDetailPage() {
         />
       </section>
 
-      {task.status === "completed" && <div className="done-banner">✓ Completed</div>}
-      {task.status === "skipped" && <div className="done-banner done-banner--rust">⊘ Skipped</div>}
+      {task.status === "completed" && (
+        <div className="done-banner">
+          <Check size={16} strokeWidth={2.25} aria-hidden="true" /> Completed
+        </div>
+      )}
+      {task.status === "skipped" && (
+        <div className="done-banner done-banner--rust">
+          <Ban size={16} strokeWidth={2.25} aria-hidden="true" /> Skipped
+        </div>
+      )}
 
       <dialog id="skip-modal" className="modal" ref={modalRef}>
         <form

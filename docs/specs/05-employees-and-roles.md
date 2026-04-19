@@ -69,7 +69,7 @@ in v1 because `role` is now ambiguous with `grant_role` from §02.)
 | name              | text     | display: "Maid", "Cuisinier/ère"        |
 | description_md    | text     |                                         |
 | default_settings_json | jsonb | optional recommended worker-setting defaults to copy into a new `work_engagement.settings_override_json` when the first role in this workspace is assigned. These are provisioning hints, not a second runtime resolver. |
-| icon_glyph        | text     | tailwind heroicon name, for the UI      |
+| icon_name         | text     | Lucide icon name, PascalCase (e.g. `BrushCleaning`, `Wrench`). See §14 "Icons". |
 | deleted_at        | tstz?    |                                         |
 
 ### Starter roles

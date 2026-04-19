@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { Camera } from "lucide-react";
 import { Loading } from "@/components/common";
 import PageHeader from "@/components/PageHeader";
 import AutoGrowTextarea from "@/components/AutoGrowTextarea";
@@ -168,7 +169,9 @@ export default function IssueNewPage() {
         </label>
 
         <div className="form__row">
-          <button type="button" className="btn btn--ghost">📷 Attach photo</button>
+          <button type="button" className="btn btn--ghost">
+            <Camera size={16} strokeWidth={1.8} aria-hidden="true" /> Attach photo
+          </button>
           <button type="submit" className="btn btn--moss">Send to manager</button>
         </div>
       </form>

@@ -5,6 +5,7 @@ import { useDecideMutation } from "@/lib/useDecideMutation";
 import { formatMoney } from "@/lib/money";
 import { fmtDateTime } from "@/lib/dates";
 import DeskPage from "@/components/DeskPage";
+import { Camera } from "lucide-react";
 import { Avatar, Chip, Loading, StatCard } from "@/components/common";
 import { EXPENSE_STATUS_TONE } from "@/lib/tones";
 import type { Employee, Expense, ExpenseStatus } from "@/types/api";
@@ -125,7 +126,9 @@ export default function ExpensesApprovalsPage() {
                     </div>
                   </div>
                   <div className="expense-approval__receipt">
-                    <div className="receipt-thumb" aria-hidden="true">📷</div>
+                    <div className="receipt-thumb" aria-hidden="true">
+                      <Camera size={20} strokeWidth={1.6} />
+                    </div>
                     <span className="muted mono">receipt · 1 page</span>
                   </div>
                 </div>

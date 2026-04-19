@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { Chip, Loading } from "@/components/common";
+import { AssetIcon } from "@/components/AssetIcon";
 import type { AssetDetailPayload } from "@/types/api";
 
 function fmtDate(iso: string | null): string {
@@ -46,7 +47,12 @@ export default function EmployeeAssetPage() {
           <div className="task-detail__chips">
             <Chip tone={property.color} size="sm">{property.name}</Chip>
             {asset.area && <Chip tone="ghost" size="sm">{asset.area}</Chip>}
-            {asset_type && <Chip tone="ghost" size="sm">{asset_type.icon} {asset_type.name}</Chip>}
+            {asset_type && (
+              <Chip tone="ghost" size="sm">
+                <AssetIcon name={asset_type.icon_name} size={14} />
+                {asset_type.name}
+              </Chip>
+            )}
           </div>
           <h1 className="task-detail__title">{asset.name}</h1>
           <p className="task-detail__meta">

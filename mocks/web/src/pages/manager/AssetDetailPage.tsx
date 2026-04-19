@@ -5,6 +5,7 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading } from "@/components/common";
+import { AssetIcon } from "@/components/AssetIcon";
 import type {
   AssetAction,
   AssetCondition,
@@ -169,7 +170,16 @@ function OverviewTab({
         <header className="panel__head"><h2>Details</h2></header>
         <dl className="asset-kv">
           <dt>Type</dt>
-          <dd>{assetType ? assetType.icon + " " + assetType.name : "\u2014"}</dd>
+          <dd>
+            {assetType ? (
+              <span className="asset-type-line">
+                <AssetIcon name={assetType.icon_name} />
+                {assetType.name}
+              </span>
+            ) : (
+              "\u2014"
+            )}
+          </dd>
           <dt>Make</dt>
           <dd>{asset.make ?? "\u2014"}</dd>
           <dt>Model</dt>

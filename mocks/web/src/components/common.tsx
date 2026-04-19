@@ -211,7 +211,7 @@ export function EmptyState({
   children,
   variant,
 }: {
-  glyph?: string;
+  glyph?: ReactNode;
   children: ReactNode;
   variant?: "celebrate" | "quiet";
 }) {

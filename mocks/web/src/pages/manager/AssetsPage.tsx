@@ -5,6 +5,7 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
 import { Chip, FilterChipGroup, Loading } from "@/components/common";
+import { AssetIcon } from "@/components/AssetIcon";
 import { ASSET_CONDITION_TONE, ASSET_STATUS_TONE } from "@/lib/tones";
 import type { Asset, AssetType, Property } from "@/types/api";
 
@@ -83,8 +84,9 @@ export default function AssetsPage() {
               return (
                 <tr key={a.id}>
                   <td>
-                    <Link to={"/asset/" + a.id} className="link">
-                      {at ? at.icon + " " : ""}<strong>{a.name}</strong>
+                    <Link to={"/asset/" + a.id} className="link asset-name-link">
+                      {at && <AssetIcon name={at.icon_name} />}
+                      <strong>{a.name}</strong>
                     </Link>
                     {makeLine && <span className="table__sub">{makeLine}</span>}
                   </td>

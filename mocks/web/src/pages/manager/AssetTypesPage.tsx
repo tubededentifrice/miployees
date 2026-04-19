@@ -3,6 +3,7 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading } from "@/components/common";
+import { AssetIcon } from "@/components/AssetIcon";
 import type { AssetType } from "@/types/api";
 
 export default function AssetTypesPage() {
@@ -26,7 +27,10 @@ export default function AssetTypesPage() {
         {typesQ.data.map((at) => (
           <article key={at.id} className="tpl-card">
             <header className="tpl-card__head">
-              <h3 className="tpl-card__title">{at.icon} {at.name}</h3>
+              <h3 className="tpl-card__title">
+                <AssetIcon name={at.icon_name} size={18} />
+                {at.name}
+              </h3>
               <div className="tpl-card__chips">
                 <Chip tone="ghost" size="sm">{at.category}</Chip>
               </div>
