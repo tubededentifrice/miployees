@@ -14,7 +14,29 @@ Run after completing any non-trivial coding or spec-editing task. The
 goal is to catch bugs, missing edge cases, and unintended consequences
 before the work ships.
 
-## Workflow
+## Two modes
+
+The skill runs in one of two modes:
+
+- **Interactive mode (default)** — full workflow below: enter plan mode,
+  report findings, ask the user how to triage, then fix.
+- **Autofix mode** — used when the self-review is itself a Beads task
+  paired with a main task (see
+  [`.claude/skills/beads/SKILL.md`](../beads/SKILL.md)). Skip plan mode,
+  skip user triage, fix every BUGS / MISSING / RISKY finding directly,
+  commit, push, close the task.
+
+Use autofix mode when any of these is true:
+
+- The user invokes the skill as `/selfreview autofix` (or `--autofix`).
+- The current claimed Beads task has the `selfreview` label.
+- The user explicitly asks for a hands-off self-review.
+
+**Autofix mode never creates another self-review task or Beads issue for
+its own findings** — that would infinite-loop against the beads skill
+pairing rule.
+
+## Workflow (interactive mode)
 
 ```
 1. GATHER CHANGES (git diff, git log)
@@ -29,6 +51,22 @@ before the work ships.
    ↓
 6. FIX (exit plan mode, apply fixes)
 ```
+
+## Workflow (autofix mode)
+
+```
+1. GATHER CHANGES (git diff, git log, bd show <main-task>)
+   ↓
+3. DEEP REVIEW (systematic, adversarial) — same as interactive
+   ↓
+4. WRITE FINDINGS (for the commit message / bd comment)
+   ↓
+6. FIX every BUGS / MISSING / RISKY finding
+   ↓
+7. RUN QUALITY GATES, COMMIT, PUSH, CLOSE THE BEADS TASK
+```
+
+Phases 2 and 5 are skipped entirely in autofix mode.
 
 ## Phase 1: Gather changes
 
@@ -204,7 +242,12 @@ If the user wants details, walk through findings one at a time.
 
 ## Phase 6: Fix
 
-Exit plan mode and apply the agreed fixes. Afterwards:
+**Interactive mode**: exit plan mode and apply the agreed fixes.
+
+**Autofix mode**: apply fixes for every BUGS, MISSING, and RISKY
+finding. Skip NITPICKS unless trivially safe. Do not ask the user.
+
+Afterwards (both modes):
 
 ```bash
 ./scripts/lint.sh
@@ -213,7 +256,23 @@ Exit plan mode and apply the agreed fixes. Afterwards:
 pytest <affected paths> -x -q
 ```
 
-When green, present the fixes for the user to review.
+When green, present the fixes for the user to review (interactive) or
+commit, push, and close the Beads task (autofix).
+
+## Phase 7: Close the Beads task (autofix mode only)
+
+```bash
+bd comments add <selfreview-task-id> "Autofix self-review complete.
+Summary of findings: <inline summary>.
+Commits: <sha1>, <sha2>."
+bd close <selfreview-task-id> --reason "Autofix self-review complete"
+bd sync
+git push
+```
+
+Do NOT create a new self-review task for the fixes you just applied —
+that would infinite-loop with the beads skill pairing rule. The autofix
+commit ships as-is.
 
 ## Tips
 

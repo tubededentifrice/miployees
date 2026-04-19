@@ -17,6 +17,8 @@ asynchronously.
 4. **Create tasks** with full context, clear acceptance criteria, and a
    test plan.
 5. **Link dependencies** when tasks must be completed in order.
+6. **Pair every non-selfreview task with a `/selfreview` autofix task**
+   (see below).
 
 ## Task quality standards
 
@@ -137,6 +139,70 @@ Depends on: bd-abc123 (column must exist)
 bd dep bd-abc123 --blocks bd-def456
 ```
 
+## Pair each task with a self-review task (MANDATORY)
+
+Every task you create (except self-review tasks themselves) gets a
+second, dependent task that runs `/selfreview` in **autofix mode** once
+the main task closes. This catches bugs, missing pieces, and unintended
+consequences before they ship — without waiting for a human to notice.
+
+### Rules
+
+- **Label the self-review task `selfreview`.** The beads skill uses this
+  label to detect self-review tasks and skip pairing them with yet
+  another self-review. Pairing a self-review with a self-review would
+  infinite-loop.
+- **Make the self-review depend on the main task**
+  (`bd dep <main> --blocks <selfreview>`) so `bd ready` only surfaces it
+  once the main work is complete.
+- **Title**: `Self-review: <main task title>`.
+- **Body**: instruct the implementer to run `/selfreview` in autofix
+  mode — skip plan mode, skip user triage, apply fixes directly, commit,
+  close the task. See [`.claude/skills/selfreview/SKILL.md`](../selfreview/SKILL.md)
+  for the autofix flow.
+
+### Never pair a self-review with a self-review
+
+Before creating a pair, check that the main task does NOT already have
+the `selfreview` label. If it does, skip pairing. This is the only
+guard against an infinite loop.
+
+### Template
+
+```bash
+# After creating the main task (bd-001):
+bd create "Self-review: <main task title>" --body "$(cat <<'EOF'
+## Problem / goal
+Auto-fixing self-review of the changes made under bd-001. Catch bugs,
+missing pieces, and unintended consequences before they ship.
+
+**Depends on: bd-001** (main task must be complete first).
+
+## How to run
+Run `/selfreview` in **autofix mode** against the commit(s) from bd-001.
+
+- Do NOT enter plan mode.
+- Do NOT ask the user to triage findings — you are the triage.
+- Apply fixes for every BUGS, MISSING, and RISKY finding.
+- Skip NITPICKS unless trivially safe.
+- Run the quality gates after fixing.
+- Commit the fixes, push, and close this task.
+
+See [`.claude/skills/selfreview/SKILL.md`](../selfreview/SKILL.md).
+
+## Acceptance criteria
+- [ ] All BUGS from the self-review fixed
+- [ ] All MISSING pieces completed
+- [ ] All RISKY items mitigated (or justified in a task comment)
+- [ ] Linter, formatter, type checker, affected tests all pass
+- [ ] Fixes committed and pushed
+EOF
+)" --labels "selfreview" --type chore --silent
+# → bd-002
+
+bd dep bd-001 --blocks bd-002
+```
+
 ## Workflow
 
 ```
@@ -145,7 +211,7 @@ USER prompt
     ▼
 Analyse the request
     │
-    ├─► Simple single task → 1 task
+    ├─► Simple single task → 1 task (+ self-review pair)
     │
     └─► Complex / multi-part → break down
             │
@@ -160,6 +226,11 @@ Analyse the request
             │
             ▼
         Link with bd dep
+            │
+            ▼
+        For EACH main task, create a paired self-review task
+        (labelled `selfreview`, blocked by the main task).
+        Never pair a self-review with another self-review.
             │
             ▼
         Summarise: table of ids, dependency graph, execution order
@@ -415,6 +486,18 @@ bd sync   # export to jsonl for git
 
 ❌ Acceptance criteria only
 ✅ Both automated commands and manual steps.
+
+### Missing self-review pair
+
+❌ Creating a main task without a paired self-review task.
+✅ Every non-`selfreview`-labelled task gets a paired self-review task,
+   dependent on the main task, that runs `/selfreview` in autofix mode.
+
+### Pairing a self-review with another self-review
+
+❌ Creating a self-review task for a task that already has the
+   `selfreview` label — infinite loop.
+✅ Check labels before pairing; skip if `selfreview` is already there.
 
 ## Output format
 
