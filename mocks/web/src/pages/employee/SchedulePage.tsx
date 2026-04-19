@@ -102,6 +102,17 @@ const PALETTE = [
   "rgba(146, 94, 57, 0.22)",  // earth
 ];
 
+// Solid companions to PALETTE — full-opacity property colours used
+// for left ticks, chip outlines, and the task-to-rota hairline.
+// Indices MUST stay in lockstep with PALETTE.
+const PALETTE_SOLID = [
+  "#3F6E3B", // moss
+  "#D9A441", // sand
+  "#B04A27", // rust
+  "#4F7CA8", // sky
+  "#925E39", // earth
+];
+
 function startOfIsoWeek(d: Date): Date {
   const out = new Date(d);
   out.setHours(0, 0, 0, 0);
@@ -277,47 +288,569 @@ function propertyColor(pid: string, data: MySchedulePayload): string {
   return PALETTE[idx % PALETTE.length] ?? PALETTE[0]!;
 }
 
+function propertySolid(pid: string, data: MySchedulePayload): string {
+  const idx = data.properties.findIndex((p) => p.id === pid);
+  if (idx < 0) return "var(--moss)";
+  return PALETTE_SOLID[idx % PALETTE_SOLID.length] ?? PALETTE_SOLID[0]!;
+}
+
 function propertyName(pid: string, data: MySchedulePayload): string {
   return data.properties.find((p) => p.id === pid)?.name ?? "—";
 }
 
-function hoursLabel(cell: DayCell): { text: string; tone: "moss" | "sand" | "rust" | "ghost" } {
+type AvailTone = "moss" | "sand" | "rust" | "ghost";
+
+// Single source of truth for the day's availability — used by the rail
+// (bar + sideways text), the pending-day classname, and the empty-day
+// fallback word. Returns a range in minutes-since-midnight so the rail
+// bar can span exactly the shift's duration, in addition to the text
+// and tone. `null` on the range means "no bar" (e.g. no shift set).
+interface Availability {
+  text: string;
+  tone: AvailTone;
+  startMin: number | null;
+  endMin: number | null;
+}
+
+function availability(cell: DayCell): Availability {
   const approvedLeave = cell.leaves.find((lv) => lv.approved_at !== null);
-  if (approvedLeave) return { text: approvedLeave.category.toUpperCase(), tone: "rust" };
+  if (approvedLeave) {
+    return {
+      text: approvedLeave.category.toUpperCase(),
+      tone: "rust",
+      startMin: 0,
+      endMin: 24 * 60,
+    };
+  }
   const pendingLeave = cell.leaves.find((lv) => lv.approved_at === null);
-  if (pendingLeave) return { text: `${pendingLeave.category.toUpperCase()} · pending`, tone: "sand" };
+  if (pendingLeave) {
+    return {
+      text: `${pendingLeave.category.toUpperCase()} · pending`,
+      tone: "sand",
+      startMin: 0,
+      endMin: 24 * 60,
+    };
+  }
 
   const approvedOverride = cell.overrides.find((o) => o.approved_at !== null);
   if (approvedOverride) {
-    if (!approvedOverride.available) return { text: "Off (override)", tone: "rust" };
+    if (!approvedOverride.available) {
+      return { text: "OFF", tone: "rust", startMin: null, endMin: null };
+    }
     const s = approvedOverride.starts_local ?? cell.pattern?.starts_local ?? null;
     const e = approvedOverride.ends_local ?? cell.pattern?.ends_local ?? null;
-    if (s && e) return { text: `${s}–${e}`, tone: "moss" };
+    if (s && e) {
+      return {
+        text: `${s}–${e}`,
+        tone: "moss",
+        startMin: hhmmToMin(s),
+        endMin: hhmmToMin(e),
+      };
+    }
   }
   const pendingOverride = cell.overrides.find((o) => o.approved_at === null);
   if (pendingOverride) {
-    if (!pendingOverride.available) return { text: "Off · pending", tone: "sand" };
+    if (!pendingOverride.available) {
+      return { text: "OFF · pending", tone: "sand", startMin: null, endMin: null };
+    }
     const s = pendingOverride.starts_local ?? cell.pattern?.starts_local ?? null;
     const e = pendingOverride.ends_local ?? cell.pattern?.ends_local ?? null;
-    if (s && e) return { text: `${s}–${e} · pending`, tone: "sand" };
+    if (s && e) {
+      return {
+        text: `${s}–${e} · pending`,
+        tone: "sand",
+        startMin: hhmmToMin(s),
+        endMin: hhmmToMin(e),
+      };
+    }
   }
-  if (cell.pattern && cell.pattern.starts_local && cell.pattern.ends_local) {
-    return { text: `${cell.pattern.starts_local}–${cell.pattern.ends_local}`, tone: "moss" };
+  if (cell.pattern?.starts_local && cell.pattern.ends_local) {
+    return {
+      text: `${cell.pattern.starts_local}–${cell.pattern.ends_local}`,
+      tone: "moss",
+      startMin: hhmmToMin(cell.pattern.starts_local),
+      endMin: hhmmToMin(cell.pattern.ends_local),
+    };
   }
-  return { text: "Off", tone: "ghost" };
+  return { text: "Off", tone: "ghost", startMin: null, endMin: null };
 }
 
-function TaskChip({ task, data }: { task: SchedulerTaskView; data: MySchedulePayload }) {
+// Legacy-compat wrapper retained for call sites (DayCellView empty-day
+// word, DayDrawer header) that only need the string/tone pair.
+function hoursLabel(cell: DayCell): { text: string; tone: AvailTone } {
+  const a = availability(cell);
+  return { text: a.text, tone: a.tone };
+}
+
+// ── Timeline geometry ─────────────────────────────────────────────────
+//
+// The day-cell timeline is a vertical axis of minutes. Each loaded ISO
+// week computes one `TimeWindow` covering every event in the week, so
+// all seven desktop cells share the same top/bottom hours and render at
+// identical height (required for a clean 7-col grid). Phone cards in
+// the scrolling agenda use the same per-week window so switching weeks
+// feels continuous.
+//
+// Scale is bounded: ~0.5 px/min with a 220–480px total clamp. Clamping
+// keeps a quiet day readable without a 9h shift ballooning the agenda;
+// an unusually long event simply compresses the scale rather than
+// inflating the whole week.
+
+interface TimeWindow {
+  startMin: number;
+  endMin: number;
+  pxPerMin: number;
+  totalPx: number;
+}
+
+function hhmmToMin(s: string): number {
+  const [h, m] = s.split(":").map((n) => Number(n));
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+function isoToMinOfDay(iso: string): number {
+  const d = new Date(iso);
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+// Minimum pixel height a task chip needs to stay readable (time +
+// one-line title). Used both to clamp chip size at render time and
+// to compute how dense a booking's tasks are when picking the row
+// scale.
+const TASK_CHIP_MIN_PX = 20;
+const TASK_CHIP_GAP_PX = 2;
+
+function computeWindow(cells: DayCell[]): TimeWindow {
+  let minStart = Infinity;
+  let maxEnd = -Infinity;
+  for (const cell of cells) {
+    for (const r of cell.rota) {
+      minStart = Math.min(minStart, hhmmToMin(r.slot.starts_local));
+      maxEnd = Math.max(maxEnd, hhmmToMin(r.slot.ends_local));
+    }
+    for (const b of cell.bookings) {
+      minStart = Math.min(minStart, isoToMinOfDay(b.scheduled_start));
+      maxEnd = Math.max(maxEnd, isoToMinOfDay(b.scheduled_end));
+    }
+    for (const t of cell.tasks) {
+      const s = isoToMinOfDay(t.scheduled_start);
+      const e = s + (t.estimated_minutes || 30);
+      minStart = Math.min(minStart, s);
+      maxEnd = Math.max(maxEnd, e);
+    }
+    // Weekly pattern keeps an "Off" or 09–17 week visually anchored
+    // even when nothing concrete is scheduled.
+    if (cell.pattern?.starts_local && cell.pattern.ends_local) {
+      minStart = Math.min(minStart, hhmmToMin(cell.pattern.starts_local));
+      maxEnd = Math.max(maxEnd, hhmmToMin(cell.pattern.ends_local));
+    }
+  }
+  if (!isFinite(minStart) || !isFinite(maxEnd)) {
+    // Fully empty week — default to a 9–17 office window so the hour
+    // grid still renders as a "paused" planner page.
+    minStart = 9 * 60;
+    maxEnd = 17 * 60;
+  }
+  minStart = Math.max(0, Math.floor((minStart - 30) / 60) * 60);
+  maxEnd = Math.min(24 * 60, Math.ceil((maxEnd + 30) / 60) * 60);
+  if (maxEnd - minStart < 360) {
+    // Ensure at least 6 hours visible so a single 9am task doesn't
+    // render a pillbox-height timeline. Expand symmetrically around
+    // the midpoint, clamped to [00:00, 24:00].
+    const mid = (minStart + maxEnd) / 2;
+    minStart = Math.max(0, Math.floor((mid - 180) / 60) * 60);
+    maxEnd = Math.min(24 * 60, Math.ceil((mid + 180) / 60) * 60);
+  }
+  const totalMin = maxEnd - minStart;
+
+  // Baseline scale keeps quiet weeks compact. When any booking in
+  // the loaded set holds more tasks than its clock-time range can
+  // show at that scale, bump the scale for the WHOLE row so all
+  // seven cards keep sharing one top/bottom hour grid — the user's
+  // "all cards in a week expand by the same so hours stay aligned"
+  // rule.
+  let pxPerMin = 0.5;
+  for (const cell of cells) {
+    for (const b of cell.bookings) {
+      const bStart = isoToMinOfDay(b.scheduled_start);
+      const bEnd = isoToMinOfDay(b.scheduled_end);
+      const tasksInBooking = cell.tasks.filter((t) => {
+        if (t.property_id !== b.property_id) return false;
+        const tStart = isoToMinOfDay(t.scheduled_start);
+        return tStart >= bStart && tStart < bEnd;
+      });
+      if (tasksInBooking.length === 0) continue;
+      // Sort by start so we evaluate worst-case crowding at the
+      // shortest gap between consecutive tasks (or between the first
+      // task and the booking's start).
+      const starts = tasksInBooking
+        .map((t) => isoToMinOfDay(t.scheduled_start))
+        .sort((a, b2) => a - b2);
+      let minGap = Math.max(1, starts[0]! - bStart);
+      for (let i = 1; i < starts.length; i++) {
+        minGap = Math.min(minGap, starts[i]! - starts[i - 1]!);
+      }
+      // We need at least TASK_CHIP_MIN_PX of vertical space per gap
+      // so consecutive task chips don't stack on top of each other.
+      const needPerGap = (TASK_CHIP_MIN_PX + TASK_CHIP_GAP_PX) / minGap;
+      if (needPerGap > pxPerMin) pxPerMin = needPerGap;
+    }
+  }
+  // Cap the scale — past 1.5 px/min the canvas becomes taller than
+  // the viewport and loses its "glanceable week" quality. An
+  // unusually crowded booking (tasks every few minutes) would then
+  // overflow its lane, but the drawer remains the canonical read
+  // surface for those.
+  pxPerMin = Math.min(pxPerMin, 1.5);
+
+  const totalPx = totalMin * pxPerMin;
+  return { startMin: minStart, endMin: maxEnd, pxPerMin, totalPx };
+}
+
+function posTop(minutes: number, window: TimeWindow): number {
+  return (minutes - window.startMin) * window.pxPerMin;
+}
+
+function taskTime(task: SchedulerTaskView): string {
+  return timeOfTask(task.scheduled_start);
+}
+
+// Bookings are the authoritative render of a rota slot for a date
+// (§09 "Nightly materialiser"). A rota slot only renders when no
+// booking covers its time range — so the worker sees tomorrow's shift
+// even before the nightly job has cut the booking.
+function uncoveredRotaFor(cell: DayCell): { slot: ScheduleRulesetSlot; property_id: string }[] {
+  return cell.rota.filter((r) => {
+    const rs = hhmmToMin(r.slot.starts_local);
+    const re = hhmmToMin(r.slot.ends_local);
+    return !cell.bookings.some((b) => {
+      const bs = isoToMinOfDay(b.scheduled_start);
+      const be = isoToMinOfDay(b.scheduled_end);
+      return Math.max(bs, rs) < Math.min(be, re);
+    });
+  });
+}
+
+// A "container" is any block that can host tasks on the timeline — a
+// materialised booking or an uncovered rota slot. Tasks bind to a
+// container by property_id + time overlap (per §06: a task belongs to
+// the shift it runs during, not to a standalone clock time).
+interface TaskContainer {
+  id: string;
+  kind: "booking" | "rota";
+  startMin: number;
+  endMin: number;
+  propertyId: string;
+  tint: string;
+  tintSolid: string;
+}
+
+function buildTaskLanes(
+  cell: DayCell,
+  data: MySchedulePayload,
+): {
+  containers: TaskContainer[];
+  byContainer: Map<string, SchedulerTaskView[]>;
+  orphans: SchedulerTaskView[];
+} {
+  const containers: TaskContainer[] = [
+    ...cell.bookings.map<TaskContainer>((b) => ({
+      id: `book-${b.id}`,
+      kind: "booking",
+      startMin: isoToMinOfDay(b.scheduled_start),
+      endMin: isoToMinOfDay(b.scheduled_end),
+      propertyId: b.property_id,
+      tint: propertyColor(b.property_id, data),
+      tintSolid: propertySolid(b.property_id, data),
+    })),
+    ...uncoveredRotaFor(cell).map<TaskContainer>((r) => ({
+      id: `rota-${r.slot.id}`,
+      kind: "rota",
+      startMin: hhmmToMin(r.slot.starts_local),
+      endMin: hhmmToMin(r.slot.ends_local),
+      propertyId: r.property_id,
+      tint: propertyColor(r.property_id, data),
+      tintSolid: propertySolid(r.property_id, data),
+    })),
+  ];
+
+  const byContainer = new Map<string, SchedulerTaskView[]>();
+  const orphans: SchedulerTaskView[] = [];
+
+  for (const t of cell.tasks) {
+    const tStart = isoToMinOfDay(t.scheduled_start);
+    const match = containers.find(
+      (c) =>
+        c.propertyId === t.property_id
+        && tStart >= c.startMin
+        && tStart < c.endMin,
+    );
+    if (match) {
+      const arr = byContainer.get(match.id) ?? [];
+      arr.push(t);
+      byContainer.set(match.id, arr);
+    } else {
+      orphans.push(t);
+    }
+  }
+  for (const arr of byContainer.values()) {
+    arr.sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start));
+  }
+  orphans.sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start));
+  return { containers, byContainer, orphans };
+}
+
+function DayTimelineBlocks({
+  cell,
+  data,
+  window: w,
+}: {
+  cell: DayCell;
+  data: MySchedulePayload;
+  window: TimeWindow;
+}) {
+  // Tasks live INSIDE their parent container now — a task chip is a
+  // child of its booking/rota block, positioned by clock time relative
+  // to the block's start. Orphan tasks (no parent) render as
+  // standalone chips pinned to their own clock time.
+  const { containers, byContainer, orphans } = buildTaskLanes(cell, data);
+  const bookingsById = new Map(cell.bookings.map((b) => [b.id, b]));
+  const uncoveredById = new Map(
+    uncoveredRotaFor(cell).map((r) => [r.slot.id, r]),
+  );
+  let flatIdx = 0;
+
+  return (
+    <>
+      {containers.map((c, idx) => {
+        const top = posTop(c.startMin, w);
+        const height = Math.max(22, (c.endMin - c.startMin) * w.pxPerMin);
+        const tasks = byContainer.get(c.id) ?? [];
+        const isBooking = c.kind === "booking";
+        const booking = isBooking
+          ? bookingsById.get(c.id.slice("book-".length))
+          : undefined;
+        const rota = !isBooking
+          ? uncoveredById.get(c.id.slice("rota-".length))
+          : undefined;
+        const pending = booking ? bookingNeedsAttention(booking) : false;
+        const cancelled = booking
+          ? booking.status === "cancelled_by_client"
+            || booking.status === "cancelled_by_agency"
+            || booking.status === "no_show_worker"
+          : false;
+        const mods =
+          (isBooking ? " schedule-day__block--booking" : " schedule-day__block--rota")
+          + (pending ? " schedule-day__block--pending" : "")
+          + (cancelled ? " schedule-day__block--cancelled" : "");
+        const timeText = booking
+          ? `${fmtHM(booking.scheduled_start)}–${fmtHM(booking.scheduled_end)}`
+          : rota
+            ? `${rota.slot.starts_local}–${rota.slot.ends_local}`
+            : "";
+        return (
+          <div
+            key={c.id}
+            className={`schedule-day__block${mods}`}
+            style={{
+              top: `${top}px`,
+              height: `${height}px`,
+              "--rota-tint": c.tint,
+              "--rota-tint-solid": c.tintSolid,
+              "--rota-idx": idx,
+            } as React.CSSProperties}
+            data-property={c.propertyId}
+          >
+            {/* Property name floats above the block — its baseline sits
+                on the block's top border, like a ledger tab glued to a
+                file folder. The block is the content; the label names
+                the "where" in italic serif. */}
+            <span className="schedule-day__block-prop">
+              {propertyName(c.propertyId, data)}
+            </span>
+            {height >= 44 && timeText && (
+              <span className="schedule-day__block-time">{timeText}</span>
+            )}
+            {pending && (
+              <span className="schedule-day__block-flag">pending</span>
+            )}
+            {cancelled && booking && (
+              <span className="schedule-day__block-flag schedule-day__block-flag--rust">
+                {booking.status === "no_show_worker" ? "no-show" : "cancelled"}
+              </span>
+            )}
+            {tasks.map((t) => {
+              // Position the chip at its scheduled clock time,
+              // measured from the block's top. computeWindow has
+              // picked a row-wide pxPerMin that gives enough
+              // vertical space between consecutive tasks inside any
+              // booking, so chips inside one block rarely collide.
+              const tStart = isoToMinOfDay(t.scheduled_start);
+              const chipTop = Math.max(0, (tStart - c.startMin) * w.pxPerMin);
+              return (
+                <TaskChipLink
+                  key={t.id}
+                  task={t}
+                  tint={c.tint}
+                  solid={c.tintSolid}
+                  idx={flatIdx++}
+                  top={chipTop}
+                />
+              );
+            })}
+          </div>
+        );
+      })}
+      {orphans.map((t) => {
+        // Orphan tasks have no parent block to live inside — pin them
+        // directly to the rota column at their own clock time. The
+        // --orphan modifier gives them the rust dashed outline so they
+        // read as "outside the shift" without needing a lane.
+        const tStart = isoToMinOfDay(t.scheduled_start);
+        const tint = propertyColor(t.property_id, data);
+        const solid = propertySolid(t.property_id, data);
+        return (
+          <TaskChipLink
+            key={`orphan-${t.id}`}
+            task={t}
+            tint={tint}
+            solid={solid}
+            idx={flatIdx++}
+            top={posTop(tStart, w)}
+            orphan
+            standalone
+          />
+        );
+      })}
+    </>
+  );
+}
+
+function TaskChipLink({
+  task,
+  tint,
+  solid,
+  idx,
+  orphan,
+  standalone,
+  top,
+}: {
+  task: SchedulerTaskView;
+  tint: string;
+  solid: string;
+  idx: number;
+  orphan?: boolean;
+  /** Orphan tasks live in the rota column (no parent block). The
+   *  --standalone modifier keeps them visually distinct and sets the
+   *  background against the column, not the tinted block. */
+  standalone?: boolean;
+  /** Pixels down from the positioned ancestor (block for in-block
+   *  chips, rota column for orphans). Computed from the task's
+   *  clock-time start so the chip sits on the right hour. */
+  top: number;
+}) {
   return (
     <Link
       to={"/task/" + task.id}
-      className={"schedule-task schedule-task--" + task.status}
+      className={
+        `schedule-day__chip schedule-day__chip--${task.status}`
+        + (orphan ? " schedule-day__chip--orphan" : "")
+        + (standalone ? " schedule-day__chip--standalone" : "")
+      }
+      style={{
+        top: `${top}px`,
+        "--rota-tint": tint,
+        "--rota-tint-solid": solid,
+        "--rota-idx": idx,
+      } as React.CSSProperties}
       data-property={task.property_id}
-      style={{ "--rota-tint": propertyColor(task.property_id, data) } as React.CSSProperties}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
     >
-      <span className="schedule-task__time">{timeOfTask(task.scheduled_start)}</span>
-      <span className="schedule-task__title">{task.title}</span>
+      <span className="schedule-day__chip-time">{taskTime(task)}</span>
+      <span className="schedule-day__chip-title">{task.title}</span>
     </Link>
+  );
+}
+
+function DayTimeline({
+  cell,
+  data,
+  window: w,
+}: {
+  cell: DayCell;
+  data: MySchedulePayload;
+  window: TimeWindow;
+}) {
+  const avail = availability(cell);
+  // Hour labels at EVERY hour in the visible window. Major hours
+  // (every 3rd) render slightly bolder so the eye still gets anchor
+  // points, while minor hours are rendered faint — together they
+  // make rota blocks read as sitting on a specific clock time rather
+  // than floating between unlabeled gridlines.
+  const labels: { hour: number; top: number; major: boolean }[] = [];
+  for (let h = Math.ceil(w.startMin / 60); h * 60 <= w.endMin; h++) {
+    labels.push({ hour: h, top: posTop(h * 60, w), major: h % 3 === 0 });
+  }
+  // Rail duration bar. Clamp to the visible window — a 24h leave bar
+  // fills the canvas; a 08:00–17:00 shift bar spans just that slice.
+  // Null range (worker "Off") renders no bar, only the sideways text.
+  const railBar = (() => {
+    if (avail.startMin == null || avail.endMin == null) return null;
+    const barStart = Math.max(avail.startMin, w.startMin);
+    const barEnd = Math.min(avail.endMin, w.endMin);
+    if (barEnd <= barStart) return null;
+    return {
+      top: posTop(barStart, w),
+      height: (barEnd - barStart) * w.pxPerMin,
+    };
+  })();
+  return (
+    <div
+      className="schedule-day__timeline"
+      style={{
+        height: `${w.totalPx}px`,
+        "--px-per-hour": `${w.pxPerMin * 60}px`,
+      } as React.CSSProperties}
+    >
+      <div
+        className={`schedule-day__rail schedule-day__rail--${avail.tone}`}
+        aria-label={`Availability ${avail.text}`}
+      >
+        {railBar && (
+          <div
+            className={`schedule-day__rail-bar schedule-day__rail-bar--${avail.tone}`}
+            style={{ top: `${railBar.top}px`, height: `${railBar.height}px` }}
+            aria-hidden
+          />
+        )}
+        <span
+          className="schedule-day__rail-text"
+          style={railBar ? {
+            top: `${railBar.top + railBar.height / 2}px`,
+          } : undefined}
+        >
+          {avail.text}
+        </span>
+      </div>
+      <div className="schedule-day__hours" aria-hidden>
+        {labels.map((l) => (
+          <span
+            key={l.hour}
+            className={
+              "schedule-day__hour"
+              + (l.major ? " schedule-day__hour--major" : "")
+            }
+            style={{ top: `${l.top}px` }}
+          >
+            {String(l.hour).padStart(2, "0")}
+          </span>
+        ))}
+      </div>
+      <div className="schedule-day__rota-col">
+        <DayTimelineBlocks cell={cell} data={data} window={w} />
+      </div>
+    </div>
   );
 }
 
@@ -326,16 +859,34 @@ function DayCellView({
   data,
   onOpen,
   today,
+  window: w,
+  collapseEmpty,
 }: {
   cell: DayCell;
   data: MySchedulePayload;
   onOpen: (iso: string) => void;
   today: Date;
+  window: TimeWindow;
+  /** Phone-only: when a day has no rota, bookings, or tasks, drop the
+   *  timeline and render a short "rest" card. Desktop cells keep the
+   *  full-height skeleton so the 7-col week row stays uniform. */
+  collapseEmpty: boolean;
 }) {
-  const { text: hours, tone } = hoursLabel(cell);
   const isToday = sameDate(cell.date, today);
   const label = dayLabel(cell.date);
   const pendingBookings = cell.bookings.filter(bookingNeedsAttention);
+  const empty =
+    cell.tasks.length === 0
+    && cell.rota.length === 0
+    && cell.bookings.length === 0;
+  const { text: emptyAvail, tone: emptyTone } = hoursLabel(cell);
+  const emptyLabel = (() => {
+    if (!empty) return null;
+    if (cell.leaves.some((lv) => lv.approved_at !== null)) return "leave";
+    if (cell.overrides.some((o) => o.available === false && o.approved_at !== null)) return "off";
+    if (emptyTone === "ghost") return "rest";
+    return "quiet";
+  })();
   return (
     <div
       role="button"
@@ -350,14 +901,13 @@ function DayCellView({
       className={
         "schedule-day" +
         (isToday ? " schedule-day--today" : "") +
-        (cell.tasks.length === 0 && cell.rota.length === 0 && cell.bookings.length === 0
-          ? " schedule-day--quiet"
-          : "") +
+        (empty ? " schedule-day--empty" : "") +
+        (empty && collapseEmpty ? " schedule-day--collapsed" : "") +
         (pendingBookings.length > 0 ? " schedule-day--pending" : "")
       }
       onClick={(e) => {
-        // Nested <Link>s for individual tasks keep their own
-        // navigation; clicking the cell background opens the drawer.
+        // Nested <Link>s (task chips) keep their own navigation; a
+        // click on the card background opens the drawer.
         if ((e.target as HTMLElement).closest("a")) return;
         onOpen(cell.iso);
       }}
@@ -368,51 +918,33 @@ function DayCellView({
         }
       }}
     >
-      <div className="schedule-day__date">
+      <div className="schedule-day__header">
         <span className="schedule-day__wd">{label.weekday}</span>
         <span className="schedule-day__num">{label.day}</span>
         <span className="schedule-day__mo">{label.month}</span>
       </div>
-      <div className="schedule-day__body">
-        <div className="schedule-day__hours-row">
-          <span className={"schedule-day__hours schedule-day__hours--" + tone}>{hours}</span>
-          {pendingBookings.length > 0 && (
-            <span
-              className="schedule-day__pending-dot"
-              aria-label={`${pendingBookings.length} booking${pendingBookings.length === 1 ? "" : "s"} ${pendingBookings.length === 1 ? "needs" : "need"} attention`}
-              title={`${pendingBookings.length} booking${pendingBookings.length === 1 ? "" : "s"} ${pendingBookings.length === 1 ? "needs" : "need"} attention`}
-            >
-              {pendingBookings.length}
-            </span>
+      {empty && collapseEmpty ? (
+        <div className="schedule-day__empty">
+          <span className={`schedule-day__empty-label schedule-day__empty-label--${emptyTone}`}>
+            {emptyLabel}
+          </span>
+          {emptyAvail !== "Off" && (
+            <span className="schedule-day__empty-hours">{emptyAvail}</span>
           )}
         </div>
-        {cell.rota.length > 0 && (
-          <div className="schedule-day__rota">
-            {cell.rota.map((r) => (
-              <span
-                key={r.slot.id}
-                className="schedule-day__slot"
-                style={{ "--rota-tint": propertyColor(r.property_id, data) } as React.CSSProperties}
-              >
-                <span className="schedule-day__slot-time">
-                  {r.slot.starts_local}–{r.slot.ends_local}
-                </span>
-                <span className="schedule-day__slot-prop">{propertyName(r.property_id, data)}</span>
-              </span>
-            ))}
-          </div>
-        )}
-        {cell.tasks.length > 0 && (
-          <div className="schedule-day__tasks">
-            {cell.tasks.slice(0, 3).map((t) => (
-              <TaskChip key={t.id} task={t} data={data} />
-            ))}
-            {cell.tasks.length > 3 && (
-              <span className="schedule-day__more">+{cell.tasks.length - 3} more</span>
-            )}
-          </div>
-        )}
-      </div>
+      ) : (
+        <DayTimeline cell={cell} data={data} window={w} />
+      )}
+      {empty && !collapseEmpty && (
+        // Desktop-only: word centered over the ghost hour grid so the
+        // cell reads as a paused page, not a broken render.
+        <span
+          className={`schedule-day__rest-word schedule-day__rest-word--${emptyTone}`}
+          aria-hidden
+        >
+          {emptyLabel}
+        </span>
+      )}
     </div>
   );
 }
@@ -465,12 +997,20 @@ function DayDrawer({
     },
   });
 
-  if (!cell) return null;
+  // A per-day window for the drawer's hero timeline — it sits in its
+  // own context so it doesn't need to share scale with the agenda
+  // behind it. The empty-day fallback keeps the section silent if the
+  // worker opened a rest day (the hero would otherwise look broken).
+  const drawerWindow = useMemo(() => (cell ? computeWindow([cell]) : null), [cell]);
+
+  if (!cell || !drawerWindow) return null;
   const heading = cell.date.toLocaleDateString("en-GB", {
     weekday: "long", day: "numeric", month: "long", year: "numeric",
   });
   const { text: hours, tone } = hoursLabel(cell);
   const canPropose = cell.bookings.length === 0 && cell.rota.length === 0;
+  const drawerHasTimeline =
+    cell.rota.length > 0 || cell.bookings.length > 0 || cell.tasks.length > 0;
   return (
     <>
       <div className="day-drawer__scrim" onClick={onClose} aria-hidden />
@@ -485,6 +1025,11 @@ function DayDrawer({
           </button>
         </header>
         <div className="day-drawer__body">
+          {drawerHasTimeline && (
+            <section className="day-drawer__section day-drawer__section--hero">
+              <DayTimeline cell={cell} data={data} window={drawerWindow} />
+            </section>
+          )}
           <section className="day-drawer__section">
             <h3 className="day-drawer__section-title">Availability</h3>
             <p className={"day-drawer__hours day-drawer__hours--" + tone}>{hours}</p>
@@ -1283,16 +1828,12 @@ function InfiniteScheduleBody({
                   hideLabel={gi > 0}
                 />
               ) : (
-                group.cells.map((cell) => (
-                  <div key={cell.iso} role="listitem">
-                    <DayCellView
-                      cell={cell}
-                      data={data}
-                      onOpen={setSelectedIso}
-                      today={today}
-                    />
-                  </div>
-                ))
+                <SchedulePhoneWeek
+                  group={group}
+                  data={data}
+                  today={today}
+                  onOpen={setSelectedIso}
+                />
               )}
             </Fragment>
           ))}
@@ -1458,6 +1999,40 @@ function ScheduleDialogsFooter({
   );
 }
 
+function SchedulePhoneWeek({
+  group,
+  data,
+  today,
+  onOpen,
+}: {
+  group: { weekStartIso: string; weekLabel: string; cells: DayCell[] };
+  data: MySchedulePayload;
+  today: Date;
+  onOpen: (iso: string) => void;
+}) {
+  // Phone uses the same per-week window so vertically scrolling from
+  // Monday to Sunday feels like one continuous planner page. Empty
+  // days collapse to a short "rest" card — they don't claim the
+  // shared row height because the cards are stacked, not gridded.
+  const win = useMemo(() => computeWindow(group.cells), [group.cells]);
+  return (
+    <>
+      {group.cells.map((cell) => (
+        <div key={cell.iso} role="listitem">
+          <DayCellView
+            cell={cell}
+            data={data}
+            onOpen={onOpen}
+            today={today}
+            window={win}
+            collapseEmpty={true}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
+
 function ScheduleWeekGrid({
   cells,
   data,
@@ -1477,16 +2052,21 @@ function ScheduleWeekGrid({
    *  renders the label for orientation on first paint. */
   hideLabel?: boolean;
 }) {
+  // One window per week so every cell in the row shares top/bottom
+  // hours and identical height (see §14 "Shared time window per ISO
+  // week"). Next week recomputes — a quiet week doesn't inherit an
+  // on-call week's stretched scale.
+  const win = useMemo(() => computeWindow(cells), [cells]);
   return (
     <div className="schedule-week" role="grid" aria-label={label}>
       {!hideLabel && <div className="schedule-week__label">{label}</div>}
       <div className="schedule-week__header-row">
         {cells.map((c) => {
-          const { weekday, day } = dayLabel(c.date);
+          const { day } = dayLabel(c.date);
           return (
             <div key={c.iso} className="schedule-week__header">
               <strong>{WEEKDAYS[isoWeekday(c.date)]!.short}</strong>
-              <span>{weekday === "Mon" ? day : day}</span>
+              <span>{day}</span>
             </div>
           );
         })}
@@ -1499,6 +2079,8 @@ function ScheduleWeekGrid({
             data={data}
             onOpen={onOpen}
             today={today}
+            window={win}
+            collapseEmpty={false}
           />
         ))}
       </div>

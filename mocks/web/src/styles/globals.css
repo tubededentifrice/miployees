@@ -4419,62 +4419,115 @@
   gap: 6px;
 }
 
+/* ── Day card (shared phone + desktop timeline) ─────────────────────── */
+
 .schedule-day {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 8px;
   text-align: left;
-  padding: 12px;
+  padding: 10px 10px 12px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 10px;
   cursor: pointer;
-  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  transition: border-color 140ms ease, box-shadow 160ms ease, transform 140ms ease;
   font-family: inherit;
   color: inherit;
   min-width: 0;
+  overflow: hidden;
+}
+/* Paper grain overlay — reuses the existing --paper aesthetic so the
+   new cells share the planner feel with /me, /today, etc. 2% opacity
+   on light, lifted to 5% in dark mode so it stays perceptible against
+   the warmer card background. */
+.schedule-day::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.55'/></svg>");
+  opacity: 0.04;
+  mix-blend-mode: multiply;
+  z-index: 0;
+}
+[data-theme="dark"] .schedule-day::before {
+  opacity: 0.08;
+  mix-blend-mode: screen;
 }
 .schedule-day:hover {
   border-color: var(--line-strong);
   box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
-.schedule-day:active { transform: scale(0.995); }
+.schedule-day:active { transform: translateY(0); }
+.schedule-day:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
+}
 .schedule-day--today {
-  border-color: var(--moss);
-  box-shadow: inset 3px 0 0 var(--moss);
+  border-color: color-mix(in oklab, var(--moss) 40%, var(--line));
 }
-.schedule-day--quiet { opacity: 0.75; }
+.schedule-day--today::after {
+  /* "Today" is a bookmark tassel, not a heavy border. A 2px moss
+     thread runs the full height along the rail's left edge — it sits
+     outside the rail's own column so "today" reads as a physical
+     ribbon rather than a CSS border. */
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(
+    to bottom,
+    var(--moss) 0%,
+    var(--moss) 60%,
+    color-mix(in oklab, var(--moss) 40%, transparent) 100%
+  );
+  z-index: 2;
+}
 .schedule-day--pending {
-  border-color: var(--sand);
-  box-shadow: inset 3px 0 0 var(--sand);
+  /* Sand hairline across the top edge signals "this day carries
+     something needing attention" to a worker scrolling past. No
+     inset-shadow tricks — just a 2px bar, same vocabulary as the
+     pending-banner at the top of the agenda. */
+  box-shadow: inset 0 2px 0 var(--sand);
 }
-.schedule-day--pending.schedule-day--today {
-  /* Today + pending: rail is sand (attention wins), top stripe stays
-     moss. Keeps both signals without fighting. */
-  box-shadow: inset 3px 0 0 var(--sand), inset 0 3px 0 var(--moss);
+.schedule-day--empty {
+  background: color-mix(in oklab, var(--paper-2) 50%, var(--card));
+}
+.schedule-day--collapsed {
+  padding-bottom: 14px;
 }
 
-.schedule-day__date {
+/* ── Header (date row) ─────────────────────────────────────────────── */
+
+.schedule-day__header {
+  position: relative;
+  z-index: 1;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-width: 52px;
-  padding: 4px 6px;
-  border-right: 1px solid var(--line);
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
 }
 .schedule-day__wd {
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   color: var(--ink-3);
+  font-family: "Inter Tight", sans-serif;
+  font-weight: 500;
 }
 .schedule-day__num {
   font-family: "Fraunces", ui-serif, serif;
-  font-size: 1.6rem;
+  font-size: 18px;
   font-weight: 600;
   line-height: 1;
   color: var(--ink);
+  font-feature-settings: "tnum" 1;
 }
 .schedule-day--today .schedule-day__num { color: var(--moss); }
 .schedule-day__mo {
@@ -4482,146 +4535,537 @@
   color: var(--ink-3);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-top: 2px;
+  margin-left: auto;
 }
 
-.schedule-day__body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
+/* ── Timeline canvas (rail · hours · rota · tasks) ─────────────────── */
+
+.schedule-day__timeline {
+  --px-per-hour: 30px;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 28px 18px 1fr;
+  gap: 0;
+  min-height: 220px;
+}
+.schedule-day__rail {
+  position: relative;
+  border-right: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+/* The duration bar — a tinted segment positioned at the shift's
+   time range. It's the ledger tab you glance at to know "this is an
+   eight-hour moss day" vs "a split sand on-call night" without
+   reading the times. Drops below the hour-grid lines by sitting as
+   an absolutely-positioned child of the rail (not the canvas). */
+.schedule-day__rail-bar {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+.schedule-day__rail-bar--moss {
+  background: color-mix(in oklab, var(--moss) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--moss) 30%, transparent);
+}
+.schedule-day__rail-bar--sand {
+  background: color-mix(in oklab, var(--sand) 28%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--sand) 40%, transparent);
+  /* Diagonal hatching on the pending bar so "pending" reads as a
+     pattern before the eye even reaches the text. */
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 4px,
+    color-mix(in oklab, var(--sand) 30%, transparent) 4px 5px
+  );
+}
+.schedule-day__rail-bar--rust {
+  background: color-mix(in oklab, var(--rust) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--rust) 28%, transparent);
+}
+.schedule-day__rail-bar--ghost {
+  background: color-mix(in oklab, var(--paper-2) 70%, transparent);
 }
 
-.schedule-day__hours-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+.schedule-day__rail-text {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  writing-mode: sideways-lr;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+  text-align: center;
+  max-height: calc(100% - 8px);
+  overflow: hidden;
 }
+/* When the rail has NO bar (Off / no shift), the text still needs a
+   sensible anchor — center it vertically on the rail. React passes
+   no `top` in that case, so this fallback applies. */
+.schedule-day__rail:not(:has(.schedule-day__rail-bar)) .schedule-day__rail-text {
+  top: 50%;
+}
+.schedule-day__rail--moss  .schedule-day__rail-text { color: var(--moss); }
+.schedule-day__rail--sand  .schedule-day__rail-text { color: #8A6A22; }
+[data-theme="dark"] .schedule-day__rail--sand .schedule-day__rail-text { color: var(--sand); }
+.schedule-day__rail--rust  .schedule-day__rail-text { color: var(--rust); }
+.schedule-day__rail--ghost .schedule-day__rail-text { color: var(--ink-4); }
+
+/* Ghost hour-grid rendered as ruled paper. A repeating gradient
+   paints one line per hour; --px-per-hour is set inline from the
+   week's computed scale. Half-hour lines are intentionally omitted
+   — the paper-planner density, not a spreadsheet. */
+.schedule-day__rota-col {
+  position: relative;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 55%, transparent) calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 55%, transparent) var(--px-per-hour)
+  );
+  overflow: visible;
+  padding: 0 4px 0 6px;
+}
+.schedule-day--empty .schedule-day__rota-col {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 30%, transparent) calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 30%, transparent) var(--px-per-hour)
+  );
+}
+
+/* Hour labels in the 18px track between rail and rota column. Only
+   every third hour so the eye gets an anchor at a glance without a
+   spreadsheet of numbers. Absolutely positioned so they line up
+   pixel-exact with the gridlines drawn on the adjacent columns. */
 .schedule-day__hours {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  align-self: flex-start;
-  padding: 2px 8px;
-  border-radius: 4px;
+  position: relative;
 }
-.schedule-day__hours--moss  { background: var(--moss-soft); color: var(--moss); }
-.schedule-day__hours--sand  { background: var(--sand-soft); color: #8A6A22; }
-[data-theme="dark"] .schedule-day__hours--sand { color: var(--sand); }
-.schedule-day__hours--rust  { background: var(--rust-soft); color: var(--rust); }
-.schedule-day__hours--ghost { background: var(--paper-2);   color: var(--ink-3); }
-
-/* Count chip shown on a cell when one or more of its bookings need
-   attention (pending_approval or pending_amend). Same sand palette as
-   the cell's left rail so the two read as one signal. */
-.schedule-day__pending-dot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: var(--sand-soft);
-  color: #8A6A22;
+.schedule-day__hour {
+  position: absolute;
+  right: 3px;
   font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 11px;
+  font-size: 8.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-4);
+  transform: translateY(-5px);
+  font-feature-settings: "tnum" 1;
+  opacity: 0.55;
+}
+/* Every 3rd hour reads bolder so the eye gets anchor points without
+   losing the minor-hour grid precision. */
+.schedule-day__hour--major {
+  opacity: 1;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  color: var(--ink-3);
 }
-[data-theme="dark"] .schedule-day__pending-dot { color: var(--sand); }
 
-.schedule-day__rota {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+/* ── Rota / booking blocks ─────────────────────────────────────────── */
+
+.schedule-day__block {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  padding: 4px 6px 4px 8px;
+  background: color-mix(in oklab, var(--rota-tint, var(--moss-soft)) 32%, var(--card));
+  border-radius: 4px;
+  /* `overflow: visible` lets the property-name label float ABOVE the
+     block (baseline touching the top border), and lets a task chip
+     scheduled at 11:55 inside an 08:00–12:00 booking extend past the
+     block's nominal bottom without being clipped. */
+  overflow: visible;
+  box-shadow:
+    inset 3px 0 0 var(--rota-tint-solid, var(--moss)),
+    inset 0 1px 0 rgba(255, 253, 249, 0.6),
+    0 1px 2px rgba(31, 26, 20, 0.05);
+  cursor: pointer;
+  animation: ink-land 240ms cubic-bezier(.2, .6, .2, 1) both;
+  animation-delay: calc(var(--rota-idx, 0) * 30ms);
 }
-.schedule-day__slot {
-  display: flex;
-  flex-wrap: wrap;
-  column-gap: 6px;
-  row-gap: 1px;
-  padding: 2px 6px;
-  background: var(--rota-tint, var(--moss-soft));
-  border-left: 3px solid var(--moss);
-  border-radius: 3px;
-  font-size: 11px;
+[data-theme="dark"] .schedule-day__block {
+  background: color-mix(in oklab, var(--rota-tint, var(--moss-soft)) 48%, var(--card));
+  box-shadow:
+    inset 3px 0 0 var(--rota-tint-solid, var(--moss)),
+    inset 0 1px 0 rgba(244, 239, 230, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.35);
+}
+/* Derive the solid property colour from the rgba tint variable so the
+   left tick renders at full saturation while the background stays
+   washed. Falls back to moss if the variable is untouched. */
+.schedule-day__block[data-property] {
+  --rota-tint-solid: var(--rota-tint, var(--moss));
+}
+/* Property name floats above the block as an italic-serif tab; its
+   baseline lands right on the block's top border so the label reads
+   as "this file-folder contains…" rather than as a separate row of
+   text. `bottom: 100%` places the text box's bottom edge at the
+   block's top; pulling it down by the font's descender (~0.18em)
+   lands the baseline exactly on the border. */
+.schedule-day__block-prop {
+  position: absolute;
+  left: 8px;
+  right: 6px;
+  bottom: 100%;
+  margin-bottom: -0.18em;
+  font-family: "Fraunces", ui-serif, serif;
+  font-style: italic;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
   color: var(--ink);
-  min-width: 0;
-}
-.schedule-day__slot-time {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-weight: 600;
-}
-.schedule-day__slot-prop {
-  color: var(--ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+  pointer-events: none;
 }
-
-.schedule-day__tasks {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+.schedule-day__block-time {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  font-feature-settings: "tnum" 1;
+  display: block;
+  padding: 2px 0 0;
 }
-.schedule-day__more {
-  font-size: 11px;
+.schedule-day__block-flag {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #8A6A22;
+  background: var(--sand-soft);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+[data-theme="dark"] .schedule-day__block-flag { color: var(--sand); }
+.schedule-day__block-flag--rust {
+  color: var(--rust);
+  background: var(--rust-soft);
+}
+.schedule-day__block--pending {
+  /* Pending keeps position and size but communicates "awaiting a
+     decision": dashed left tick, background wash halved. */
+  background: color-mix(in oklab, var(--rota-tint, var(--sand-soft)) 18%, var(--card));
+  box-shadow:
+    inset 3px 0 0 var(--sand),
+    inset 0 1px 0 rgba(255, 253, 249, 0.6),
+    0 1px 2px rgba(31, 26, 20, 0.04);
+  background-image:
+    repeating-linear-gradient(
+      135deg,
+      transparent 0 6px,
+      color-mix(in oklab, var(--sand) 20%, transparent) 6px 7px
+    );
+}
+.schedule-day__block--cancelled {
+  opacity: 0.55;
+  background: color-mix(in oklab, var(--paper-2) 70%, var(--card));
+  box-shadow: inset 3px 0 0 var(--rust);
+}
+.schedule-day__block--cancelled .schedule-day__block-prop {
+  text-decoration: line-through;
   color: var(--ink-3);
-  font-style: italic;
+}
+.schedule-day__block--rota {
+  /* Un-materialised rota (no booking yet) — same colour, but a
+     hairline dashed outline hints "forecast, not confirmed". */
+  outline: 1px dashed color-mix(in oklab, var(--rota-tint-solid, var(--moss)) 50%, transparent);
+  outline-offset: -3px;
 }
 
-/* Desktop week grid — each day cell packed into one column. */
-.schedule-week__row .schedule-day {
-  flex-direction: column;
-  padding: 10px;
-  gap: 8px;
-  min-height: 160px;
-}
-.schedule-week__row .schedule-day__date {
-  flex-direction: row;
-  gap: 6px;
-  border-right: none;
-  border-bottom: 1px solid var(--line);
-  padding: 0 0 6px 0;
-  justify-content: flex-start;
-  min-width: 0;
-}
-.schedule-week__row .schedule-day__num { font-size: 1.2rem; }
-.schedule-week__row .schedule-day__mo { display: none; }
+/* ── Task chips (luggage-tag pills pinned inside their parent block) ── */
+/*
+   Tasks live INSIDE their parent booking/rota block — each chip is a
+   child of the block, absolutely positioned at its scheduled clock
+   time relative to the block's top. Orphan tasks (no parent) render
+   directly in the rota column with a --standalone modifier so they
+   still read as "outside the shift".
+*/
 
-.schedule-task {
+.schedule-day__chip {
+  position: absolute;
+  /* Chips nest inside the block: pad away from the 3px left tick, so
+     the chip's left edge doesn't sit on top of the block's property
+     stripe. Right padding gives the block's right edge a little
+     breathing room so shadows read cleanly. */
+  left: 12px;
+  right: 4px;
+  min-height: 20px;
+  padding: 3px 8px 3px 12px;
+  background: color-mix(in oklab, var(--rota-tint, var(--sand-soft)) 42%, var(--card-raised));
+  border-radius: 999px 4px 4px 999px;
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 6px;
-  padding: 3px 6px;
-  font-size: 11px;
-  background: var(--card-raised);
-  border-left: 3px solid var(--sand);
-  border-radius: 3px;
+  align-items: center;
   color: var(--ink);
   text-decoration: none;
-  box-shadow: inset 0 0 0 1px var(--paper-3);
+  font-size: 11.5px;
+  line-height: 1.2;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rota-tint-solid, var(--sand)) 35%, transparent),
+    0 1px 1px rgba(31, 26, 20, 0.04);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+  animation: ink-land 240ms cubic-bezier(.2, .6, .2, 1) both;
+  animation-delay: calc(100ms + var(--rota-idx, 0) * 30ms);
+  overflow: hidden;
 }
-.schedule-task:hover { border-left-color: var(--moss); }
-.schedule-task__time {
+/* Orphan tasks live in the rota column itself, not in a block.
+   Dashed rust outline signals "outside the shift"; span the whole
+   column width and keep a paper-white background so they don't blend
+   into a neighbouring block's tint. */
+.schedule-day__chip--standalone {
+  left: 2px;
+  right: 2px;
+  background: var(--card-raised);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rust) 40%, transparent),
+    0 1px 1px rgba(31, 26, 20, 0.04);
+  border-style: dashed;
+}
+[data-theme="dark"] .schedule-day__chip {
+  background: color-mix(in oklab, var(--rota-tint, var(--sand-soft)) 55%, var(--card-raised));
+}
+.schedule-day__chip[data-property] {
+  --rota-tint-solid: var(--rota-tint, var(--sand));
+}
+.schedule-day__chip::before {
+  /* Punched hole on the left edge — mirrors a paper tag's lace-hole. */
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--card);
+  transform: translateY(-50%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rota-tint-solid, var(--ink-3)) 40%, transparent);
+}
+.schedule-day__chip:hover {
+  transform: translateX(1px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rota-tint-solid, var(--sand)) 60%, transparent),
+    0 2px 6px rgba(31, 26, 20, 0.08);
+}
+.schedule-day__chip-time {
   font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
   font-weight: 600;
+  letter-spacing: 0.03em;
   color: var(--ink-2);
+  font-feature-settings: "tnum" 1;
 }
-.schedule-task__title {
+.schedule-day__chip-title {
+  font-family: "Inter Tight", sans-serif;
+  font-weight: 500;
+  font-size: 11.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.schedule-task--completed { opacity: 0.55; text-decoration: line-through; }
-.schedule-task--cancelled,
-.schedule-task--skipped   { opacity: 0.4; }
-.schedule-task--overdue   { border-left-color: var(--rust); }
+.schedule-day__chip--completed {
+  opacity: 0.55;
+}
+.schedule-day__chip--completed .schedule-day__chip-title {
+  text-decoration: line-through;
+}
+.schedule-day__chip--cancelled,
+.schedule-day__chip--skipped {
+  opacity: 0.4;
+}
+.schedule-day__chip--overdue {
+  box-shadow: inset 0 0 0 1px var(--rust);
+}
+
+/* ── Empty day states ──────────────────────────────────────────────── */
+
+/* Phone: collapse the card to a short "rest / off / leave" note so
+   the stacked agenda isn't padded with blank timeline skeletons. */
+.schedule-day__empty {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 4px 2px;
+}
+.schedule-day__empty-label {
+  font-family: "Fraunces", ui-serif, serif;
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-4);
+}
+.schedule-day__empty-label--moss { color: var(--moss); }
+.schedule-day__empty-label--sand { color: #8A6A22; }
+[data-theme="dark"] .schedule-day__empty-label--sand { color: var(--sand); }
+.schedule-day__empty-label--rust { color: var(--rust); }
+.schedule-day__empty-hours {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Desktop: the cell keeps its full-height timeline skeleton (hour
+   grid at 35% opacity) so the week row stays uniform. A single
+   Fraunces italic word floats centered over the skeleton — "rest" /
+   "off" / "leave" / "holiday" — as a quiet page anchor. */
+.schedule-day__rest-word {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translate(-50%, -50%);
+  font-family: "Fraunces", ui-serif, serif;
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-4);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  z-index: 1;
+}
+.schedule-day__rest-word--moss { color: color-mix(in oklab, var(--moss) 60%, var(--ink-4)); }
+.schedule-day__rest-word--sand { color: #8A6A22; }
+[data-theme="dark"] .schedule-day__rest-word--sand { color: var(--sand); }
+.schedule-day__rest-word--rust { color: color-mix(in oklab, var(--rust) 65%, var(--ink-4)); }
+
+/* ── Desktop week-grid adjustments ─────────────────────────────────── */
+/*
+   7 columns at typical desktop widths (sidebar + chat open) leave
+   ~80–110px per cell. Tasks live inside their parent block; chips
+   are smaller, single-line, showing time + a truncated title.
+*/
+
+.schedule-week__row .schedule-day {
+  padding: 8px 8px 10px;
+}
+.schedule-week__row .schedule-day__timeline {
+  grid-template-columns: 20px 12px 1fr;
+}
+.schedule-week__row .schedule-day__header {
+  padding-bottom: 4px;
+}
+.schedule-week__row .schedule-day__wd { display: none; }
+.schedule-week__row .schedule-day__num { font-size: 16px; }
+.schedule-week__row .schedule-day__mo { display: none; }
+
+.schedule-week__row .schedule-day__rota-col {
+  padding: 0 2px 0 2px;
+}
+
+.schedule-week__row .schedule-day__block {
+  left: 0;
+  right: 0;
+  padding: 3px 4px 3px 6px;
+}
+.schedule-week__row .schedule-day__block-prop {
+  left: 6px;
+  right: 4px;
+  font-size: 10px;
+  line-height: 1;
+  /* Narrow cells rarely fit a full property name above the block —
+     truncate with ellipsis on a single line. The drawer shows the
+     full name. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: -0.16em;
+}
+/* No in-block time on desktop — the rail already shows the day's
+   hours and the block's vertical position encodes when. */
+.schedule-week__row .schedule-day__block-time { display: none; }
+.schedule-week__row .schedule-day__block-flag {
+  /* Compact pending badge: a 6px sand dot in the top-right corner.
+     Text would wrap per-character in the narrow cell; the shape alone
+     plus the cell's top sand rule carry the signal. */
+  font-size: 0;
+  letter-spacing: 0;
+  text-indent: -9999px;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--sand);
+  box-shadow: 0 0 0 2px var(--card);
+}
+.schedule-week__row .schedule-day__block-flag--rust {
+  background: var(--rust);
+}
+
+/* Chips inside blocks on desktop: smaller, tighter, keep the left
+   tick-inset so the block's property stripe still reads. */
+.schedule-week__row .schedule-day__chip {
+  left: 8px;
+  right: 2px;
+  min-height: 16px;
+  padding: 1px 5px 1px 10px;
+  border-radius: 9px 3px 3px 9px;
+  gap: 4px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.schedule-week__row .schedule-day__chip--standalone {
+  left: 1px;
+  right: 1px;
+}
+.schedule-week__row .schedule-day__chip-time {
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  font-weight: 600;
+}
+.schedule-week__row .schedule-day__chip-title {
+  font-size: 9.5px;
+  line-height: 1.1;
+  color: var(--ink-2);
+}
+.schedule-week__row .schedule-day__chip::before {
+  left: 2px;
+  width: 4px;
+  height: 4px;
+}
+.schedule-week__row .schedule-day__chip:hover {
+  transform: translateX(1px);
+}
+
+/* ── Day drawer hero: reuse the timeline full-width ────────────────── */
+
+.day-drawer__section--hero {
+  padding-top: 0;
+}
+.day-drawer__section--hero .schedule-day__timeline {
+  grid-template-columns: 32px 22px 1fr;
+  min-height: 260px;
+}
+
+/* ── Shared motion ─────────────────────────────────────────────────── */
+
+@keyframes ink-land {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .schedule-day__block,
+  .schedule-day__chip {
+    animation: none;
+  }
+}
 
 .schedule__legend {
   display: flex;

@@ -256,15 +256,95 @@ button is strictly worse than infinite scroll for the surface a
 worker checks twenty times a day.
 
 The *rendering* of each loaded week differs by width. Phone stacks
-one row per day: rota band (coloured by property per §05), the
-day's assigned tasks as compact chips (title + time, up to N
-before an "+M more" collapse), and any leave / override /
-public-holiday / closure markers. Desktop stacks one 7-column
-Mon..Sun **week grid** per ISO week (rota as the background band,
-tasks tiled inside each cell, coloured legend above the first
-week); the grids are the only thing that reflows at the breakpoint
-— the infinite-scroll plumbing, monthbar, sentinels, and Today FAB
-are shared across both variants.
+one card per day; desktop stacks one 7-column Mon..Sun **week
+grid** per ISO week, with every cell in the row sharing the same
+height by construction (see "Day timeline" below). The grids are
+the only thing that reflows at the breakpoint — the
+infinite-scroll plumbing, monthbar, sentinels, and Today FAB are
+shared across both variants.
+
+**Day timeline (phone card, desktop cell, drawer hero).** Every
+day renders as a **two-column timeline** whose vertical axis is
+clock time. Tasks live *inside* their parent booking rather than in
+a separate column, so the day reads as a stack of tinted file
+folders — each folder is a booking, each tag inside it is a task
+clocked to its own hour:
+
+1. A narrow (≈28px) **availability rail** along the left edge.
+   Reads the worker's effective hours for that day (pattern +
+   override + leave, per §06 "Availability precedence stack") set
+   sideways in `JetBrains Mono` with `writing-mode: sideways-lr`
+   so the text runs bottom-to-top like a book spine (e.g.
+   `08:00–17:00`). State colour follows availability: moss on a
+   normal working day, sand when a request is pending, rust for
+   approved leave, `--ink-4` muted for a day off. The rail also
+   carries the "today" tassel — a 2px moss thread along its left
+   edge with a rotated `Fraunces italic` "today" ribbon tucked
+   inside.
+
+2. A **rota / bookings column** rendering one block per rota slot
+   (§06) and one per `Booking` (§09). Each block is positioned
+   absolutely at its `starts_local`/`scheduled_start` and sized by
+   its duration × the row's pixels-per-hour, so simultaneous
+   entries stack side-by-side and sequential ones are separated by
+   their real idle gap. Property tint is the wash (40% of
+   `--rota-tint`, see §05 palette) with a 3px full-colour left
+   tick; no solid fills. The property name floats just *above* each
+   block in `Fraunces italic`, with its baseline touching the
+   block's top border like a ledger tab glued to a file folder —
+   the block is the content, the label names the "where". Pending
+   or declined bookings keep their position and size but flip to a
+   dashed left tick + a 9px "pending" chip in the top-right
+   corner.
+
+3. **Tasks render as luggage-tag chips inside their parent block**,
+   each chip absolutely positioned at its scheduled clock time
+   relative to the block's top. For each task, the parent block is
+   matched by `property_id` + whether `task.scheduled_start` falls
+   inside the block's time range — tasks belong to the booking
+   they run during, not to a standalone clock time (§06). Tasks
+   with no matching parent (personal tasks on a day off, or
+   off-shift tasks) render directly in the rota column as
+   standalone dashed-rust chips pinned to the task's clock time.
+
+**Availability rail duration bar.** The left rail hosts a tinted
+segment spanning the shift's time range (pattern /
+approved-override / leave), with the sideways hours text
+(`JetBrains Mono`, `writing-mode: sideways-lr`) overlaid at the
+bar's vertical centre. Moss for a normal working day, sand with
+diagonal hatching for a pending request, rust for approved
+leave. No bar when the worker is fully off — only the sideways
+text, so the rail still marks the day's state without implying a
+shift that doesn't exist. The rail is the glanceable summary of
+"when, and what kind of, today".
+
+**Shared time window per ISO week.** The top and bottom
+timestamps of the timeline are computed once per loaded ISO week
+from `min(earliest event) − 30min` floored to the hour, to
+`max(latest event) + 30min` ceiled to the hour. Every card in the
+week shares that window and a common `--px-per-hour` (≈0.5px per
+minute, clamped to a 220–480px total timeline height) so all 7
+desktop cells line up at identical top/bottom times and identical
+row height. Quiet weeks stay compact; a single on-call night
+expands the whole week's window truthfully. The phone card uses
+the same window for consistency across the scrolling agenda; an
+empty day (no rota, no bookings) drops the timeline entirely and
+collapses to a short "rest / off / leave" card.
+
+**Hour grid as ruled paper.** The timeline canvas carries a
+`repeating-linear-gradient` that draws one line per hour (tinted
+`--line` at 60%), with numeric labels at every third hour (e.g.
+06, 09, 12, 15, 18) in 9px `JetBrains Mono` between the rail and
+the rota column. Half-hour lines are not drawn — density follows
+the paper-planner aesthetic, not a spreadsheet.
+
+**Empty day.** A day with no rota, no bookings, and no tasks
+drops the timeline and renders a collapsed card: date header, a
+single `Fraunces italic --ink-4` word (rest / off / leave /
+holiday), and any pending leave / override chips. Phone cards
+shrink to fit; desktop cells still fill the week row's height so
+all 7 cards stay uniform (the hour grid renders ghostly at 35%
+opacity as a paused anchor).
 
 Scroll ownership follows the shell. Phone scrolls the document
 (`.phone__body` is `display: contents` there). Worker `/schedule`
@@ -330,16 +410,19 @@ buttons: **Request leave** and **Request override**.
   `/property/<id>/closures` respectively); they render as
   non-interactive markers.
 
-**Day-cell booking markers.** In both the phone agenda row and
-the desktop week-grid cell, a booking in `status =
-pending_approval` or carrying a non-null `pending_amend_minutes`
-flips the cell into a `--pending` visual state (sand-coloured
-edge + small dot). A cancelled or no-show booking stays visible
-with a rust-coloured edge so a worker scrolling history doesn't
-assume it happened. The cell only carries a count marker for
-pending rows (sand dot + edge); inline booking chips inside the
-cell are deferred — the drawer is the canonical read surface and
-bookings never compete with task chips for attention.
+**Day-cell booking markers.** Bookings render as first-class
+blocks in the rota / bookings column (see "Day timeline" above),
+so the cell no longer needs a separate count chip for pending
+rows. A booking in `status = pending_approval` or carrying a
+non-null `pending_amend_minutes` paints its block with a dashed
+sand left tick + a 9px `pending` label pinned to the top-right of
+the block; the day's outer cell also gains a thin sand rule along
+its top edge so a scrolling worker can spot the week at a glance.
+A cancelled or no-show booking keeps its slot with a rust left
+tick and a `--ink-4` wash, so a worker scrolling history sees
+that it didn't happen without having to open the drawer. The
+drawer remains the canonical edit surface (amend / decline /
+propose); the cell is the read surface.
 
 **Pending banner.** The page header on `/schedule` renders a
 compact banner at the top whenever the window contains any
