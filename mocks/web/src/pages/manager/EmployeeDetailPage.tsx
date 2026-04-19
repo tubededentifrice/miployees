@@ -151,12 +151,8 @@ export default function EmployeeDetailPage() {
     <DeskPage
       title={subject.name}
       sub={subject.roles.join(" · ") + " · " + subject.phone}
-      actions={
-        <>
-          <button className="btn btn--ghost">Message</button>
-          <button className="btn btn--ghost">Edit roles</button>
-        </>
-      }
+      actions={<button className="btn btn--ghost">Edit roles</button>}
+      overflow={[{ label: "Message", onSelect: () => undefined }]}
     >
       <nav className="tabs tabs--h">
         <a

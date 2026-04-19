@@ -45,18 +45,14 @@ export default function PayPage() {
   });
 
   const sub = "Periods, payslips, pay rules. Gross only — taxes and social contributions are out of scope.";
-  const actions = (
-    <>
-      <button className="btn btn--ghost">Export CSV</button>
-      <button className="btn btn--moss">Close period</button>
-    </>
-  );
+  const actions = <button className="btn btn--moss">Close period</button>;
+  const overflow = [{ label: "Export CSV", onSelect: () => undefined }];
 
   if (payQ.isPending || employeesQ.isPending) {
-    return <DeskPage title="Pay" sub={sub} actions={actions}><Loading /></DeskPage>;
+    return <DeskPage title="Pay" sub={sub} actions={actions} overflow={overflow}><Loading /></DeskPage>;
   }
   if (!payQ.data || !employeesQ.data) {
-    return <DeskPage title="Pay" sub={sub} actions={actions}>Failed to load.</DeskPage>;
+    return <DeskPage title="Pay" sub={sub} actions={actions} overflow={overflow}>Failed to load.</DeskPage>;
   }
 
   const empById = new Map(employeesQ.data.map((e) => [e.id, e]));
@@ -73,7 +69,7 @@ export default function PayPage() {
           .join(" + ");
 
   return (
-    <DeskPage title="Pay" sub={sub} actions={actions}>
+    <DeskPage title="Pay" sub={sub} actions={actions} overflow={overflow}>
       <section className="grid grid--stats">
         <StatCard label="Current period" value="April 2026" sub="open · closes 30 Apr" />
         <StatCard label="Drafts" value={current.length} sub="payslips pending issue" />

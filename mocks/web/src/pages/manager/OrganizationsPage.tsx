@@ -74,7 +74,7 @@ export default function OrganizationsPage() {
     return (
       <DeskPage
         title="Organizations"
-        actions={<button className="btn btn--moss btn--sm">+ New organization</button>}
+        actions={<button className="btn btn--moss">+ New organization</button>}
       >
         <div className="panel">
           <p className="muted">
@@ -91,7 +91,7 @@ export default function OrganizationsPage() {
     <DeskPage
       title="Organizations"
       sub="Clients we bill, suppliers that bill us, and the contracts in between."
-      actions={<button className="btn btn--moss btn--sm">+ New organization</button>}
+      actions={<button className="btn btn--moss">+ New organization</button>}
     >
       <section className="grid grid--split">
         <div className="panel">

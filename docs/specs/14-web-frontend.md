@@ -633,6 +633,77 @@ the platform must guarantee*.
   text label must sit alongside or be provided via `aria-label` on
   the parent.
 
+## Page header
+
+Every authenticated route — worker, manager, client, admin — renders
+its chrome through a single `PageHeader` component
+(`mocks/web/src/components/PageHeader.tsx`). Consistency here is what
+makes the PWA feel like a native app: the same bar, in the same
+place, with the same three slots, regardless of surface.
+
+- **Three slots.** `leading` (navigation affordance: hamburger or
+  back), `title` + `sub` (page identity), `trailing` (at most one
+  primary action; everything else collapses into a `⋯` overflow
+  menu). No floating back-links inside content panels; no ad-hoc
+  action rows above content — every top-of-page affordance goes
+  through the header.
+- **One primary action.** The trailing slot renders at most one
+  button. Secondary actions live in the overflow menu (opened by a
+  `⋯` icon-button that sits in the slot when the menu is
+  non-empty). This rule holds at every breakpoint: if a page wants
+  two buttons on desktop, it still picks one for the bar on phone
+  and the second lives in the overflow menu there.
+- **Sticky on phone, safe-area aware.** Below 720px the header is
+  `position: sticky; top: 0` with `padding-top:
+  env(safe-area-inset-top)` so a notched iOS PWA renders the bar
+  under the notch, not behind it. The bar is a compact 52px + safe
+  area; the title uses the body sans at ~1.05rem (not the large
+  Fraunces display — the compact bar has to survive portrait 360px
+  phones without truncation). On desktop (≥720px) the header stays
+  non-sticky and keeps the large Fraunces title.
+- **Back button from a route map.** `PageHeader` accepts a `back`
+  prop, but sub-pages normally omit it — the component resolves the
+  parent through `mocks/web/src/lib/routeParents.ts` (`/task/:id →
+  /today`, `/asset/:id → /assets`, `/instructions/:id →
+  /instructions`, `/property/:id → /properties`,
+  `/user/:id → /users`, `/history → /me`, etc.). The leading slot
+  renders a left-chevron icon-button (Lucide `ChevronLeft`,
+  ≥44×44 tap target per Accessibility). This retires every
+  `className="back-link"` inside page bodies; a page that wants a
+  non-default parent passes `back={{ to, label }}`.
+- **Hamburger folds into the leading slot.** The legacy
+  `.desk__mobile-bar` strip that showed a hamburger + "crew.day"
+  wordmark above the page header on manager/admin phone is gone.
+  The page header reads a `ShellNavContext`
+  (`mocks/web/src/context/ShellNavContext.tsx`) provided by
+  `ManagerLayout` / `AdminLayout`; when that context reports a
+  drawer is available, the leading slot renders a `Menu` icon-button
+  whose `onClick` toggles the drawer. Sub-pages still win the slot
+  with a back button — if both a drawer and a back-parent exist,
+  back wins (the user can open the drawer from inside a parent
+  page, which is where the hamburger is useful). On the worker
+  shell, `ShellNavContext` is absent — no hamburger ever renders.
+- **Default: every authenticated route has a title.** The title
+  is the first thing a screen reader announces on navigation and
+  doubles as the landmark for VoiceOver's rotor.
+- **Opt-out for immersive / identity-rooted surfaces.** A page may
+  skip `PageHeader` entirely when the content itself establishes
+  identity and a compact bar would only steal vertical real estate.
+  In v1 that means `/chat` (full-screen conversation; the bottom
+  tab is the navigational label) and `/me` (opens on a large avatar
+  + name card that reads as the title). Any new opt-out must be
+  justified in the PR — the default is "has a header".
+- **Overflow menu.** `overflow` is an array of `{ label, icon?,
+  onSelect, destructive? }` items. Rendered as a native `<dialog>`
+  popover on all breakpoints for keyboard + screen-reader
+  behaviour parity; closes on Escape, on outside click, and on
+  selection. Destructive items render in Rust. When the array is
+  empty the `⋯` button is not rendered.
+- **No app branding on inner pages.** The crew.day wordmark lives
+  in the left-nav / drawer and on the public shell only. A user
+  on `/today` should see "Today", not "crew.day" above it — the
+  brand is set; the page identity is what needs the eye-time.
+
 ## Accessibility (v1 gate)
 
 WCAG 2.2 AA. Concretely:
@@ -641,9 +712,10 @@ WCAG 2.2 AA. Concretely:
 - Forms labeled (no placeholder-only labels).
 - Color never the sole indicator of state (icons + text too).
 - **Click targets ≥ 44×44 CSS pixels** on every interactive element
-  (back-links, footer tabs, task-card CTAs, checklist ticks, chat
-  mic, icon-only buttons). Icons inside smaller graphic boundaries
-  get transparent padding to reach the floor.
+  (header leading/trailing icon-buttons, footer tabs, task-card
+  CTAs, checklist ticks, chat mic, icon-only buttons). Icons inside
+  smaller graphic boundaries get transparent padding to reach the
+  floor.
 - No layout jumps > 100ms; loading states use `aria-busy`.
 - Buttons are buttons; links are links; no `div` onclick.
 - Release playbook tests with NVDA / VoiceOver / TalkBack.

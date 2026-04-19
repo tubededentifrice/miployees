@@ -46,8 +46,6 @@ export default function HistoryPage() {
         sub="Everything already wrapped up — tasks, chats, expenses and leaves."
       />
       <section className="phone__section">
-        <Link to="/me" className="back-link">← Back to Me</Link>
-
         <nav className="tabs" aria-label="History tabs">
         {TABS.map(([key, label]) => (
           <Link

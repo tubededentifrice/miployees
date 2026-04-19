@@ -4,6 +4,7 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { Chip, Loading } from "@/components/common";
 import { AssetIcon } from "@/components/AssetIcon";
+import PageHeader from "@/components/PageHeader";
 import type { AssetDetailPayload } from "@/types/api";
 
 function fmtDate(iso: string | null): string {
@@ -30,10 +31,16 @@ export default function EmployeeAssetPage() {
   });
 
   if (q.isPending) return (
-    <section className="phone__section"><Loading /></section>
+    <>
+      <PageHeader title="Asset" />
+      <section className="phone__section"><Loading /></section>
+    </>
   );
   if (!q.data) return (
-    <section className="phone__section">Failed to load asset.</section>
+    <>
+      <PageHeader title="Asset" />
+      <section className="phone__section">Failed to load asset.</section>
+    </>
   );
 
   const { asset, asset_type, property, actions, documents } = q.data;
@@ -41,8 +48,8 @@ export default function EmployeeAssetPage() {
 
   return (
     <>
+      <PageHeader title={asset.name} />
       <section className="phone__section">
-        <a href="/today" className="back-link">&larr; Back</a>
         <div className="task-detail__head">
           <div className="task-detail__chips">
             <Chip tone={property.color} size="sm">{property.name}</Chip>
@@ -54,7 +61,6 @@ export default function EmployeeAssetPage() {
               </Chip>
             )}
           </div>
-          <h1 className="task-detail__title">{asset.name}</h1>
           <p className="task-detail__meta">
             {[asset.make, asset.model].filter(Boolean).join(" ") || "No make/model"}
           </p>

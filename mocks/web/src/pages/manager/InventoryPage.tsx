@@ -16,18 +16,14 @@ export default function InventoryPage() {
   });
 
   const sub = "Per-property stock. Items at or below par trigger a procurement task.";
-  const actions = (
-    <>
-      <button className="btn btn--ghost">Export CSV</button>
-      <button className="btn btn--moss">+ New item</button>
-    </>
-  );
+  const actions = <button className="btn btn--moss">+ New item</button>;
+  const overflow = [{ label: "Export CSV", onSelect: () => undefined }];
 
   if (invQ.isPending || propsQ.isPending) {
-    return <DeskPage title="Inventory" sub={sub} actions={actions}><Loading /></DeskPage>;
+    return <DeskPage title="Inventory" sub={sub} actions={actions} overflow={overflow}><Loading /></DeskPage>;
   }
   if (!invQ.data || !propsQ.data) {
-    return <DeskPage title="Inventory" sub={sub} actions={actions}>Failed to load.</DeskPage>;
+    return <DeskPage title="Inventory" sub={sub} actions={actions} overflow={overflow}>Failed to load.</DeskPage>;
   }
 
   const propsById = new Map(propsQ.data.map((p) => [p.id, p]));
@@ -43,7 +39,7 @@ export default function InventoryPage() {
   }
 
   return (
-    <DeskPage title="Inventory" sub={sub} actions={actions}>
+    <DeskPage title="Inventory" sub={sub} actions={actions} overflow={overflow}>
       {order.map((pid) => {
         const p = propsById.get(pid);
         const items = byProp.get(pid) ?? [];

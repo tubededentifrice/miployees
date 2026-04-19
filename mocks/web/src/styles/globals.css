@@ -459,37 +459,6 @@
 }
 .task-detail__sticky-form { flex: 1; }
 .task-detail__sticky .btn { width: 100%; justify-content: center; }
-.task-detail__sticky .btn--ghost { flex: 0 0 auto; width: auto; padding-inline: 20px; }
-.task-detail__sticky .back-link {
-  flex: 0 0 auto;
-  min-height: 48px;
-  padding: 10px 18px;
-  font-size: 15px;
-  margin-bottom: 0;
-}
-
-.back-link {
-  /* Styled as a ghost button so a back action looks and feels like
-     the other buttons on the page (≥ 44px target, visible outline). */
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-height: 44px; padding: 8px 16px;
-  border: 1px solid var(--line-strong); border-radius: 999px;
-  background: transparent; color: var(--ink-2);
-  font-family: "Inter Tight", sans-serif; font-size: 14px; font-weight: 500;
-  line-height: 1.3;
-  text-decoration: none;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-  margin-bottom: 16px;
-}
-.back-link:hover {
-  background: var(--paper-2);
-  color: var(--ink);
-  border-color: var(--ink-3);
-}
-.back-link:active { transform: scale(0.98); }
-.back-link:focus-visible {
-  outline: 2px solid var(--moss); outline-offset: 2px;
-}
 .done-banner {
   width: 100%; padding: 14px; background: var(--moss-soft);
   color: var(--moss); border-radius: 10px; text-align: center; font-weight: 600;
@@ -1154,12 +1123,52 @@
   padding: 0 44px 80px;
   height: 100%; min-height: 0; overflow-y: auto;
 }
+/* §14 "Page header" — three slots: leading (back or hamburger), heading
+   (title + optional sub), trailing (one primary action + overflow).
+   On desktop the large Fraunces title sits flush left; the slots are
+   present in the DOM but `:empty { display: none }` so the heading
+   pins to the left edge when no back button or action exists. Phone
+   overrides below turn this into a sticky, compact, safe-area bar. */
 .page-topbar {
-  display: flex; justify-content: space-between; align-items: flex-start;
-  gap: 20px; margin-bottom: 26px;
+  display: flex; align-items: flex-start; gap: 16px;
+  margin-bottom: 26px;
   padding-top: 36px; padding-bottom: 10px;
 }
-.page-topbar__actions { display: flex; gap: 8px; flex-shrink: 0; }
+.page-topbar__leading {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 4px;
+  min-height: 44px;
+}
+.page-topbar__leading:empty { display: none; }
+.page-topbar__heading {
+  flex: 1 1 auto; min-width: 0;
+}
+.page-topbar__trailing {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  min-height: 44px;
+  margin-left: auto;
+}
+.page-topbar__trailing:empty { display: none; }
+.page-topbar__icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px;
+  padding: 0; border: 0;
+  background: transparent; color: var(--ink-2);
+  border-radius: 10px; cursor: pointer; text-decoration: none;
+  transition: background 120ms ease, color 120ms ease;
+}
+.page-topbar__icon-btn:hover { background: var(--moss-soft); color: var(--ink); }
+.page-topbar__icon-btn:focus-visible {
+  outline: 2px solid var(--moss); outline-offset: 2px;
+  background: var(--moss-soft); color: var(--ink);
+}
+/* The hamburger is only useful on phone — the left-nav / drawer lives
+   inline at desktop widths. Keep the DOM node (accessibility tree
+   stays consistent across breakpoints) but hide it visually. */
+@media (min-width: 720px) {
+  .page-topbar__menu-btn { display: none; }
+}
 .desk__content { display: flex; flex-direction: column; gap: 22px; }
 .page-title {
   font-size: 2.05rem; margin-bottom: 4px; line-height: 1.1;
@@ -1167,18 +1176,40 @@
 }
 .page-sub { color: var(--ink-3); font-size: 14px; }
 
-/* Phone shell: the same header lives inside `.phone__body` for shared
-   routes (`/today`, `/week`, `/my/expenses`, `/me`, …). The topbar
-   collapses its outer padding — `.phone__section` already provides
-   horizontal padding — and the title scales down to the mobile
-   breakpoint size. */
-.phone__body > .page-topbar,
-.phone > .page-topbar {
-  padding: 16px 20px 6px;
-  margin-bottom: 0;
+/* Overflow menu used by the header trailing slot. Rendered as a native
+   <dialog> so Escape + backdrop click + focus trap come for free. */
+.overflow-menu[open] {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 6px;
+  background: var(--card); color: var(--ink);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  min-width: min(260px, 86vw);
 }
-.phone__body > .page-topbar .page-title,
-.phone > .page-topbar .page-title { font-size: 1.55rem; }
+.overflow-menu::backdrop { background: rgba(31, 26, 20, 0.35); }
+.overflow-menu__list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.overflow-menu__item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 10px 12px;
+  min-height: 44px;
+  background: transparent; border: 0; border-radius: 8px;
+  font: inherit; color: var(--ink);
+  text-align: left; cursor: pointer;
+}
+.overflow-menu__item:hover,
+.overflow-menu__item:focus-visible {
+  background: var(--paper-2);
+  outline: none;
+}
+.overflow-menu__item--destructive { color: var(--rust); }
+.overflow-menu__icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; color: currentColor;
+}
+.overflow-menu__label { flex: 1; }
 
 .panel {
   background: var(--card); border: 1px solid var(--line);
@@ -1915,11 +1946,10 @@
 .desk__agent .chat-composer textarea { font-size: 13px; padding: 7px 0; }
 
 /* ══════════════════════════════════════════════════════════════
-   MANAGER — mobile top bar (hamburger + brand + agent). Hidden at
-   desk widths; revealed below the nav-drawer breakpoint.
+   MANAGER — icon button (used by hamburger inside the header's
+   leading slot on mobile; the legacy `.desk__mobile-bar` strip is
+   gone per §14 "Page header").
    ══════════════════════════════════════════════════════════════ */
-.desk__mobile-bar { display: none; }
-
 .desk__icon-btn {
   appearance: none;
   border: 1px solid var(--line);
@@ -2007,19 +2037,6 @@
     z-index: 60;
   }
 
-  .desk__mobile-bar {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 14px;
-    background: var(--card);
-    border-bottom: 1px solid var(--line);
-    position: sticky; top: 0; z-index: 35;
-  }
-  .desk__mobile-bar .desk__brand { padding: 0; flex: 1; min-width: 0; }
-  .desk__mobile-bar .desk__wordmark {
-    font-size: 1.1rem;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-
   .desk__nav {
     position: fixed; top: 0; bottom: 0; left: 0;
     width: min(280px, 82vw);
@@ -2039,14 +2056,61 @@
     width: 100%;
   }
 
+  /* §14 "Page header" — sticky compact bar on phone. Padded for the
+     iOS notch via env(safe-area-inset-top) and rendered as a solid
+     paper-coloured strip so content scrolls under it without
+     bleed-through. The `top` value depends on which scroll container
+     owns the page: the worker shell scrolls the document (so we must
+     clear the sticky preview banner), while the manager/admin/client
+     shells scroll `.desk__main`, which already sits below the banner
+     — sticky there must be top: 0 or the header floats 42px down. */
   .page-topbar {
-    padding-top: 16px;
-    margin-bottom: 18px;
-    flex-wrap: wrap;
-    gap: 12px;
+    position: sticky; top: 0; z-index: 35;
+    display: flex; align-items: center;
+    flex-wrap: nowrap; gap: 4px;
+    padding: env(safe-area-inset-top, 0px) 10px 0;
+    min-height: calc(52px + env(safe-area-inset-top, 0px));
+    margin-bottom: 12px;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
   }
-  .page-topbar__actions { flex-wrap: wrap; }
-  .page-title { font-size: 1.6rem; }
+  /* Inside the manager / admin / client shell the header lives one
+     level inside `.desk__main`, which has 18px horizontal padding
+     below 720px. Bleed the header out to the viewport edges with a
+     negative margin so the sticky strip looks anchored to the window,
+     matching the worker shell which sits directly under `.phone`. */
+  .desk__main > .page-topbar {
+    margin-inline: -18px;
+  }
+  /* Worker shell: the document is the scroll container, so the sticky
+     header must clear the sticky preview banner above it. */
+  .phone > .page-topbar,
+  .phone__body > .page-topbar {
+    margin-inline: 0;
+    top: var(--banner-h, 0px);
+  }
+  .page-topbar__leading,
+  .page-topbar__trailing {
+    min-height: 44px;
+  }
+  .page-topbar__heading {
+    padding: 6px 4px;
+  }
+  .page-title {
+    font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 1.05rem;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    margin: 0;
+    font-variation-settings: normal;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .page-sub {
+    font-size: 12px; line-height: 1.2;
+    margin: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 
   /* Phone mode: hide the inline rail entirely. Both shells route the
      bottom Chat tab/dock to /chat (full-screen) instead. */
@@ -2099,7 +2163,10 @@
   }
   .task-row__time { grid-column: 1 / -1; font-size: 11px; }
   .task-row__area { display: none; }
-  .page-topbar__actions .btn { flex: 1 1 auto; }
+  .page-topbar__trailing .btn {
+    padding-inline: 14px;
+    min-height: 36px;
+  }
 
   /* Let wide tables scroll horizontally inside panels instead of
      forcing the whole page to scroll. */
@@ -2126,10 +2193,11 @@
   .cal-wide { overflow-x: auto; }
 }
 
-/* Extra-small phones (≤400): tighter spacing. */
+/* Extra-small phones (≤400): tighter spacing. The header title is
+   already compact at the sticky breakpoint; no extra shrink needed. */
 @media (max-width: 400px) {
   .desk__main { padding: 0 14px 96px; }
-  .page-title { font-size: 1.45rem; }
+  .desk__main > .page-topbar { margin-inline: -14px; }
 }
 
 /* ══════════════════════════════════════════════════════════════

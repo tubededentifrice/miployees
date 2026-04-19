@@ -6,11 +6,11 @@ import {
   Clock3,
   FileText,
   Home,
-  Menu,
   Receipt,
   UserCircle,
 } from "lucide-react";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
+import { ShellNavProvider } from "@/context/ShellNavContext";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { initialNavCollapsed, persistNavCollapsed } from "@/lib/preferences";
@@ -71,7 +71,8 @@ export default function ClientLayout() {
       return next;
     });
   }, []);
-  const showMobileBar = hasDrawerItems(NAV_ITEMS);
+  const hasDrawer = hasDrawerItems(NAV_ITEMS);
+  const toggleNav = useCallback(() => setNavOpen((v) => !v), []);
 
   useEffect(() => { setNavOpen(false); }, [pathname]);
   useEffect(() => {
@@ -85,49 +86,32 @@ export default function ClientLayout() {
   const initials = initialsOf(displayName);
 
   return (
-    <div
-      className="desk"
-      data-nav-open={navOpen ? "true" : "false"}
-      data-nav-collapsed={navCollapsed ? "true" : "false"}
-      data-mobile-bar={showMobileBar ? "true" : "false"}
-      data-agent-collapsed="true"
-    >
-      {showMobileBar && (
-        <header className="desk__mobile-bar" aria-label="Mobile controls">
-          <button
-            type="button"
-            className="desk__icon-btn"
-            onClick={() => setNavOpen((v) => !v)}
-            aria-label={navOpen ? "Close menu" : "Open menu"}
-            aria-expanded={navOpen}
-          >
-            <Menu size={20} strokeWidth={2} aria-hidden="true" />
-          </button>
-          <div className="desk__brand">
-            <span className="desk__logo" aria-hidden="true">◈</span>
-            <span className="desk__wordmark">crew.day</span>
-          </div>
-        </header>
-      )}
+    <ShellNavProvider hasDrawer={hasDrawer} isOpen={navOpen} toggle={toggleNav}>
+      <div
+        className="desk"
+        data-nav-open={navOpen ? "true" : "false"}
+        data-nav-collapsed={navCollapsed ? "true" : "false"}
+        data-agent-collapsed="true"
+      >
+        {navOpen && (
+          <div className="desk__scrim" onClick={() => setNavOpen(false)} role="presentation" aria-hidden="true" />
+        )}
 
-      {navOpen && (
-        <div className="desk__scrim" onClick={() => setNavOpen(false)} role="presentation" aria-hidden="true" />
-      )}
+        <SideNav
+          items={NAV_ITEMS}
+          collapsed={navCollapsed}
+          onToggleCollapsed={toggleNavCollapsed}
+          footer={{
+            initials,
+            name: displayName,
+            role: "Client",
+          }}
+        />
 
-      <SideNav
-        items={NAV_ITEMS}
-        collapsed={navCollapsed}
-        onToggleCollapsed={toggleNavCollapsed}
-        footer={{
-          initials,
-          name: displayName,
-          role: "Client",
-        }}
-      />
-
-      <section className="desk__main">
-        <Outlet />
-      </section>
-    </div>
+        <section className="desk__main">
+          <Outlet />
+        </section>
+      </div>
+    </ShellNavProvider>
   );
 }

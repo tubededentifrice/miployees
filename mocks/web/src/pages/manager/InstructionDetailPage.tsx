@@ -66,15 +66,13 @@ export default function InstructionDetailPage() {
       <Chip tone={SCOPE_TONE[i.scope]} size="sm">{scopeLabel}</Chip>
     </>
   );
-  const actions = (
-    <>
-      <button className="btn btn--ghost">View revisions</button>
-      <button className="btn btn--moss">Edit</button>
-    </>
-  );
+  const actions = <button className="btn btn--moss">Edit</button>;
+  const overflow = [
+    { label: "View revisions", onSelect: () => undefined },
+  ];
 
   return (
-    <DeskPage title={i.title} sub={sub} actions={actions}>
+    <DeskPage title={i.title} sub={sub} actions={actions} overflow={overflow}>
       <article className="panel panel--article">
         <div className="kb-body">
           {renderBody(i.body_md)}

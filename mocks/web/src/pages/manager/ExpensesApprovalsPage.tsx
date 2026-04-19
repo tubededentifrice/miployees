@@ -43,13 +43,13 @@ export default function ExpensesApprovalsPage() {
   });
 
   const sub = "Review submitted claims. LLM autofill flags low-confidence fields; approving snaps the exchange rate and attaches to the current open pay period.";
-  const actions = <button className="btn btn--ghost">Export CSV</button>;
+  const overflow = [{ label: "Export CSV", onSelect: () => undefined }];
 
   if (expensesQ.isPending || employeesQ.isPending) {
-    return <DeskPage title="Expense approvals" sub={sub} actions={actions}><Loading /></DeskPage>;
+    return <DeskPage title="Expense approvals" sub={sub} overflow={overflow}><Loading /></DeskPage>;
   }
   if (!expensesQ.data || !employeesQ.data) {
-    return <DeskPage title="Expense approvals" sub={sub} actions={actions}>Failed to load.</DeskPage>;
+    return <DeskPage title="Expense approvals" sub={sub} overflow={overflow}>Failed to load.</DeskPage>;
   }
 
   const empById = new Map(employeesQ.data.map((e) => [e.id, e]));
@@ -60,7 +60,7 @@ export default function ExpensesApprovalsPage() {
   const reimbursed = all.filter((x) => x.status === "reimbursed");
 
   return (
-    <DeskPage title="Expense approvals" sub={sub} actions={actions}>
+    <DeskPage title="Expense approvals" sub={sub} overflow={overflow}>
       <section className="grid grid--stats">
         <StatCard
           label="Needs decision"

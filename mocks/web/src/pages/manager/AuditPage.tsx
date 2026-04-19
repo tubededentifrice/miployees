@@ -22,10 +22,10 @@ export default function AuditPage() {
   });
 
   const sub = "Append-only. Every mutation by a user (on the manager/worker/client surface), an agent, or the system. Actions taken by a member of the owners permission group carry a governance badge.";
-  const actions = <button className="btn btn--ghost">Export JSONL</button>;
+  const overflow = [{ label: "Export JSONL", onSelect: () => undefined }];
 
-  if (q.isPending) return <DeskPage title="Audit log" sub={sub} actions={actions}><Loading /></DeskPage>;
-  if (!q.data) return <DeskPage title="Audit log" sub={sub} actions={actions}>Failed to load.</DeskPage>;
+  if (q.isPending) return <DeskPage title="Audit log" sub={sub} overflow={overflow}><Loading /></DeskPage>;
+  if (!q.data) return <DeskPage title="Audit log" sub={sub} overflow={overflow}>Failed to load.</DeskPage>;
 
   const entries = q.data;
   const countBy = (kind: AuditEntry["actor_kind"]): number =>
@@ -35,7 +35,7 @@ export default function AuditPage() {
   const governanceCount = entries.filter((e) => e.actor_was_owner_member).length;
 
   return (
-    <DeskPage title="Audit log" sub={sub} actions={actions}>
+    <DeskPage title="Audit log" sub={sub} overflow={overflow}>
       <section className="panel">
         <div className="desk-filters">
           <span className="chip chip--ghost chip--sm chip--active">All</span>

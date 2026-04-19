@@ -334,34 +334,32 @@ export default function AdminLlmPage() {
       .join(" ");
   };
 
-  const actions = (
-    <>
-      <button className="btn btn--ghost" onClick={() => setPromptsOpen(true)}>
-        Prompts
-      </button>
-      <button
-        className="btn btn--ghost"
-        onClick={() => syncMut.mutate()}
-        disabled={syncMut.isPending}
-      >
-        {syncMut.isPending ? "Syncing…" : "Sync pricing"}
-      </button>
-      <button className="btn btn--moss">+ Provider</button>
-    </>
-  );
+  const actions = <button className="btn btn--moss">+ Provider</button>;
+  const overflow = [
+    {
+      label: "Prompts",
+      onSelect: () => setPromptsOpen(true),
+    },
+    {
+      label: syncMut.isPending ? "Syncing…" : "Sync pricing",
+      onSelect: () => {
+        if (!syncMut.isPending) syncMut.mutate();
+      },
+    },
+  ];
   const sub =
     "Deployment-wide LLM config: providers, models, provider-model pricing, capability assignment chains, and the prompt library. Shared by every workspace.";
 
   if (graphQ.isPending || callsQ.isPending || promptsQ.isPending) {
     return (
-      <DeskPage title="LLM & agents" sub={sub} actions={actions}>
+      <DeskPage title="LLM & agents" sub={sub} actions={actions} overflow={overflow}>
         <Loading />
       </DeskPage>
     );
   }
   if (!graph || !callsQ.data || !promptsQ.data || !indexes) {
     return (
-      <DeskPage title="LLM & agents" sub={sub} actions={actions}>
+      <DeskPage title="LLM & agents" sub={sub} actions={actions} overflow={overflow}>
         Failed to load.
       </DeskPage>
     );
@@ -374,7 +372,7 @@ export default function AdminLlmPage() {
   const unassigned = graph.totals.unassigned_capabilities;
 
   return (
-    <DeskPage title="LLM & agents" sub={sub} actions={actions}>
+    <DeskPage title="LLM & agents" sub={sub} actions={actions} overflow={overflow}>
       <section className="grid grid--stats">
         <StatCard
           label="Spend (30d)"

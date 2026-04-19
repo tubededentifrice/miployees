@@ -400,12 +400,8 @@ export default function PropertyDetailPage() {
     <DeskPage
       title={property.name}
       sub={property.city + " · " + property.timezone}
-      actions={
-        <>
-          <button className="btn btn--ghost">New task</button>
-          <button className="btn btn--moss">Edit property</button>
-        </>
-      }
+      actions={<button className="btn btn--moss">Edit property</button>}
+      overflow={[{ label: "New task", onSelect: () => undefined }]}
     >
       <nav className="tabs tabs--h">
         <a

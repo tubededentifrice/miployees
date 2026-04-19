@@ -7,7 +7,6 @@ import {
   Building2,
   Gauge,
   MessageSquareMore,
-  Menu,
   ScrollText,
   Settings,
   Sparkles,
@@ -15,6 +14,7 @@ import {
 } from "lucide-react";
 import AgentSidebar from "@/components/AgentSidebar";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
+import { ShellNavProvider } from "@/context/ShellNavContext";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import {
@@ -136,70 +136,57 @@ export default function AdminLayout() {
     );
   }
 
+  const toggleNav = useCallback(() => setNavOpen((v) => !v), []);
+
   return (
-    <div
-      className="desk desk--admin"
-      data-agent-collapsed={collapsed ? "true" : "false"}
-      data-nav-collapsed={navCollapsed ? "true" : "false"}
-      data-nav-open={navOpen ? "true" : "false"}
-      data-mobile-bar="true"
-    >
-      <header className="desk__mobile-bar" aria-label="Mobile controls">
-        <button
-          type="button"
-          className="desk__icon-btn"
-          onClick={() => setNavOpen((v) => !v)}
-          aria-label={navOpen ? "Close menu" : "Open menu"}
-          aria-expanded={navOpen}
-        >
-          <Menu size={20} strokeWidth={2} aria-hidden="true" />
-        </button>
-        <div className="desk__brand">
-          <span className="desk__logo" aria-hidden="true">◈</span>
-          <span className="desk__wordmark">crew.day · admin</span>
-        </div>
-      </header>
+    <ShellNavProvider hasDrawer={true} isOpen={navOpen} toggle={toggleNav}>
+      <div
+        className="desk desk--admin"
+        data-agent-collapsed={collapsed ? "true" : "false"}
+        data-nav-collapsed={navCollapsed ? "true" : "false"}
+        data-nav-open={navOpen ? "true" : "false"}
+      >
+        {navOpen && (
+          <div
+            className="desk__scrim"
+            onClick={() => setNavOpen(false)}
+            role="presentation"
+            aria-hidden="true"
+          />
+        )}
 
-      {navOpen && (
-        <div
-          className="desk__scrim"
-          onClick={() => setNavOpen(false)}
-          role="presentation"
-          aria-hidden="true"
+        <SideNav
+          items={NAV_ITEMS}
+          collapsed={navCollapsed}
+          onToggleCollapsed={toggleNavCollapsed}
+          footer={{
+            initials: (adminMeQ.data?.display_name ?? "Admin")
+              .split(" ")
+              .map((w) => w[0])
+              .join("")
+              .slice(0, 2)
+              .toUpperCase(),
+            name: adminMeQ.data?.display_name ?? "Deployment admin",
+            role: adminMeQ.data?.is_owner ? "Deployment owner" : "Deployment admin",
+          }}
+          action={
+            <button
+              type="button"
+              className="btn btn--ghost admin-backlink"
+              onClick={() => navigate("/")}
+            >
+              ← Back to workspaces
+            </button>
+          }
         />
-      )}
 
-      <SideNav
-        items={NAV_ITEMS}
-        collapsed={navCollapsed}
-        onToggleCollapsed={toggleNavCollapsed}
-        footer={{
-          initials: (adminMeQ.data?.display_name ?? "Admin")
-            .split(" ")
-            .map((w) => w[0])
-            .join("")
-            .slice(0, 2)
-            .toUpperCase(),
-          name: adminMeQ.data?.display_name ?? "Deployment admin",
-          role: adminMeQ.data?.is_owner ? "Deployment owner" : "Deployment admin",
-        }}
-        action={
-          <button
-            type="button"
-            className="btn btn--ghost admin-backlink"
-            onClick={() => navigate("/")}
-          >
-            ← Back to workspaces
-          </button>
-        }
-      />
+        <section className="desk__main">
+          <Outlet />
+        </section>
 
-      <section className="desk__main">
-        <Outlet />
-      </section>
-
-      {/* Sibling of <Outlet />. Do not nest. */}
-      <AgentSidebar role="admin" />
-    </div>
+        {/* Sibling of <Outlet />. Do not nest. */}
+        <AgentSidebar role="admin" />
+      </div>
+    </ShellNavProvider>
   );
 }

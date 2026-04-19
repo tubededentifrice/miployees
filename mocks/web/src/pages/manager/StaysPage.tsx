@@ -75,12 +75,8 @@ export default function StaysPage() {
     <DeskPage
       title="Stays"
       sub="Imported from Airbnb, VRBO, and direct bookings. Four layers: stays, turnover bundles, closures, employee leave."
-      actions={
-        <>
-          <button className="btn btn--ghost">+ Add stay</button>
-          <button className="btn btn--moss">Import iCal</button>
-        </>
-      }
+      actions={<button className="btn btn--moss">Import iCal</button>}
+      overflow={[{ label: "Add stay", onSelect: () => undefined }]}
     >
       <div className="panel">
         <table className="table table--roomy">

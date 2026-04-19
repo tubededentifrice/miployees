@@ -17,7 +17,6 @@ import {
   KeyRound,
   LayoutDashboard,
   ListChecks,
-  Menu,
   Palmtree,
   ScrollText,
   Settings,
@@ -33,6 +32,7 @@ import {
 import AgentSidebar from "@/components/AgentSidebar";
 import BottomTabs from "@/components/BottomTabs";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
+import { ShellNavProvider } from "@/context/ShellNavContext";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import {
@@ -131,7 +131,8 @@ export default function ManagerLayout() {
   const navItems: SideNavItem[] = data?.is_deployment_admin
     ? [...BASE_NAV_ITEMS, ADMINISTRATION_LINK]
     : BASE_NAV_ITEMS;
-  const showMobileBar = hasDrawerItems(navItems);
+  const hasDrawer = hasDrawerItems(navItems);
+  const toggleNav = useCallback(() => setNavOpen((v) => !v), []);
 
   useEffect(() => {
     setNavOpen(false);
@@ -147,59 +148,42 @@ export default function ManagerLayout() {
   }, [navOpen]);
 
   return (
-    <div
-      className="desk"
-      data-agent-collapsed={collapsed ? "true" : "false"}
-      data-nav-collapsed={navCollapsed ? "true" : "false"}
-      data-nav-open={navOpen ? "true" : "false"}
-      data-mobile-bar={showMobileBar ? "true" : "false"}
-    >
-      {showMobileBar && (
-        <header className="desk__mobile-bar" aria-label="Mobile controls">
-          <button
-            type="button"
-            className="desk__icon-btn"
-            onClick={() => setNavOpen((v) => !v)}
-            aria-label={navOpen ? "Close menu" : "Open menu"}
-            aria-expanded={navOpen}
-          >
-            <Menu size={20} strokeWidth={2} aria-hidden="true" />
-          </button>
-          <div className="desk__brand">
-            <span className="desk__logo" aria-hidden="true">◈</span>
-            <span className="desk__wordmark">crew.day</span>
-          </div>
-        </header>
-      )}
+    <ShellNavProvider hasDrawer={hasDrawer} isOpen={navOpen} toggle={toggleNav}>
+      <div
+        className="desk"
+        data-agent-collapsed={collapsed ? "true" : "false"}
+        data-nav-collapsed={navCollapsed ? "true" : "false"}
+        data-nav-open={navOpen ? "true" : "false"}
+      >
+        {navOpen && (
+          <div
+            className="desk__scrim"
+            onClick={() => setNavOpen(false)}
+            role="presentation"
+            aria-hidden="true"
+          />
+        )}
 
-      {navOpen && (
-        <div
-          className="desk__scrim"
-          onClick={() => setNavOpen(false)}
-          role="presentation"
-          aria-hidden="true"
+        <SideNav
+          items={navItems}
+          collapsed={navCollapsed}
+          onToggleCollapsed={toggleNavCollapsed}
+          footer={{
+            initials: "EB",
+            name: data?.manager_name ?? "Élodie Bernard",
+            role: "Manager",
+          }}
         />
-      )}
 
-      <SideNav
-        items={navItems}
-        collapsed={navCollapsed}
-        onToggleCollapsed={toggleNavCollapsed}
-        footer={{
-          initials: "EB",
-          name: data?.manager_name ?? "Élodie Bernard",
-          role: "Manager",
-        }}
-      />
+        <section className="desk__main">
+          <Outlet />
+        </section>
 
-      <section className="desk__main">
-        <Outlet />
-      </section>
+        {/* Sibling of <Outlet />. Do not nest. */}
+        <AgentSidebar role="manager" />
 
-      {/* Sibling of <Outlet />. Do not nest. */}
-      <AgentSidebar role="manager" />
-
-      <BottomTabs />
-    </div>
+        <BottomTabs />
+      </div>
+    </ShellNavProvider>
   );
 }

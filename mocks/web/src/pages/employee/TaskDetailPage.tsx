@@ -1,15 +1,15 @@
 import { useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
-import { Ban, Camera, Check } from "lucide-react";
+import { Ban, Camera, Check, SkipForward } from "lucide-react";
 import { Chip, Loading } from "@/components/common";
 import AutoGrowTextarea from "@/components/AutoGrowTextarea";
 import ChatLog from "@/components/chat/ChatLog";
 import ChatComposer from "@/components/chat/ChatComposer";
+import PageHeader from "@/components/PageHeader";
 import { fmtTime } from "@/lib/dates";
-import { cap } from "@/lib/strings";
 import type { AgentMessage, Instruction, Property, Task } from "@/types/api";
 
 interface TaskPayload {
@@ -127,7 +127,14 @@ export default function TaskDetailPage() {
     },
   });
 
-  if (q.isPending) return <section className="phone__section"><Loading /></section>;
+  if (q.isPending) {
+    return (
+      <>
+        <PageHeader title="Task" />
+        <section className="phone__section"><Loading /></section>
+      </>
+    );
+  }
   if (q.isError || !q.data) {
     nav("/today", { replace: true });
     return null;
@@ -137,13 +144,25 @@ export default function TaskDetailPage() {
   const terminal = task.status === "completed" || task.status === "skipped";
 
   return (
-    <section className="phone__section phone__section--detail">
-      <div className="task-detail__sticky">
-        <Link to="/today" className="back-link" aria-label="Back to today">
-          ← Back
-        </Link>
+    <>
+      <PageHeader
+        title={task.title}
+        overflow={
+          terminal
+            ? undefined
+            : [
+                {
+                  label: "Skip this task",
+                  icon: <SkipForward size={18} strokeWidth={1.8} aria-hidden="true" />,
+                  onSelect: () => modalRef.current?.showModal(),
+                  destructive: true,
+                },
+              ]
+        }
+      />
+      <section className="phone__section phone__section--detail">
         {!terminal && (
-          <>
+          <div className="task-detail__sticky">
             <form
               className="task-detail__sticky-form"
               onSubmit={(e) => { e.preventDefault(); complete.mutate(); }}
@@ -156,42 +175,33 @@ export default function TaskDetailPage() {
                 )}
               </button>
             </form>
-            <button
-              className="btn btn--ghost btn--lg"
-              type="button"
-              onClick={() => modalRef.current?.showModal()}
-            >
-              Skip
-            </button>
-          </>
+          </div>
         )}
-      </div>
 
-      <header className="task-detail__head">
-        <div className="task-detail__chips">
-          {property ? (
-            <Chip tone={property.color}>{property.name}</Chip>
-          ) : task.is_personal ? (
-            <Chip tone="ghost">Personal</Chip>
-          ) : null}
-          {task.area && <Chip tone="ghost">{task.area}</Chip>}
-          {(task.priority === "high" || task.priority === "urgent") && (
-            <Chip tone="rust">{cap(task.priority)}</Chip>
-          )}
-          {task.photo_evidence === "required" ? (
-            <Chip tone="sand"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> required</Chip>
-          ) : task.photo_evidence === "optional" ? (
-            <Chip tone="ghost" size="sm"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> optional</Chip>
-          ) : null}
-          <Chip tone={STATUS_TONE[task.status]} size="sm">
-            {task.status.replace("_", " ")}
-          </Chip>
-        </div>
-        <h2 className="task-detail__title">{task.title}</h2>
-        <div className="task-detail__meta">
-          {fmtTime(task.scheduled_start)} · est. {task.estimated_minutes} min
-        </div>
-      </header>
+        <header className="task-detail__head">
+          <div className="task-detail__chips">
+            {property ? (
+              <Chip tone={property.color}>{property.name}</Chip>
+            ) : task.is_personal ? (
+              <Chip tone="ghost">Personal</Chip>
+            ) : null}
+            {task.area && <Chip tone="ghost">{task.area}</Chip>}
+            {(task.priority === "high" || task.priority === "urgent") && (
+              <Chip tone="rust">{task.priority === "urgent" ? "Urgent" : "High"}</Chip>
+            )}
+            {task.photo_evidence === "required" ? (
+              <Chip tone="sand"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> required</Chip>
+            ) : task.photo_evidence === "optional" ? (
+              <Chip tone="ghost" size="sm"><Camera size={12} strokeWidth={1.8} aria-hidden="true" /> optional</Chip>
+            ) : null}
+            <Chip tone={STATUS_TONE[task.status]} size="sm">
+              {task.status.replace("_", " ")}
+            </Chip>
+          </div>
+          <div className="task-detail__meta">
+            {fmtTime(task.scheduled_start)} · est. {task.estimated_minutes} min
+          </div>
+        </header>
 
       {task.checklist.length > 0 && (
         <div className="checklist">
@@ -314,6 +324,7 @@ export default function TaskDetailPage() {
           </div>
         </form>
       </dialog>
-    </section>
+      </section>
+    </>
   );
 }

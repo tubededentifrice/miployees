@@ -47,14 +47,15 @@ export default function DashboardPage() {
 
   return (
     <DeskPage
-      title={"Good morning, " + firstName}
-      sub={`${todayLong} · ${properties.length} properties · 5 staff · ${totalToday} tasks today`}
-      actions={
-        <>
-          <button className="btn btn--ghost">New task</button>
-          <button className="btn btn--moss">Broadcast message</button>
-        </>
-      }
+      title="Dashboard"
+      sub={`Good morning, ${firstName} · ${todayLong} · ${properties.length} properties · 5 staff · ${totalToday} tasks today`}
+      actions={<button className="btn btn--moss">+ New task</button>}
+      overflow={[
+        {
+          label: "Broadcast message",
+          onSelect: () => undefined,
+        },
+      ]}
     >
       <section className="grid grid--stats">
         <StatCard

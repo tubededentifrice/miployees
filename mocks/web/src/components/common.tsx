@@ -224,12 +224,6 @@ export function EmptyState({
   );
 }
 
-export function BackLink({ to, label = "← Back" }: { to: string; label?: string }) {
-  return (
-    <a href={to} className="back-link">{label}</a>
-  );
-}
-
 export function Loading() {
   return <div className="empty-state empty-state--quiet">Loading…</div>;
 }
