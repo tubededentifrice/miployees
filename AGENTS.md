@@ -127,8 +127,9 @@ update in your wrap-up.
   for `git pull --rebase` if the push is rejected as
   non-fast-forward (an unconditional rebase can collide with another
   agent's in-progress work).
-- **Never force-push.** Never push to `main` without an explicit
-  user instruction — default is a branch + PR.
+- **Never force-push.** Commit directly to `main` by default; only
+  cut a branch + PR if the user asks for review or the change is
+  risky enough to warrant one.
 - If a push fails, diagnose the root cause; do not `--no-verify`,
   don't bypass hooks.
 

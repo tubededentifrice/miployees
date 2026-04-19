@@ -100,20 +100,29 @@
 }
 .booking-hint:hover { border-color: var(--moss); }
 
-/* Phone dock: hosts the booking hint just above the fixed tab bar.
-   On chat the composer takes this space, so the dock is not rendered
-   at all there. */
+/* Phone dock: a thin full-width bar that sits directly on top of the
+   fixed tab bar. On chat the composer takes this space, so the dock
+   is not rendered there. No gradient fade — the bar is solid so body
+   content does not bleed through beneath the icon row. */
 .phone__dock {
   position: fixed; left: 0; right: 0; z-index: 19;
   bottom: calc(60px + env(safe-area-inset-bottom, 0px));
-  display: flex; justify-content: center;
-  padding: 10px 16px;
-  background: linear-gradient(to top, var(--paper) 70%, transparent);
-  pointer-events: none;
+  display: flex;
+  background: var(--card);
+  border-top: 1px solid var(--line);
 }
 .phone__dock > .booking-hint {
-  pointer-events: auto;
-  box-shadow: 0 6px 18px rgba(22, 34, 22, 0.12);
+  width: 100%;
+  padding: 7px 16px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.phone__dock > .booking-hint:hover {
+  background: var(--moss-soft);
+  border-color: transparent;
 }
 
 .section-title {
@@ -928,6 +937,7 @@
   display: flex; justify-content: stretch;
 }
 .desk__nav-action > .clock-toggle { width: 100%; }
+.desk__nav-action > .booking-hint { width: 100%; }
 
 .desk__me {
   display: flex; align-items: center; gap: 10px;
@@ -4311,7 +4321,7 @@
 .schedule__today-fab {
   position: fixed;
   right: 16px;
-  bottom: calc(124px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(108px + env(safe-area-inset-bottom, 0px));
   z-index: 18;
   padding: 10px 16px;
   border-radius: 999px;
