@@ -625,9 +625,7 @@ llm_model
 ### Model capability tags
 
 Every `llm_model` row carries a `capabilities` array. crew.day's v1 set,
-chosen for the product's actual surface (no image generation, no
-dedicated embedding service yet, but audio-in is a real modality for
-`voice.transcribe`):
+chosen for the product's actual surface:
 
 | tag               | meaning                                                                        |
 |-------------------|--------------------------------------------------------------------------------|
@@ -638,10 +636,11 @@ dedicated embedding service yet, but audio-in is a real modality for
 | `function_calling`| Native tool-call protocol                                                      |
 | `json_mode`       | Guaranteed JSON output via `response_format`                                   |
 | `streaming`       | Supports incremental token streaming                                           |
+| `embeddings`      | Emits dense vector embeddings for an input text. Required by `feedback.embed`. |
 
-`image_generation` and `embedding` are intentionally **not** in the v1
-set — neither capability has a shipping consumer in crew.day. They join
-the list the day a consumer lands.
+`image_generation` is intentionally **not** in the v1 set — it has no
+shipping consumer in crew.day. It joins the list the day a consumer
+lands.
 
 Every crew.day capability in the catalog below carries a
 `required_capabilities` list. Saving an `llm_assignment` whose
@@ -752,11 +751,69 @@ check returns `422 assignment_missing_capability`.
 | `chat.detect_language` | Detect message language for auto-translation (§10, §18)                     | `chat`, `json_mode`          |
 | `chat.translate`       | Translate a message into the workspace default language (§10, §18)          | `chat`                       |
 | `documents.ocr`        | Vision fallback for image-bearing documents when local OCR yields no text   | `vision`                     |
+| `feedback.moderate`    | **Deployment-scope.** Moderate + reformulate one marketing-site suggestion — called from `site/` over `/_internal/feedback/moderate`. Emits a keep/reject verdict plus (on keep) `reformulated_title`, `reformulated_body`, and `detected_language`. May emit an embedding in-line when `policy.embed=true`. | `chat`, `json_mode`          |
+| `feedback.embed`       | **Deployment-scope.** Compute dense embeddings for one or more texts — called from `site/` over `/_internal/feedback/embed`. Used by the suggestion-box pipeline for submission embeddings, cluster summary embeddings, and operator re-embeds. | `embeddings`                 |
+| `feedback.cluster`     | **Deployment-scope.** Classify a reformulated marketing-site submission against a site-provided top-K candidate list, or propose a new cluster — called from `site/` over `/_internal/feedback/cluster`. | `chat`, `json_mode`          |
 
 The `required_capabilities` column lives in code — capabilities are a
 closed enum declared by the application, not workspace-configurable.
 Adding a new capability is a code change that writes both the row in
 this table and a seed assignment + prompt-template default.
+
+### Deployment-scope capabilities
+
+Most capabilities in the table above are **workspace-scope**: every
+call is attributed to a workspace and meters against that
+workspace's rolling 30-day budget (§ "Workspace usage budget").
+Three capabilities are **deployment-scope** instead — the three
+that drive the marketing site's suggestion box (`crew.day/suggest`).
+They are called by `site/api/`, not by anything inside a workspace,
+so there is no authenticated user and no `workspace_id` to attribute
+the call to. Each therefore meters against a **per-deployment
+budget** and its calls land in the deployment audit stream (§15)
+rather than the workspace audit log.
+
+| Capability | Default monthly cap | Env toggle (default `0`) |
+|------------|---------------------|--------------------------|
+| `feedback.moderate` | `CREWDAY_FEEDBACK_MODERATE_MONTHLY_USD_CAP` (default `$10`) | `CREWDAY_FEEDBACK_MODERATE_ENABLED` |
+| `feedback.embed`    | `CREWDAY_FEEDBACK_EMBED_MONTHLY_USD_CAP` (default `$5`)  | `CREWDAY_FEEDBACK_EMBED_ENABLED` |
+| `feedback.cluster`  | `CREWDAY_FEEDBACK_CLUSTER_MONTHLY_USD_CAP` (default `$20`) | `CREWDAY_FEEDBACK_CLUSTER_ENABLED` |
+
+- Each capability is **off by default**. Turning any of them on
+  is a SaaS-operator action; self-host deployments leave them
+  off and the corresponding `/_internal/feedback/*` route returns
+  `404 not_enabled`.
+- Separate budgets on purpose: a spam flood exhausts the
+  moderation budget first (smallest cap, cheapest calls) without
+  taking clustering down.
+- `feedback.embed` default assignment: a **local** model bundled
+  with the app image (`BAAI/bge-small-en-v1.5` via `fastembed`,
+  ONNX, CPU-native, ~30 MB on disk, 384-dim output, unit-
+  normalised). Runs in-process; no external API key, no egress,
+  `llm_cost_usd = 0`. Adding hosted embedding providers (Voyage,
+  Cohere, OpenAI, Google) is a pure-data change — a new
+  `llm_provider` + `llm_provider_model` row plus an
+  `llm_assignment` override.
+- `feedback.moderate` and `feedback.cluster` default to
+  `google/gemma-4-31b-it` — same default chain as other
+  classify-small-text capabilities.
+- Everything else about these capabilities — redaction layer,
+  prompt templating, fallback chain, capability inheritance,
+  audit — is identical to the workspace-scope capabilities.
+  Future deployment-scope capabilities reuse this pattern.
+
+The full RPC contracts, shared-secret auth, versioning, and
+per-endpoint payload shapes live in the site specs — see
+`docs/specs-site/03-app-integration.md`. Three additional
+deployment-scope env vars wire the app up to the site —
+`CREWDAY_FEEDBACK_URL` (the redirect target, must end in
+`/suggest`), `CREWDAY_FEEDBACK_SIGN_KEY` (HMAC key used to mint
+the magic-link token at `GET /feedback-redirect`), and
+`CREWDAY_FEEDBACK_HASH_SALT` (HMAC salt used to derive the
+opaque `user_hash` / `workspace_hash` the site keys writes off).
+All three default unset; partial configuration → boot fails.
+Documented end-to-end in `docs/specs-site/03-app-integration.md`
+under "`CREWDAY_FEEDBACK_URL` → Configuration".
 
 ## Model assignment
 

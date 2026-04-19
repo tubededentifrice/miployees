@@ -23,9 +23,11 @@ drive the whole app without ever seeing the token or passkey surfaces.
   detection, receipt OCR, and voice transcription. All are replaced by
   no-op or pre-baked-fixture implementations — see "Disabled integrations"
   below.
-- **Landing page is out of scope for this repo.** The demo app exposes
+- **Landing page has its own specs tree.** The demo app exposes
   an **iframe contract** (below); the marketing landing page that
-  presents scenario pickers and embeds the app is a separate project.
+  presents scenario pickers and embeds the app is specified under
+  `docs/specs-site/` and deployed from `site/` as an independent
+  stack. This spec governs only the demo server itself.
 
 ## Entity
 
@@ -206,6 +208,21 @@ seeded user:
   `?scenario=rental-manager&as=manager` where `as=` is validated against
   a small allowlist per scenario (e.g. `manager | worker | client |
   owner`), not free ULIDs.
+- The iframe URL may additionally carry `&start=<url-encoded-path>` to
+  deep-link the embedded app at a specific route inside the workspace
+  (e.g. `start=%2Fschedule`). The path is **relative to the
+  workspace** — it does not include the `/w/<slug>` prefix; the demo
+  server prepends the freshly-minted workspace's slug at redirect
+  time, so the marketing-site picker (which can never know the slug
+  in advance) stays slug-agnostic. A `start` value that begins with
+  `/w/` is rejected as malformed and treated as absent. Validated
+  against a per-scenario allowlist declared on the fixture; unknown
+  paths fall back to the scenario's default landing route with a
+  server log line, same posture as an unknown `scenario_key`. Values
+  longer than 256 bytes are treated as absent. The parameter is not
+  persisted or audited — it only steers the post-mint redirect.
+  Introduced for the marketing site's intent-picker (see
+  `docs/specs-site/01-landing-and-demo-embed.md`).
 - Inside the demo, a floating switcher (`.demo-persona-switcher`) lets
   the visitor change persona without leaving the workspace. Switching
   rewrites `persona_user_id` on the cookie binding and triggers a page

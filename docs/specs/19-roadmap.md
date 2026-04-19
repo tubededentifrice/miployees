@@ -268,6 +268,39 @@ the same cookie gets a silent reseed. Hitting the workspace cap shows
 the at-cap banner; hitting the deployment cap pauses every demo agent
 until UTC midnight. See §24.
 
+## Marketing site (parallel track)
+
+The public marketing surface at `crew.day` and the agent-clustered
+suggestion box at `crew.day/suggest` are specified and deployed
+**separately** from the app. See [`docs/specs-site/05-roadmap.md`](../specs-site/05-roadmap.md)
+for the site's own phase plan. The only coordination points with
+this roadmap are:
+
+- **Phase 9b onwards.** Demo deployment is the site's iframe target.
+  The site's Phase 1 requires app §24 to grow the `start=` query
+  param — additive, landing in the same release window.
+- **Any phase.** The site's Phase 2 requires the app to ship the
+  magic-link bridge: three env vars (`CREWDAY_FEEDBACK_URL`,
+  `CREWDAY_FEEDBACK_SIGN_KEY`, `CREWDAY_FEEDBACK_HASH_SALT`), a
+  new `GET /feedback-redirect` route (authenticated,
+  agent-forbidden, rate-limited 20/hour/user), and a "Give
+  feedback" entry in the `PageHeader` overflow menu. Additive,
+  no new domain model; all three env vars unset → link hidden
+  and endpoint returns `404`. Feedback submissions are pseudonymous
+  end-to-end: the app hashes the user and workspace ULIDs before
+  signing the token; the site only ever sees HMACs.
+- **Any phase.** The site's Phase 3 requires the app to add
+  three deployment-scope capabilities (§11) — `feedback.moderate`,
+  `feedback.embed`, `feedback.cluster` — their
+  `/_internal/feedback/*` routes, and a new `embeddings` tag on
+  `llm_model`. The default `feedback.embed` model is a bundled
+  local ONNX embedder (`BAAI/bge-small-en-v1.5` via fastembed,
+  ~30 MB in the image). All three capabilities are off by
+  default on self-host.
+
+None of these land on self-host deployments by default; they are
+SaaS-operator configurations at `crew.day`.
+
 ## Phase 10 — Polish and hardening
 
 - Accessibility audit pass (WCAG 2.2 AA).

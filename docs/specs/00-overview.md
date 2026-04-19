@@ -44,6 +44,14 @@ the driver sees tomorrow's airport run; the head of house sees everything.
   approval (§11). The UI is a shell around those commands, not a
   separate capability. See §11 for the invariant, §13 for the CLI
   catalog.
+- **Site surface.** The managed SaaS at `crew.day` ships three
+  independently-deployed surfaces:
+  `app.crew.day` (the product itself, specified here),
+  `demo.crew.day` (the app with `CREWDAY_DEMO_MODE=1`, §24), and
+  `crew.day` (the marketing landing + agent-clustered suggestion
+  box, specified under [`docs/specs-site/`](../specs-site/)).
+  Self-host deployments usually run only the app; the site is
+  optional and never required for the product to function.
 
 ## Personas
 

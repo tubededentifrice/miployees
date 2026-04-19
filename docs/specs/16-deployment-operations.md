@@ -2,6 +2,13 @@
 
 Two supported recipes; you pick one and stick with it.
 
+> **Scope.** This spec covers the **app** deployments only. The
+> managed SaaS also runs a separate marketing-site stack under
+> `site/` (landing pages + agent-clustered suggestion box). Its
+> deployment lives in [`docs/specs-site/04-deployment-and-security.md`](../specs-site/04-deployment-and-security.md);
+> nothing here references it and self-host deployments never
+> need it.
+
 ## Recipe A — Single container (SQLite)
 
 Target: a workspace with ≤10 workers, ≤10 properties. Runs fine on a
@@ -632,6 +639,9 @@ provisioned per visitor, not per operator.
 | `CREWDAY_DEMO_GLOBAL_DAILY_USD_CAP` | 5                      | Recipe C only; deployment-wide daily kill-switch across every demo workspace. §11 |
 | `CREWDAY_DEMO_BLOCK_CIDR`   | -                              | Recipe C only; optional comma-separated IP deny-list. §24 |
 | `CREWDAY_DEMO_DB_DENYLIST`  | -                              | Recipe C only; comma-separated list of DB URLs the demo refuses to start on. §16 |
+| `CREWDAY_FEEDBACK_URL`      | -                              | Marketing-site bridge: redirect target for `GET /feedback-redirect`; must end in `/suggest`. Set together with the next two or none. See `docs/specs-site/03-app-integration.md`. |
+| `CREWDAY_FEEDBACK_SIGN_KEY` | -                              | 32-byte base64 HMAC key used to sign the magic-link token; matches the site's `SITE_FEEDBACK_SIGN_KEY`. See `docs/specs-site/03-app-integration.md`. |
+| `CREWDAY_FEEDBACK_HASH_SALT`| -                              | 32-byte base64 salt used to derive the opaque `user_hash` / `workspace_hash` the site keys writes off. App-only — never sent to the site. See `docs/specs-site/03-app-integration.md`. |
 
 
 Signup behaviour, throttles, and disposable-domain paths are

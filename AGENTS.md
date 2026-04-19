@@ -246,6 +246,22 @@ Plain text to the user; CLI handles styling.
   cross-client coherence is SSE-driven (one
   `EventSource('/events')` feeds `queryClient.invalidateQueries`).
   No Alpine, Vue, Tailwind, or HTMX. See `docs/specs/14`.
+- **Two spec trees, two surfaces.** App specs live under
+  `docs/specs/` and govern everything at `app.crew.day` (and the
+  demo at `demo.crew.day`). Marketing-site specs live under
+  [`docs/specs-site/`](docs/specs-site/) and govern everything at
+  `crew.day` — the landing pages and the agent-clustered
+  suggestion box. Keep substantive changes in their own tree;
+  cross-tree pointers are fine when one surface needs to know
+  the other exists (e.g. the app's env-var table mentioning the
+  feedback bridge), but actual content lives where it's owned.
+  Site is optional for self-hosters and has its own build +
+  deploy under `site/`.
+- **Site stack.** `site/web/` is **Astro 4+ with React islands**
+  (not Vite-SPA — different SEO and first-paint needs on a
+  brochure site), built to static HTML. `site/api/` is FastAPI
+  + SQLite, matching the app's Python toolchain. Design tokens
+  and icons flow one-way app → site. See `docs/specs-site/00-overview.md`.
 - **Semantic CSS classes only.** Name after the thing
   (`task-card`, `shift-timeline`, `payroll-summary`), not the look.
   No utility/atomic classes (Tailwind-style), no inline `style=""`,
