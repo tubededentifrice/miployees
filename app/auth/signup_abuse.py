@@ -8,11 +8,11 @@ Four public surfaces, one module:
   re-exported from :mod:`app.auth._throttle` so the router catches
   one symbol.
 * :func:`is_disposable` — consults the bundled
-  :file:`disposable_domains.txt` file via an :func:`functools.lru_cache`
-  so the file is read once per process lifetime. The
-  :func:`reload_disposable_domains` hook clears the cache so an
-  operator SIGHUP (or a test) can pick up a refreshed file without
-  a restart.
+  :file:`app/abuse/data/disposable_domains.txt` file via an
+  :func:`functools.lru_cache` so the file is read once per process
+  lifetime. The :func:`reload_disposable_domains` hook clears the
+  cache so an operator SIGHUP (or a test) can pick up a refreshed
+  file without a restart.
 * :func:`check_captcha` — thin wrapper around Cloudflare Turnstile's
   ``siteverify`` endpoint. Falls through to an offline test-mode that
   accepts a fixed ``"test-pass"`` token and rejects ``"test-fail"``
@@ -24,12 +24,17 @@ Four public surfaces, one module:
   both the signup domain service and the abuse module agree on the
   vocabulary of slug-related errors.
 
-**Module-level comment** (DRY with ``_throttle.py``): cd-7huk will
-absorb this module's throttle handoff into the shared deployment-wide
-abuse throttle. Until then the in-memory ``Throttle`` instance that
-:func:`check_rate` hands into owns the counters, and a process
-restart resets every bucket. That's documented behaviour for the
-local pre-shared-throttle slice, not a bug.
+**Module-level comment** (DRY with ``_throttle.py``): cd-7huk
+partially landed — ``app/abuse/throttle.py`` now exists and the
+passkey-login-begin endpoint has moved onto the shared
+:func:`~app.abuse.throttle.throttle` decorator. The signup-start
+and magic-link throttle handoff here is still pending (no dedicated
+Beads task; the scope is documented in
+:mod:`app.auth._throttle`'s own docstring). Until then the
+in-memory ``Throttle`` instance that :func:`check_rate` hands into
+owns the counters, and a process restart resets every bucket. That's
+documented behaviour for the local pre-shared-throttle slice, not a
+bug.
 
 See ``docs/specs/15-security-privacy.md`` §"Self-serve abuse
 mitigations" and ``docs/specs/03-auth-and-tokens.md`` §"Self-serve
@@ -41,6 +46,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime
 from functools import lru_cache
+from importlib.resources import files as _pkg_files
 from pathlib import Path
 from typing import Final
 
@@ -80,11 +86,17 @@ __all__ = [
 
 
 # Bundled blocklist — one canonical path, loaded once per process.
+# The file lives under ``app/abuse/data/`` (spec §15 "Self-serve abuse
+# mitigations": *"the in-repo file (``app/abuse/data/disposable_domains.txt``)"*)
+# — we resolve it through :func:`importlib.resources.files` so the
+# path stays correct whether :mod:`app.abuse` is a directory on disk
+# (dev + tests) or a zipped wheel (hypothetical future packaging).
 # Operator overrides via the deployment setting
 # ``settings.signup_disposable_domains_path`` (§15) land in a future
-# follow-up; until then the bundled file is the single source of
-# truth.
-_DEFAULT_DOMAINS_PATH: Final[Path] = Path(__file__).parent / "disposable_domains.txt"
+# follow-up; until then the bundled file is the single source of truth.
+_DEFAULT_DOMAINS_PATH: Final[Path] = Path(
+    str(_pkg_files("app.abuse").joinpath("data", "disposable_domains.txt"))
+)
 
 # Cloudflare Turnstile server-side verification endpoint. Pinned (not
 # operator-configurable): changing the provider is a code diff, not

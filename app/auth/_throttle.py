@@ -1,10 +1,12 @@
 """In-memory rate-limiter for the magic-link surface.
 
-**Temporary home — see cd-7huk.** This module exists because
-:mod:`app.auth.magic_link` needs a rate-limit gate today and the
-shared abuse-throttle module (``app/abuse/throttle.py``) has not yet
-landed. cd-7huk absorbs these checks into the deployment-wide
-throttle; until then the magic-link service keeps them private.
+**Partial migration in progress — see cd-7huk.** This module
+predates the shared abuse-throttle module (``app/abuse/throttle.py``),
+which now exists. cd-7huk migrated the passkey-login-begin endpoint
+onto the new :func:`~app.abuse.throttle.throttle` decorator. The
+remaining buckets (magic-link, signup-start, recover-start, passkey
+login-finish lockout) still live here; their handoff to
+``app/abuse/throttle.py`` is pending and not yet budgeted.
 
 Three scoped buckets per caller:
 

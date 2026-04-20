@@ -10,6 +10,10 @@ bootstrap).
 > writes a substantial new module):
 >
 > - `app-layout.md` — package structure, entry points, import graph.
+>   Cross-cutting concerns (alongside `app/audit/`, `app/tenancy/`,
+>   `app/events/`): `app/abuse/` — shared `@throttle` decorator,
+>   `ShieldStore`, and the disposable-domain blocklist
+>   (`app/abuse/data/disposable_domains.txt`). Added by cd-7huk.
 >   Key entry points as of cd-ika7:
 >   - `app/api/factory.py` — `create_app(settings) -> FastAPI`; the
 >     composition root that wires middleware, routers, OpenAPI, and SPA.

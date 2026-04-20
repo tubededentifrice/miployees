@@ -1,0 +1,42 @@
+# generated 2026-04-20
+# crew.day disposable-email-domain blocklist (minimal curated seed).
+#
+# The first line is the machine-read freshness pin: the CI unit gate
+# in tests/unit/abuse/test_disposable_domains.py parses the YYYY-MM-DD
+# token and fails the build if the in-repo file is more than 30 days
+# older than the build date (spec §15 "Self-serve abuse mitigations":
+# "Freshness. The bundled list MUST be refreshed weekly … CI fails the
+# build [if] more than 30 days old."). The weekly refresh job
+# `.github/workflows/refresh-disposable-domains.yml` regenerates the
+# file and bumps the pin; the format is fixed so the parser stays
+# trivial ("# generated YYYY-MM-DD", one space, ISO date, no trailing
+# comment).
+#
+# Source: hand-picked from the well-known throwaway providers surveyed
+# at https://github.com/disposable-email-domains/disposable-email-domains
+# (MIT). cd-055 shipped this small curated seed so the signup abuse
+# guards have a non-empty default; the full ~3k-entry list is pulled
+# in by the periodic refresh job specced in §15.
+#
+# Format: one canonical domain per line, lowercase, no whitespace.
+# Lines starting with `#` and blank lines are ignored.
+10minutemail.com
+dispostable.com
+fakemail.net
+guerrillamail.com
+guerrillamailblock.com
+mailinator.com
+mailnesia.com
+maildrop.cc
+mohmal.com
+sharklasers.com
+spam4.me
+temp-mail.org
+tempmail.com
+tempmailaddress.com
+throwawaymail.com
+trashmail.com
+trashmail.de
+yopmail.com
+zetmail.com
+mintemail.com

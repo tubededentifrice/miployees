@@ -46,6 +46,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.abuse.throttle import ShieldStore
+from app.abuse.throttle import throttle as throttle_decorator
 from app.adapters.db.session import make_uow
 from app.api.deps import current_workspace_context, db_session
 from app.audit import write_audit
@@ -408,6 +410,28 @@ def _client_ip(request: Request) -> str:
     return request.client.host
 
 
+def _login_begin_key(*args: object, **kwargs: object) -> str:
+    """Return the per-IP bucket key for the passkey-login begin throttle.
+
+    :func:`app.abuse.throttle.throttle` forwards the wrapped handler's
+    positional + keyword arguments verbatim; FastAPI is free to bind
+    ``request`` by position or by keyword depending on the version.
+    We scan both: first ``kwargs["request"]``, then the positional
+    tuple. A :class:`Request` match wins. If nothing in the argv is a
+    :class:`Request` (shouldn't happen at runtime), we fall back to
+    the empty string so the throttle degrades to "one shared bucket"
+    rather than crashing — matches the same fail-safe shape
+    :func:`_client_ip` uses on an unresolved client.
+    """
+    req = kwargs.get("request")
+    if isinstance(req, Request):
+        return _client_ip(req)
+    for arg in args:
+        if isinstance(arg, Request):
+            return _client_ip(arg)
+    return ""
+
+
 _log = logging.getLogger(__name__)
 
 
@@ -526,6 +550,7 @@ def build_login_router(
     *,
     throttle: Throttle,
     settings: Settings | None = None,
+    begin_shield: ShieldStore | None = None,
 ) -> APIRouter:
     """Return a fresh :class:`APIRouter` for the passkey login flow.
 
@@ -541,6 +566,13 @@ def build_login_router(
     constant for the router's lifetime. The login domain service
     itself reads :func:`app.config.get_settings` lazily; the router
     only needs the root-key hash material.
+
+    ``begin_shield`` is the :class:`~app.abuse.throttle.ShieldStore`
+    backing the per-IP 10/min rate limit on the ``/login/start``
+    endpoint (spec §15 "Rate limiting and abuse controls": *"10/min
+    per IP for login begin"*). Default: a fresh store per router
+    build, which matches the production singleton-per-process shape
+    and gives each test-constructed router a clean rolling window.
     """
     cfg = settings if settings is not None else get_settings()
     # Derive the HKDF subkey once at router build — the root key is
@@ -549,20 +581,51 @@ def build_login_router(
     # buckets.
     login_pepper = derive_subkey(cfg.root_key, purpose=_PASSKEY_LOGIN_HKDF_PURPOSE)
 
+    # Per-router shield store so two test-built routers don't share the
+    # sliding-window counter. Production constructs one router per
+    # process (§01 "One worker pool per process"), so a per-router
+    # default is exactly one process-wide store in practice.
+    shield = begin_shield if begin_shield is not None else ShieldStore()
+
     router = APIRouter(prefix="/auth/passkey/login", tags=["auth", "login"])
 
+    # §15 "Rate limiting and abuse controls": 10/min per IP for login
+    # begin. Keyed on the raw client IP string (empty for unresolved
+    # clients, per :func:`_client_ip`). We key on the plaintext IP
+    # here rather than a peppered hash because this bucket never
+    # leaves the process — the Throttle lockout buckets downstream
+    # hash their IPs because they pin audit rows; this one only gates
+    # a single call and the hit list never hits disk.
+    #
+    # ``key_fn`` walks both positional and keyword argument tuples so
+    # it stays correct whether FastAPI binds ``request`` positionally
+    # or by keyword (version-dependent).
     @router.post(
         "/start",
         response_model=LoginStartResponse,
         summary="Begin a passkey login; returns request options + a challenge id",
     )
-    def post_login_start(session: _Db) -> LoginStartResponse:
+    @throttle_decorator(
+        scope="passkey.login.begin",
+        key_fn=_login_begin_key,
+        limit=10,
+        window_s=60,
+        store=shield,
+    )
+    def post_login_start(request: Request, session: _Db) -> LoginStartResponse:
         """Mint an assertion challenge for conditional UI.
 
         No body — the caller is anonymous (no session yet). The
         challenge row carries a login-sentinel subject so the
         finish handler can reject a signup or register challenge
         smuggled through the login path.
+
+        The per-IP 10/min rate limit is applied by the
+        :func:`app.abuse.throttle.throttle` decorator **before** the
+        handler body runs — the 11th request inside a minute from
+        the same IP returns ``429 rate_limited`` and never touches
+        the DB. ``request`` sits in the signature first because the
+        decorator's ``key_fn`` reads it positionally.
         """
         opts: AuthenticationOptions = login_start(session)
         return LoginStartResponse(
