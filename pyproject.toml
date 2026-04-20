@@ -82,3 +82,54 @@ omit = ["*/migrations/*", "*/__init__.py"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+
+# Import boundary contracts (cd-ev0).
+#
+# Enforces the rules in docs/specs/01-architecture.md §"Boundary rules"
+# and docs/specs/17-testing-quality.md §"Import boundaries":
+#   1. `app.domain` must not import `app.adapters` (ports.py is the
+#      one exception — it's the Protocol seam).
+#   2. `app.domain` must not import handlers (`app.api`, `app.web`,
+#      `app.cli`, `cli`) or `app.worker` (the scheduler/worker layer
+#      drives the domain, not the other way around — §17 "Layer
+#      contract").
+#   3. `app.adapters` must not import handlers or `app.worker` either.
+#
+# A fourth contract in the spec — each `domain.<X>` may only reach
+# siblings through the sibling's `__init__.py` public surface — is
+# deferred until domain contexts grow submodules (today every
+# `app/domain/<ctx>/__init__.py` is a docstring-only stub). Tracked
+# as a follow-up Beads task.
+#
+# `include_external_packages = true` lets us name modules that don't
+# yet exist as packages in the tree (e.g. `app.cli`, `cli`) without
+# import-linter failing its build-graph step. `unmatched_ignore_imports_
+# alerting = "none"` lets us describe the long-term allowlist now
+# (e.g. `app.domain.** -> app.adapters.*.ports`) without tripping
+# when no such imports exist yet.
+[tool.importlinter]
+root_packages = ["app"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Domain forbids adapters (except ports)"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = ["app.adapters"]
+ignore_imports = [
+    "app.domain.** -> app.adapters.*.ports",
+    "app.domain.** -> app.adapters.*.ports.*",
+]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "Domain forbids handlers (api/web/cli/worker)"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = ["app.api", "app.web", "app.cli", "cli", "app.worker"]
+
+[[tool.importlinter.contracts]]
+name = "Adapters forbid handlers (api/web/cli/worker)"
+type = "forbidden"
+source_modules = ["app.adapters"]
+forbidden_modules = ["app.api", "app.web", "app.cli", "cli", "app.worker"]

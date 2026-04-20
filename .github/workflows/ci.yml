@@ -7,8 +7,9 @@
 #   * lint         — ruff check + ruff format --check
 #   * type         — mypy --strict on app/ (extends to cli/ via cd-j202
 #                    once that tree exists)
-#   * boundaries   — import-linter. Advisory (continue-on-error) until
-#                    cd-ev0 lands the strict config.
+#   * boundaries   — import-linter. Blocking check as of cd-ev0 — a
+#                    red result fails the build. Contracts live in
+#                    pyproject.toml under [tool.importlinter].
 #   * unit         — pytest tests/unit tests/api tests/property tests/llm
 #                    on SQLite only (the default).
 #   * integration  — pytest tests/integration on both SQLite (default)
@@ -75,11 +76,10 @@ jobs:
         run: uv run mypy app
 
   boundaries:
-    # Advisory until cd-ev0 lands the import-linter config + contracts.
-    # The job still runs so we catch the first real run quickly, but a
-    # red result does not block merges until cd-ev0 flips the gate.
+    # Blocking check as of cd-ev0. Contracts live in pyproject.toml
+    # under [tool.importlinter]; see docs/specs/01-architecture.md
+    # §"Module boundaries" and §"Boundary rules".
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -93,25 +93,8 @@ jobs:
         run: uv sync --group dev
       - name: lint-imports
         # import-linter discovers its config from pyproject.toml
-        # ([tool.importlinter]) or from .importlinter / setup.cfg in
-        # the repo root. cd-ev0 adds the real contracts; until then,
-        # skip with a note rather than fail (contract-less runs emit
-        # "no contracts configured" which some versions treat as an
-        # error).
-        run: |
-          has_config=0
-          if grep -q '\[tool\.importlinter\]' pyproject.toml 2>/dev/null; then
-            has_config=1
-          elif [ -f .importlinter ]; then
-            has_config=1
-          elif [ -f setup.cfg ] && grep -q '\[importlinter\]' setup.cfg 2>/dev/null; then
-            has_config=1
-          fi
-          if [ "$has_config" = "1" ]; then
-            uv run lint-imports
-          else
-            echo "No import-linter config yet (cd-ev0). Skipping."
-          fi
+        # ([tool.importlinter]).
+        run: uv run lint-imports
 
   unit:
     runs-on: ubuntu-latest
