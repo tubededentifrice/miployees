@@ -924,11 +924,27 @@ def complete_signup(
         )
         session.flush()
 
+        # Build the real workspace context eagerly so the owners-
+        # bootstrap audit row (cd-ckr) is attributed to the freshly-
+        # minted tenancy from the very first audit emission. Reused
+        # below for the ``signup.completed`` row — a single
+        # correlation id links the two together.
+        real_ctx = WorkspaceContext(
+            workspace_id=workspace_id,
+            workspace_slug=attempt.desired_slug,
+            actor_id=user_id,
+            actor_kind="user",
+            actor_grant_role="manager",
+            actor_was_owner_member=True,
+            audit_correlation_id=new_ulid(),
+        )
         # Seed the four system groups. The owners seed also emits the
-        # member + role-grant rows — the other three are empty
-        # scaffolding today (capability payloads land with cd-zkr).
+        # member + role-grant rows + the ``owners_bootstrapped``
+        # audit row — the other three are empty scaffolding today
+        # (capability payloads land with cd-zkr).
         seed_owners_system_group(
             session,
+            real_ctx,
             workspace_id=workspace_id,
             owner_user_id=user_id,
             clock=clock,
@@ -961,18 +977,11 @@ def complete_signup(
     with tenant_agnostic():
         session.flush()
 
-    # Switch to the real workspace context for the final audit row —
-    # this is the first time "the workspace exists and the actor
-    # belongs to it" is true.
-    real_ctx = WorkspaceContext(
-        workspace_id=workspace_id,
-        workspace_slug=attempt.desired_slug,
-        actor_id=user_id,
-        actor_kind="user",
-        actor_grant_role="manager",
-        actor_was_owner_member=True,
-        audit_correlation_id=new_ulid(),
-    )
+    # ``real_ctx`` was built earlier (before the seed step) so the
+    # owners-bootstrapped audit row is attributed to the new
+    # workspace. Reuse it here so the ``signup.completed`` row
+    # carries the same ``audit_correlation_id`` — the forensic trail
+    # joins on correlation id across the two rows.
     write_audit(
         session,
         real_ctx,

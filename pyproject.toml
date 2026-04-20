@@ -142,6 +142,17 @@ ignore_imports = [
     # land these exceptions drop together.
     "app.domain.identity.role_grants -> app.adapters.db.authz.models",
     "app.domain.identity.role_grants -> app.adapters.db.places.models",
+    # v1 stopgap (cd-ckr): the owners-membership check lives under
+    # ``app.authz.owners`` so the tenancy middleware (cd-7y4) and
+    # the identity domain share one SELECT shape. ``app.authz``
+    # itself is not ``app.domain`` so the contract would allow its
+    # direct ``app.adapters`` import, but the transitive walk from
+    # ``app.domain.identity.role_grants → app.authz.owners →
+    # app.adapters.db.authz.models`` trips the checker. Ignoring the
+    # intermediate edge keeps the DRY'd seam honest without
+    # loosening the top-level "domain can't touch adapters" rule.
+    # Drops with cd-duv6 when the proper repository protocol lands.
+    "app.domain.identity.role_grants -> app.authz.owners",
     # ``app.audit`` is the canonical write seam for the audit log and
     # is intended to be called from every domain service (see
     # ``docs/specs/01-architecture.md`` §"Shared kernel" —

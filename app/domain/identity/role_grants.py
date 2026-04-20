@@ -63,6 +63,12 @@ cd-duv6 (extended scope: covers both ``permission_groups`` and
 ``role_grants``). The interim coupling keeps this v1 slice
 shippable without blocking on a broader Protocol-seam refactor of
 every domain context.
+
+The owners-membership lookup is delegated to
+:func:`app.authz.owners.is_owner_member` so the tenancy middleware
+(cd-7y4) and this module share one SELECT shape. Same DB coupling
+under the hood; the shared helper just keeps the definition of
+"owner" in one place.
 """
 
 from __future__ import annotations
@@ -81,6 +87,7 @@ from app.adapters.db.authz.models import (
 )
 from app.adapters.db.places.models import PropertyWorkspace
 from app.audit import write_audit
+from app.authz.owners import is_owner_member
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
@@ -220,32 +227,6 @@ def _load_grant(session: Session, ctx: WorkspaceContext, *, grant_id: str) -> Ro
     return row
 
 
-def _is_owner_member(session: Session, ctx: WorkspaceContext, *, user_id: str) -> bool:
-    """Return ``True`` iff ``user_id`` is a member of ``owners@<workspace>``.
-
-    Joins ``permission_group_member`` to ``permission_group`` on the
-    system ``owners`` slug — the membership row alone is
-    insufficient because a workspace may carry a non-system group
-    with the same slug (the DB uniqueness is scoped to
-    ``(workspace_id, slug)`` and we also gate on ``system=True``).
-    """
-    stmt = (
-        select(PermissionGroupMember)
-        .join(
-            PermissionGroup,
-            PermissionGroup.id == PermissionGroupMember.group_id,
-        )
-        .where(
-            PermissionGroupMember.workspace_id == ctx.workspace_id,
-            PermissionGroupMember.user_id == user_id,
-            PermissionGroup.slug == "owners",
-            PermissionGroup.system.is_(True),
-        )
-        .limit(1)
-    )
-    return session.scalars(stmt).first() is not None
-
-
 def _has_active_manager_grant(
     session: Session, ctx: WorkspaceContext, *, user_id: str
 ) -> bool:
@@ -280,7 +261,7 @@ def _assert_authorized_to_grant(
     * ``worker`` / ``client`` / ``guest`` — ``owners@<workspace>`` OR
       an active ``manager`` role grant in the workspace.
     """
-    if _is_owner_member(session, ctx, user_id=ctx.actor_id):
+    if is_owner_member(session, workspace_id=ctx.workspace_id, user_id=ctx.actor_id):
         return
     if grant_role == "manager":
         raise NotAuthorizedForRole(
@@ -491,8 +472,8 @@ def revoke(
     # V1 pragmatic rule (see module docstring): only ``manager`` revokes
     # interact with owners-membership. Worker / client / guest revokes
     # never affect the owners governance anchor, so they always pass.
-    if row.grant_role == "manager" and _is_owner_member(
-        session, ctx, user_id=row.user_id
+    if row.grant_role == "manager" and is_owner_member(
+        session, workspace_id=ctx.workspace_id, user_id=row.user_id
     ):
         owner_count = _count_owner_members(session, ctx)
         # The caller's workspace always has ≥ 1 owner (§02

@@ -15,8 +15,15 @@ groups (``owners``, ``managers``, ``all_workers``, ``all_clients``):
 * Membership writes (``add_member`` / ``remove_member``) are
   allowed on every group including system ones, and both are
   idempotent: a duplicate add or a missing remove is a no-op that
-  still emits an audit row (§02 "Audit"). The ``owners``
-  last-member guard is deferred to cd-ckr (owners-group governance).
+  still emits an audit row (§02 "Audit"). Removing the last member
+  of the system ``owners`` group raises :class:`LastOwnerMember`
+  (cd-ckr): §02's "owners has ≥ 1 active member at all times"
+  invariant would otherwise break. The caller-visible forensic row
+  for the refusal lands on a **fresh** UoW via
+  :func:`write_member_remove_rejected_audit` — the typed exception
+  rolls back the primary UoW (and with it any audit row we queued
+  there), so the HTTP router opens a fresh session, emits the
+  rejection row, then re-raises for the caller.
 
 Every write goes through :func:`app.audit.write_audit` so the domain
 side of the audit trail lives here — §02 "Permission resolution"
@@ -52,7 +59,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -64,6 +71,7 @@ from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
 
 __all__ = [
+    "LastOwnerMember",
     "PermissionGroupMemberRef",
     "PermissionGroupNotFound",
     "PermissionGroupRef",
@@ -78,6 +86,7 @@ __all__ = [
     "list_members",
     "remove_member",
     "update_group",
+    "write_member_remove_rejected_audit",
 ]
 
 
@@ -141,6 +150,25 @@ class UnknownCapability(ValueError):
 
     422-equivalent. The offending key is the first unknown one
     encountered during validation; use :meth:`__str__` for display.
+    """
+
+
+class LastOwnerMember(ValueError):
+    """Refuse to remove the sole member of the system ``owners`` group.
+
+    409-equivalent (task cd-ckr; §02 "permission_group" §"Invariants"
+    also maps this to 422 ``would_orphan_owners_group`` — see the
+    spec-drift note flagged to the Documenter). The service rejects
+    the remove **before** the DELETE lands, so the caller's UoW
+    rolls back and the ``owners`` group keeps its member. The
+    router is expected to write the forensic rejection audit row
+    on a fresh UoW (see :func:`write_member_remove_rejected_audit`)
+    so the refusal trail survives the rollback.
+
+    The guard is scoped to the **system** ``owners`` group only
+    (``slug == 'owners'`` AND ``system is True``). A user-defined
+    group that happens to be named ``owners`` never triggers it —
+    it is not the governance anchor.
     """
 
 
@@ -531,19 +559,49 @@ def remove_member(
 ) -> None:
     """Remove the ``(group_id, user_id)`` membership row.
 
-    Raises :class:`PermissionGroupNotFound` if the group is missing.
+    Raises:
+
+    * :class:`PermissionGroupNotFound` — the group is missing from
+      the caller's workspace.
+    * :class:`LastOwnerMember` — the target group is the system
+      ``owners`` group and removing ``user_id`` would leave it with
+      zero members. §02 "permission_group" §"Invariants" forbids an
+      empty ``owners`` group; the guard fires BEFORE the DELETE so
+      the caller's UoW keeps the row intact on rollback.
+
     A missing *member* row (the user was never in the group, or was
     already removed) is a no-op write — we still emit the audit row
     because the caller deliberately acted on the membership, and
     absence + re-emit is what §02 "Audit" expects for idempotent
-    admin operations.
+    admin operations. The last-owner guard only fires when the
+    member row exists AND deleting it would tip the count to zero;
+    a stale "remove me again" on a non-last owner-member slot is
+    idempotent (no DB write, audit row emitted).
 
     ``clock`` is optional; tests pin the audit row's ``created_at``
     via a :class:`~app.util.clock.FrozenClock`.
     """
-    _load_group(session, ctx, group_id=group_id)
+    group = _load_group(session, ctx, group_id=group_id)
 
     row = session.get(PermissionGroupMember, (group_id, user_id))
+
+    # Last-owner guard: fire only when the target is the system
+    # ``owners`` group, the member row actually exists (otherwise
+    # this is an idempotent no-op removal that does not change
+    # membership count), and the remove would leave the group empty.
+    if row is not None and group.slug == "owners" and group.system:
+        owner_count = _count_members(session, group_id=group.id)
+        if owner_count <= 1:
+            # Do NOT write an audit row on the caller's UoW — the
+            # typed exception rolls back the outer transaction and
+            # would discard the row with it. The router writes a
+            # ``member_remove_rejected`` forensic row on a fresh
+            # UoW via :func:`write_member_remove_rejected_audit`.
+            raise LastOwnerMember(
+                f"cannot remove the last member of the 'owners' group "
+                f"({group.id!r}); transfer owners membership first"
+            )
+
     if row is not None:
         session.delete(row)
         session.flush()
@@ -555,5 +613,77 @@ def remove_member(
         entity_id=f"{group_id}:{user_id}",
         action="member_removed",
         diff={"group_id": group_id, "user_id": user_id},
+        clock=clock,
+    )
+
+
+def _count_members(session: Session, *, group_id: str) -> int:
+    """Return the number of ``permission_group_member`` rows for ``group_id``.
+
+    Helper for the last-owner guard in :func:`remove_member`. Lives
+    here (not on ``role_grants``) because the guard triggers on
+    **membership** count, not grant count — the two are distinct
+    concepts (§02 "permission_group_member" vs §02 "role_grants").
+
+    The count does not add an explicit ``workspace_id`` predicate —
+    the ORM tenant filter injects ``permission_group_member.workspace_id
+    = ctx.workspace_id`` automatically on every SELECT. The caller
+    has already loaded the group via :func:`_load_group` so we know
+    it belongs to the caller's workspace; member rows for the same
+    ``group_id`` cannot legally belong to another workspace (FK
+    ``permission_group_member.workspace_id`` points at the group's
+    workspace), so the filter's auto-predicate is sufficient.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(PermissionGroupMember)
+        .where(PermissionGroupMember.group_id == group_id)
+    )
+    count = session.scalar(stmt)
+    # ``select(func.count())`` always returns a scalar (zero when
+    # no rows match); ``or 0`` keeps mypy honest against the
+    # ``scalar()`` Optional return type. An unexpected ``None``
+    # would be treated as "no members", which is the safe-fails-
+    # closed default for the last-owner guard.
+    return count or 0
+
+
+def write_member_remove_rejected_audit(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    group_id: str,
+    user_id: str,
+    reason: str = "last_owner_member",
+    clock: Clock | None = None,
+) -> None:
+    """Append the forensic rejection row for a refused ``remove_member`` call.
+
+    Mirrors :func:`app.auth.magic_link.write_rejected_audit`: the
+    typed :class:`LastOwnerMember` exception bubbles through the
+    caller's UoW, which rolls back and discards every row the
+    service queued on the same session (including any audit row).
+    The HTTP router catches the exception, opens a fresh UoW via
+    :func:`app.adapters.db.session.make_uow`, and calls this helper
+    so the rejection trail lands regardless of the primary UoW's
+    fate.
+
+    ``diff`` carries symbolic ``reason`` plus ``group_id`` /
+    ``user_id``. No PII — the payload is ULID-only.
+
+    The helper never commits or flushes; the router's fresh UoW
+    owns that.
+    """
+    write_audit(
+        session,
+        ctx,
+        entity_kind="permission_group_member",
+        entity_id=f"{group_id}:{user_id}",
+        action="member_remove_rejected",
+        diff={
+            "reason": reason,
+            "group_id": group_id,
+            "user_id": user_id,
+        },
         clock=clock,
     )

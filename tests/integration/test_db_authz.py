@@ -770,10 +770,12 @@ class TestSeedOwnersSystemGroup:
         db_session.add(ws)
         db_session.flush()
 
-        token = set_current(_ctx_for(ws, user.id))
+        ctx = _ctx_for(ws, user.id)
+        token = set_current(ctx)
         try:
             group, member, grant = seed_owners_system_group(
                 db_session,
+                ctx,
                 workspace_id=ws.id,
                 owner_user_id=user.id,
                 clock=clock,
@@ -819,11 +821,13 @@ class TestSeedOwnersSystemGroup:
             owner_user_id=user.id,
             clock=clock,
         )
-        token = set_current(_ctx_for(ws, user.id))
+        ctx = _ctx_for(ws, user.id)
+        token = set_current(ctx)
         try:
             with pytest.raises(IntegrityError):
                 seed_owners_system_group(
                     db_session,
+                    ctx,
                     workspace_id=ws.id,
                     owner_user_id=user.id,
                     clock=clock,

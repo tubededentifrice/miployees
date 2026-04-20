@@ -20,6 +20,15 @@ creates the workspace. Callers are responsible for the transaction
 boundary; we only ``session.flush()`` so subsequent reads inside the
 txn see the rows.
 
+**Audit.** Every seed emits one ``audit.workspace.owners_bootstrapped``
+row in the same session (cd-ckr). The caller must supply a
+:class:`~app.tenancy.WorkspaceContext` pinned to the freshly-minted
+workspace so the audit row is attributable to the new tenancy from
+row one. Signup builds a user-scoped ctx because the acting user is
+the first (and only) owners member; admin-init builds a
+system-scoped ctx because the operator seat is created
+out-of-process.
+
 See ``docs/specs/02-domain-model.md`` §"permission_group",
 §"permission_group_member", §"role_grants" and
 ``docs/specs/05-employees-and-roles.md`` §"Roles & groups".
@@ -34,6 +43,8 @@ from app.adapters.db.authz.models import (
     PermissionGroupMember,
     RoleGrant,
 )
+from app.audit import write_audit
+from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
 
@@ -63,6 +74,7 @@ _NON_OWNERS_SYSTEM_GROUPS: tuple[tuple[str, str], ...] = (
 
 def seed_owners_system_group(
     session: Session,
+    ctx: WorkspaceContext,
     *,
     workspace_id: str,
     owner_user_id: str,
@@ -70,8 +82,8 @@ def seed_owners_system_group(
 ) -> tuple[PermissionGroup, PermissionGroupMember, RoleGrant]:
     """Seed the ``owners`` group + its sole member + the owner's role grant.
 
-    Writes three rows in the caller's session — caller owns the
-    outer transaction and commit cadence.
+    Writes three rows and one audit row in the caller's session —
+    caller owns the outer transaction and commit cadence.
 
     * :class:`PermissionGroup` with ``slug='owners'``, ``system=True``
       and a ``{"all": True}`` capability payload. v1 owners hold
@@ -85,9 +97,20 @@ def seed_owners_system_group(
       renamed ``owner``) per §02's v1 enum; owner-level authority
       comes from the permission-group membership, not the role
       grant.
+    * One ``audit.workspace.owners_bootstrapped`` row attributing
+      the seed to ``ctx``. The diff carries ``workspace_id`` +
+      ``owner_user_id`` (both ULIDs, no PII).
+
+    ``ctx`` MUST be pinned to ``workspace_id`` — the audit writer
+    copies ``ctx.workspace_id`` onto the row, and a mismatch would
+    attribute the bootstrap to the wrong tenant. Callers in the
+    self-serve signup flow build the ctx with
+    ``actor_kind='user'`` + ``actor_was_owner_member=True`` because
+    the acting user is also the incoming first member of the
+    ``owners`` group (§03 "Self-serve signup" step 2).
 
     Returns the three newly-seeded rows so the caller can attach
-    audit IDs or continue the transaction.
+    follow-up audit IDs or continue the transaction.
 
     Re-running the helper for the same ``workspace_id`` raises
     :class:`~sqlalchemy.exc.IntegrityError` on the
@@ -130,6 +153,25 @@ def seed_owners_system_group(
     )
     session.add_all([member, grant])
     session.flush()
+
+    # Emit the owners-bootstrapped audit row atomically with the
+    # seeded rows — the caller's UoW commits both together, or both
+    # are rolled back if any downstream write in the same txn fails.
+    # Kept in-session (NOT on a fresh UoW) because this is the happy
+    # path, not a refusal — the spec's forensic value is that the
+    # bootstrap audit IS tied to the workspace's creation transaction.
+    write_audit(
+        session,
+        ctx,
+        entity_kind="workspace",
+        entity_id=workspace_id,
+        action="owners_bootstrapped",
+        diff={
+            "workspace_id": workspace_id,
+            "owner_user_id": owner_user_id,
+        },
+        clock=clock,
+    )
     return group, member, grant
 
 

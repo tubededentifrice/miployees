@@ -164,6 +164,19 @@ def bootstrap_workspace(
     """
     now = (clock if clock is not None else SystemClock()).now()
     workspace_id = new_ulid()
+    # Build a user-scoped ctx so the owners-bootstrapped audit row
+    # (cd-ckr) is attributed to the incoming first owner, matching
+    # production signup's shape. Tests that assert on the audit row
+    # can compare against this ctx's fields directly.
+    ctx = WorkspaceContext(
+        workspace_id=workspace_id,
+        workspace_slug=slug,
+        actor_id=owner_user_id,
+        actor_kind="user",
+        actor_grant_role="manager",
+        actor_was_owner_member=True,
+        audit_correlation_id=new_ulid(),
+    )
     # justification: seeding the tenancy anchor before a WorkspaceContext
     # exists; the ORM tenant filter has no ctx to apply here.
     with tenant_agnostic():
@@ -188,6 +201,7 @@ def bootstrap_workspace(
         session.flush()
         seed_owners_system_group(
             session,
+            ctx,
             workspace_id=workspace_id,
             owner_user_id=owner_user_id,
             clock=clock,
