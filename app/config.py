@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # --- Public URL ---
     public_url: str | None = None
 
+    # --- WebAuthn (optional override; derived from public_url otherwise) ---
+    # Only needed when the rp_id should differ from the origin's hostname —
+    # e.g. hosting on ``app.example.com`` but scoping passkeys to the parent
+    # ``example.com`` so they work on sibling subdomains too. See
+    # ``docs/specs/03-auth-and-tokens.md`` §"WebAuthn specifics".
+    webauthn_rp_id: str | None = None
+
     # --- SMTP (optional; see §10 messaging-notifications) ---
     smtp_host: str | None = None
     smtp_port: int = 587
