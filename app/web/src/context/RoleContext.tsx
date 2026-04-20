@@ -1,17 +1,5 @@
-// PLACEHOLDER — real impl lands in cd-knp1. DO NOT USE FOR PRODUCTION DECISIONS.
-//
-// Matches the surface expected by `layouts/PreviewShell`, `App`, and
-// future consumers: a `RoleProvider` that supplies `{ role, setRole }`
-// through context. The real implementation will back `role` with the
-// `crewday_role` cookie and `/switch/:role` mutation — see
-// `mocks/web/src/context/RoleContext.tsx`.
-import {
-  createContext,
-  useContext,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { persistRole, readRoleCookie } from "@/lib/preferences";
 import type { Role } from "@/types/api";
 
 interface RoleCtx {
@@ -22,7 +10,11 @@ interface RoleCtx {
 const Ctx = createContext<RoleCtx | null>(null);
 
 export function RoleProvider({ children }: { children: ReactNode }) {
-  const [role, setRole] = useState<Role>("manager");
+  const [role, setRoleState] = useState<Role>(() => readRoleCookie());
+  const setRole = useCallback((r: Role) => {
+    setRoleState(r);
+    persistRole(r);
+  }, []);
   const value = useMemo(() => ({ role, setRole }), [role, setRole]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

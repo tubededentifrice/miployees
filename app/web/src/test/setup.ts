@@ -10,3 +10,22 @@ if (typeof (globalThis as { EventSource?: unknown }).EventSource === "undefined"
   }
   (globalThis as { EventSource: unknown }).EventSource = NoopEventSource;
 }
+
+// Polyfill matchMedia in jsdom so ThemeProvider can resolve
+// "system" → "light"/"dark" without crashing. Prefers-color-scheme
+// is never truly exercised in tests (jsdom has no real user agent);
+// the stub returns a permanent "light" match so `systemTheme()` is
+// deterministic.
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  window.matchMedia = (query: string): MediaQueryList =>
+    ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    }) as MediaQueryList;
+}
