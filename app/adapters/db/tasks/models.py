@@ -94,16 +94,22 @@ _ASSIGNEE_ROLE_VALUES: tuple[str, ...] = (
     "guest",
 )
 
-# Allowed ``occurrence.state`` values. The v1 slice is the minimum
-# chain the acceptance criterion asks for; the fuller §06 machine
-# (``scheduled`` / ``cancelled`` / ``overdue``) lands with the
-# domain-layer scheduler worker (cd-0tg + follow-ups).
+# Allowed ``occurrence.state`` values. The v1 slice pinned the
+# minimum chain the cd-chd acceptance criterion asked for; cd-k4l
+# widens the enum with ``scheduled`` (pre-materialisation state
+# used by the scheduler worker as it stages future rows) and
+# ``cancelled`` (set by :func:`app.domain.tasks.schedules.delete`
+# when a parent schedule is soft-deleted). The full §06 machine
+# (``completed``, ``overdue``) lands with the scheduler worker and
+# the overdue-sweeper follow-ups.
 _OCCURRENCE_STATE_VALUES: tuple[str, ...] = (
+    "scheduled",
     "pending",
     "in_progress",
     "done",
     "skipped",
     "approved",
+    "cancelled",
 )
 
 # Allowed ``evidence.kind`` values — the §02 evidence taxonomy. The
@@ -348,6 +354,23 @@ class Schedule(Base):
     ``next_generation_at`` column is the scheduler worker's
     hot-path key, hence the ``(workspace_id, next_generation_at)``
     index.
+
+    **cd-k4l** extends the cd-chd v1 slice with the full §06
+    schedule shape used by the manager UI and the CRUD service
+    (:mod:`app.domain.tasks.schedules`): ``name``, ``area_id``,
+    ``backup_assignee_user_ids`` (ordered fallback list),
+    ``dtstart_local`` (property-local ISO-8601 timestamp),
+    ``duration_minutes``, ``rdate_local`` / ``exdate_local`` (line-
+    separated ISO-8601 local timestamps), ``active_from`` /
+    ``active_until`` (property-local active-range bounds),
+    ``paused_at`` (pause marker; §"Pause vs active range" pins
+    pause as the winning predicate), and ``deleted_at``
+    (soft-delete). The legacy cd-chd columns (``rrule_text``,
+    ``dtstart``, ``until``, ``assignee_user_id``, ``assignee_role``,
+    ``enabled``, ``next_generation_at``) remain in place for
+    backward compat; the CRUD service writes through to both the
+    old and new names until a follow-up migration drops the legacy
+    pair.
     """
 
     __tablename__ = "schedule"
@@ -371,18 +394,74 @@ class Schedule(Base):
         ForeignKey("property.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # cd-k4l spec display column. Nullable for backward compat with
+    # pre-migration rows; new writes populate it.
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # cd-k4l area scope. ``NULL`` = schedule applies across the
+    # property's areas. No FK yet (area FK is ``SET NULL`` elsewhere
+    # and would orphan the schedule if dropped); the domain service
+    # validates the area exists in the property at write time once
+    # cd-sn26 lands. Plain ``String`` matches the ``scope_property_id``
+    # convention on ``role_grant``.
+    area_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # Raw iCalendar RRULE body (e.g. ``FREQ=WEEKLY;BYDAY=MO,TH``).
     # The domain layer parses + evaluates against the parent
     # property's timezone.
     rrule_text: Mapped[str] = mapped_column(String, nullable=False)
     dtstart: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # cd-k4l spec ``dtstart_local`` column. ISO-8601 string in the
+    # property's local timezone (e.g. ``2026-04-20T09:00``). The
+    # scheduler worker resolves to UTC via ``property.timezone`` at
+    # occurrence-generation time. Nullable for backward compat;
+    # new writes populate it.
+    dtstart_local: Mapped[str | None] = mapped_column(String, nullable=True)
     until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # cd-k4l duration override. Nullable → fall back to the
+    # template's ``duration_minutes``. Matches the §06 schedule
+    # table.
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # cd-k4l RDATE / EXDATE line-separated ISO-8601 local timestamps.
+    # Stored verbatim; the generator re-parses on use. Empty string
+    # on create when the caller passed no overrides — the domain
+    # layer treats empty as "no extra dates".
+    rdate_local: Mapped[str] = mapped_column(String, nullable=False, default="")
+    exdate_local: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # cd-k4l active-range columns. Property-local dates; the
+    # generator filters occurrences to ``active_from ≤ date ≤
+    # active_until`` before materialising. ``active_from`` is
+    # required (``NULL`` would be ambiguous — "since when?" is a
+    # mandatory answer for a live schedule); ``active_until`` is
+    # nullable → open-ended weekly.
+    active_from: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_until: Mapped[str | None] = mapped_column(String, nullable=True)
+    # cd-k4l pause marker. ``NULL`` = live. ``paused_at`` wins over
+    # ``active_from`` / ``active_until`` per §06 "Pause vs active
+    # range" — a paused schedule never generates occurrences.
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # cd-k4l soft-delete marker. The template `delete()` in
+    # :mod:`app.domain.tasks.templates` reads this column when
+    # deciding whether a schedule still references the template;
+    # matches the convention on :class:`TaskTemplate.deleted_at`.
+    deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     assignee_user_id: Mapped[str | None] = mapped_column(
         String,
         ForeignKey("user.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # cd-k4l ordered backup-assignee list. JSON list of user ids;
+    # walked in order by the assignment algorithm (§06) when the
+    # primary (``assignee_user_id``) is unavailable. Domain service
+    # validates each entry holds a matching ``user_work_role`` at
+    # write time, returning 422 ``backup_invalid_work_role`` on
+    # failure (§06 "Backup list validation"). Empty by default.
+    backup_assignee_user_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
     )
     # Nullable — an unset role lets the generator resolve the
     # persona per-occurrence from the template's
@@ -412,6 +491,10 @@ class Schedule(Base):
         # Scheduler hot path: "which schedules are due now?"
         Index("ix_schedule_workspace_next_gen", "workspace_id", "next_generation_at"),
         Index("ix_schedule_template", "template_id"),
+        # cd-k4l list hot path: "live schedules in this workspace"
+        # filters on ``(workspace_id, deleted_at IS NULL)``; the
+        # composite index powers the manager's `/schedules` view.
+        Index("ix_schedule_workspace_deleted", "workspace_id", "deleted_at"),
     )
 
 
@@ -479,6 +562,13 @@ class Occurrence(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # cd-k4l cancellation reason. Free-form text set alongside
+    # ``state='cancelled'`` by the schedule-delete cascade
+    # (``'schedule deleted'``), task-cancel flow, etc. Nullable on
+    # every non-cancelled row; the domain layer enforces the
+    # "cancelled ↔ reason" pairing at write time (per-spec: the
+    # delete cascade populates ``'schedule deleted'`` verbatim).
+    cancellation_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

@@ -822,19 +822,20 @@ def delete(
 def _active_schedule_ids(
     session: Session, ctx: WorkspaceContext, *, template_id: str
 ) -> tuple[str, ...]:
-    """Return every ``schedule.id`` referencing ``template_id``.
+    """Return every live ``schedule.id`` referencing ``template_id``.
 
-    v1 has no ``schedule.deleted_at`` column (lands with cd-k4l);
-    every row in the table is therefore "active" for the purpose
-    of the in-use check. When cd-k4l lands this helper grows an
-    extra ``Schedule.deleted_at.is_(None)`` clause — touching only
-    this one site.
+    Soft-deleted schedules (``deleted_at IS NOT NULL``, added by
+    cd-k4l) no longer block a template's soft-delete — a retired
+    schedule is not a live consumer. The ordering keeps the error
+    payload deterministic for the UI rendering
+    "In use by 2 schedules: 01HWA…, 01HWA…".
     """
     stmt = (
         select(Schedule.id)
         .where(
             Schedule.workspace_id == ctx.workspace_id,
             Schedule.template_id == template_id,
+            Schedule.deleted_at.is_(None),
         )
         .order_by(Schedule.id.asc())
     )

@@ -54,6 +54,12 @@ dev = [
     # services: postgres block in CI — testcontainers handles container
     # lifecycle from inside the test process.
     "testcontainers[postgres]",
+    # Type stubs for :mod:`dateutil` used by
+    # :mod:`app.domain.tasks.schedules` (RRULE parsing). Without the
+    # stubs, ``mypy --strict`` flags ``from dateutil.rrule import
+    # rrulestr`` as untyped; installing them keeps the strict gate
+    # green without a blanket ``ignore_missing_imports``.
+    "types-python-dateutil",
 ]
 
 [tool.ruff]
@@ -209,6 +215,13 @@ ignore_imports = [
     # pattern as the identity stopgaps above; tracked by cd-duv6
     # (extended scope) — drops once the tasks repositories land.
     "app.domain.tasks.templates -> app.adapters.db.tasks.models",
+    # v1 stopgap (cd-k4l): ``app.domain.tasks.schedules`` reads
+    # :class:`Schedule` / :class:`Occurrence` / :class:`TaskTemplate`
+    # from ``app.adapters.db.tasks.models`` directly. Same
+    # Protocol-seam pattern as ``app.domain.tasks.templates``;
+    # tracked by cd-duv6 (extended scope) — drops once the tasks
+    # repositories land.
+    "app.domain.tasks.schedules -> app.adapters.db.tasks.models",
     # v1 stopgap (cd-whl): ``app.domain.time.shifts`` reads
     # :class:`Shift` + ``_SHIFT_SOURCE_VALUES`` from
     # ``app.adapters.db.time.models`` directly. Same Protocol-seam
