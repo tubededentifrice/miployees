@@ -904,6 +904,9 @@ def complete_recovery(
     # one at recovery time. Matches :func:`_agnostic_audit_ctx`
     # semantics.
     ctx = _agnostic_audit_ctx()
+    # Forward ``resolved_now`` so the callee's challenge-TTL comparison
+    # uses the same instant this caller resolved (same class of time-
+    # drift bug fixed in :func:`app.auth.signup.complete_signup`).
     credential_ref = passkey.register_finish(
         ctx,
         session,
@@ -911,6 +914,7 @@ def complete_recovery(
         challenge_id=challenge_id,
         credential=credential,
         clock=clock,
+        now=resolved_now,
     )
 
     # Audit FIRST under the caller's UoW, THEN evict the store.

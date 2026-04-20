@@ -959,6 +959,12 @@ def complete_signup(
     # row, deletes the one-shot challenge. Raising propagates out of
     # this block and the whole transaction rolls back (AC #1
     # atomicity test).
+    # Forward ``resolved_now`` explicitly: a caller that pinned ``now``
+    # without also freezing ``clock`` (the shape every pinned-``_PINNED``
+    # test uses) would otherwise see the callee fall back to the real
+    # wall clock and trip the 10-minute challenge TTL. Passing ``now``
+    # in keeps every TTL / audit timestamp inside this UoW aligned on
+    # one instant.
     passkey.register_finish_signup(
         session,
         signup_session_id=signup_attempt_id,
@@ -966,6 +972,7 @@ def complete_signup(
         challenge_id=challenge_id,
         credential=passkey_payload,
         clock=clock,
+        now=resolved_now,
     )
 
     # Flip the signup_attempt row now that every downstream insert

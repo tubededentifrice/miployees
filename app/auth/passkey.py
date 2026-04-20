@@ -610,6 +610,7 @@ def register_start(
     user_id: str,
     clock: Clock | None = None,
     rp: RelyingParty | None = None,
+    now: datetime | None = None,
 ) -> RegistrationOptions:
     """Mint a registration challenge for an authenticated user.
 
@@ -622,9 +623,15 @@ def register_start(
     :data:`_MAX_PASSKEYS_PER_USER` passkeys — surfacing the cap
     before the browser ceremony means the user doesn't waste a tap
     on their authenticator.
+
+    ``now`` lets callers who already resolved the wall-clock time
+    forward it through unchanged; otherwise it falls back to
+    :func:`_now` against ``clock``. The explicit parameter fixes
+    the "caller pinned ``now`` but not ``clock``" class of bug —
+    see :func:`app.auth.signup.complete_signup`.
     """
     del ctx  # signature-compat only; no workspace predicate applies here
-    now = _now(clock)
+    resolved_now = now if now is not None else _now(clock)
     rp = rp or make_relying_party()
 
     existing = _existing_credential_ids(session, user_id=user_id)
@@ -656,7 +663,7 @@ def register_start(
         signup_session_id=None,
         challenge=challenge_bytes,
         existing_credential_ids=existing,
-        now=now,
+        now=resolved_now,
     )
 
     return RegistrationOptions(
@@ -674,6 +681,7 @@ def register_finish(
     credential: dict[str, Any],
     clock: Clock | None = None,
     rp: RelyingParty | None = None,
+    now: datetime | None = None,
 ) -> PasskeyCredentialRef:
     """Verify the attestation response + persist the passkey row.
 
@@ -681,6 +689,11 @@ def register_finish(
     ``audit.passkey.registered`` audit row in the caller's open
     transaction, then deletes the consumed challenge so a replay
     raises :class:`ChallengeAlreadyConsumed`.
+
+    ``now`` lets callers forward an already-resolved wall-clock time
+    so the challenge-TTL comparison and the credential row's
+    ``created_at`` stamp stay consistent with upstream — see the
+    module docstring for the "pinned now vs real clock" bug.
 
     Raises:
 
@@ -693,10 +706,10 @@ def register_finish(
     * :class:`TooManyPasskeys` — concurrent enrolment raced us to the
       5-passkey cap.
     """
-    now = _now(clock)
+    resolved_now = now if now is not None else _now(clock)
     rp = rp or make_relying_party()
 
-    row = _load_challenge(session, challenge_id=challenge_id, now=now)
+    row = _load_challenge(session, challenge_id=challenge_id, now=resolved_now)
     if row.user_id is None or row.signup_session_id is not None:
         # Signup-path challenge smuggled into the authenticated flow.
         raise ChallengeSubjectMismatch(
@@ -730,7 +743,7 @@ def register_finish(
         verified=verified,
         credential=credential,
         clock=clock,
-        now=now,
+        now=resolved_now,
     )
 
     _delete_challenge(session, row=row)
@@ -748,6 +761,7 @@ def register_start_recovery(
     user_id: str,
     clock: Clock | None = None,
     rp: RelyingParty | None = None,
+    now: datetime | None = None,
 ) -> RegistrationOptions:
     """Mint a registration challenge during self-service recovery.
 
@@ -779,7 +793,7 @@ def register_start_recovery(
     user's identity against the challenge row and fails closed if
     they disagree.
     """
-    now = _now(clock)
+    resolved_now = now if now is not None else _now(clock)
     rp = rp or make_relying_party()
 
     user = _load_user(session, user_id=user_id)
@@ -806,7 +820,7 @@ def register_start_recovery(
         # No excludeCredentials stashed either — matches the
         # empty list we passed to ``generate_registration_challenge``.
         existing_credential_ids=[],
-        now=now,
+        now=resolved_now,
     )
 
     return RegistrationOptions(
@@ -829,6 +843,7 @@ def register_start_signup(
     user_handle: bytes | None = None,
     clock: Clock | None = None,
     rp: RelyingParty | None = None,
+    now: datetime | None = None,
 ) -> RegistrationOptions:
     """Mint a registration challenge during bare-host signup.
 
@@ -844,7 +859,7 @@ def register_start_signup(
     signup service SHOULD supply the freshly-minted ``user.id`` once
     it reserves one, for symmetry with :func:`register_start`.
     """
-    now = _now(clock)
+    resolved_now = now if now is not None else _now(clock)
     rp = rp or make_relying_party()
 
     if user_handle is None:
@@ -866,7 +881,7 @@ def register_start_signup(
         signup_session_id=signup_session_id,
         challenge=challenge_bytes,
         existing_credential_ids=[],
-        now=now,
+        now=resolved_now,
     )
 
     return RegistrationOptions(
@@ -884,6 +899,7 @@ def register_finish_signup(
     credential: dict[str, Any],
     clock: Clock | None = None,
     rp: RelyingParty | None = None,
+    now: datetime | None = None,
 ) -> PasskeyCredentialRef:
     """Verify the signup-flow attestation + persist the first passkey.
 
@@ -894,11 +910,17 @@ def register_finish_signup(
     an orphan audit (our row without the signup scaffold) or a
     missing audit (signup's row with no passkey), both of which
     defeat §03 "Every enrollment … writes to the audit log".
+
+    ``now`` lets :func:`app.auth.signup.complete_signup` forward its
+    already-resolved wall-clock time so the challenge-TTL comparison
+    here agrees with the caller's view — otherwise a test that pins
+    ``now`` without also freezing ``clock`` trips the 10-minute TTL
+    against the real system clock.
     """
-    now = _now(clock)
+    resolved_now = now if now is not None else _now(clock)
     rp = rp or make_relying_party()
 
-    row = _load_challenge(session, challenge_id=challenge_id, now=now)
+    row = _load_challenge(session, challenge_id=challenge_id, now=resolved_now)
     if row.signup_session_id is None or row.user_id is not None:
         raise ChallengeSubjectMismatch(
             "challenge was minted for an authenticated user; call register_finish"
@@ -929,7 +951,7 @@ def register_finish_signup(
         verified=verified,
         credential=credential,
         clock=clock,
-        now=now,
+        now=resolved_now,
     )
 
     _delete_challenge(session, row=row)
