@@ -9,13 +9,24 @@ Per ``docs/specs/17-testing-quality.md`` §"Integration":
   the test engine. A worker that never reaches a real DB (for
   example, the smoke test below) pays only the fixture's setup cost;
   subsequent tests share it.
-* The backend defaults to a fresh file-based SQLite under pytest's
+* Two backend-selection knobs (cd-rhaj):
+    - ``CREWDAY_TEST_DB={sqlite,postgres}`` picks the backend.
+      ``sqlite`` (default) returns a per-session temp-file SQLite
+      URL. ``postgres`` spins up a session-scoped
+      :class:`testcontainers.postgres.PostgresContainer` (image
+      ``postgres:15-alpine``) and returns its connection URL, with
+      the ``psycopg2`` driver prefix rewritten to ``psycopg`` (v3,
+      which is what this project pins — see
+      ``app/adapters/db/session.py::normalise_sync_url``).
+    - ``CREWDAY_TEST_DATABASE_URL`` is an explicit URL override and
+      wins over the selector. Use it when CI has already started a
+      PG service outside the test process.
+  The backend defaults to a fresh file-based SQLite under pytest's
   ``tmp_path_factory`` because alembic's ``env.py`` creates its own
   engine from the URL — an ``sqlite:///:memory:`` URL would hand
   alembic a different in-memory DB than the one the test holds. A
   temp file lets both sides see the same bytes without any special
-  plumbing. Override the URL via ``CREWDAY_TEST_DATABASE_URL`` to
-  target Postgres via ``testcontainers`` (tracked as cd-rhaj).
+  plumbing.
 
 See ``docs/specs/17-testing-quality.md`` §"Integration".
 """
@@ -32,7 +43,7 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.adapters.db.session import make_engine
+from app.adapters.db.session import make_engine, normalise_sync_url
 from app.config import get_settings
 
 
@@ -41,20 +52,82 @@ def _alembic_ini() -> Path:
     return Path(__file__).resolve().parents[2] / "alembic.ini"
 
 
+def _backend() -> str:
+    """Return the current backend name (``sqlite`` or ``postgres``).
+
+    Resolves ``CREWDAY_TEST_DB`` (case-insensitive) with a ``sqlite``
+    default. Raised into a function so collection-time and
+    fixture-time paths agree on the value.
+    """
+    return os.environ.get("CREWDAY_TEST_DB", "sqlite").lower()
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip ``pg_only`` tests when the backend is SQLite.
+
+    Tests that exercise Postgres-only behaviour (RLS predicates,
+    PG-specific SQL, etc.) carry the ``pg_only`` marker. On the
+    SQLite shard we skip them at collection time so they don't try
+    to run against a backend that can't satisfy the prerequisite.
+    """
+    if _backend() != "sqlite":
+        return
+    skip_pg = pytest.mark.skip(reason="PG-only test; CREWDAY_TEST_DB=sqlite")
+    for item in items:
+        if "pg_only" in item.keywords:
+            item.add_marker(skip_pg)
+
+
 @pytest.fixture(scope="session")
-def db_url(tmp_path_factory: pytest.TempPathFactory) -> str:
+def db_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """Session-scoped test DB URL.
 
-    Reads ``CREWDAY_TEST_DATABASE_URL`` from the environment when set
-    so the same suite can be run against Postgres via
-    ``testcontainers`` (cd-rhaj). Falls back to a fresh SQLite file
-    under pytest's ``tmp_path_factory`` root.
+    Honours ``CREWDAY_TEST_DATABASE_URL`` (explicit URL override, used
+    when CI already owns the container) first, then falls back to
+    the ``CREWDAY_TEST_DB`` backend selector:
+
+    * ``sqlite`` (default): a fresh file-based SQLite under pytest's
+      ``tmp_path_factory`` root.
+    * ``postgres``: a session-scoped :class:`PostgresContainer`
+      (``postgres:15-alpine``). The container is torn down at
+      session end. We pass ``driver="psycopg"`` so testcontainers
+      emits a ``postgresql+psycopg://`` URL directly — this repo
+      pins psycopg 3, not psycopg2, and pinning the driver via
+      the constructor avoids a brittle string substitution on the
+      returned URL.
     """
-    env = os.environ.get("CREWDAY_TEST_DATABASE_URL")
-    if env:
-        return env
-    root = tmp_path_factory.mktemp("crewday-db")
-    return f"sqlite:///{root / 'test.db'}"
+    override = os.environ.get("CREWDAY_TEST_DATABASE_URL")
+    if override:
+        yield override
+        return
+
+    backend = _backend()
+    if backend == "sqlite":
+        root = tmp_path_factory.mktemp("crewday-db")
+        yield f"sqlite:///{root / 'test.db'}"
+        return
+
+    if backend == "postgres":
+        # Imported lazily so the sqlite shard never pulls the docker
+        # client (and fails ImportError-style on machines without it).
+        from testcontainers.postgres import PostgresContainer
+
+        # ``driver="psycopg"`` makes the container emit a
+        # ``postgresql+psycopg://`` URL (psycopg 3, the driver this
+        # repo actually pins). Without it testcontainers defaults to
+        # ``+psycopg2`` which we don't install. Running the URL
+        # through ``normalise_sync_url`` is belt-and-braces — it's a
+        # no-op on a ``+psycopg`` URL but keeps parity with the
+        # production URL-normalisation path.
+        with PostgresContainer("postgres:15-alpine", driver="psycopg") as container:
+            yield normalise_sync_url(container.get_connection_url())
+        return
+
+    raise ValueError(
+        f"Unknown CREWDAY_TEST_DB={backend!r}; expected 'sqlite' or 'postgres'"
+    )
 
 
 @pytest.fixture(scope="session")

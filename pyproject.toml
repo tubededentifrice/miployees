@@ -43,6 +43,12 @@ dev = [
     # be installed wherever integration tests target PG. SQLite shards
     # don't need it but installing in dev keeps parity with CI.
     "psycopg[binary]",
+    # Spin up a real Postgres 15 per integration-test session (cd-rhaj).
+    # The sqlite shard never touches this package, but it's cheap to
+    # install in dev and keeps the PG shard hermetic: no need for a
+    # services: postgres block in CI — testcontainers handles container
+    # lifecycle from inside the test process.
+    "testcontainers[postgres]",
 ]
 
 [tool.ruff]
@@ -73,6 +79,7 @@ addopts = "--import-mode=importlib"
 pythonpath = ["."]
 markers = [
     "integration: marks tests as integration (deselect with '-m \"not integration\"')",
+    "pg_only: test requires Postgres (skipped when CREWDAY_TEST_DB=sqlite)",
 ]
 
 [tool.coverage.run]

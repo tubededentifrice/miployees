@@ -13,7 +13,11 @@
 #   * unit         — pytest tests/unit tests/api tests/property tests/llm
 #                    on SQLite only (the default).
 #   * integration  — pytest tests/integration on both SQLite (default)
-#                    and Postgres 15 via services container.
+#                    and Postgres 15 via testcontainers (cd-rhaj). The
+#                    PG shard spins up a disposable postgres:15-alpine
+#                    container inside the test process; no workflow-
+#                    level services block is needed because the runner
+#                    (ubuntu-latest) ships Docker preinstalled.
 #
 # Matrix over Python 3.12 and 3.13 on every job.
 # integration additionally matrices database = [sqlite, postgres]
@@ -123,24 +127,6 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
         database: [sqlite, postgres]
-    services:
-      # Always defined so the workflow is valid; only consumed on the
-      # postgres shard via the CREWDAY_TEST_DATABASE_URL step below.
-      # tests/integration/conftest.py honours the env var (see
-      # db_url fixture there).
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: crewday
-          POSTGRES_PASSWORD: crewday
-          POSTGRES_DB: crewday_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -152,14 +138,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install deps
         run: uv sync --group dev
-      - name: Set DB URL (sqlite)
+      - name: Select backend (sqlite)
         if: matrix.database == 'sqlite'
-        # Integration conftest falls back to a per-session SQLite file
-        # when CREWDAY_TEST_DATABASE_URL is unset; no env override
-        # needed for this shard.
-        run: echo "Using default SQLite file-based DB."
-      - name: Set DB URL (postgres)
+        # tests/integration/conftest.py defaults to SQLite when
+        # CREWDAY_TEST_DB is absent; we set it explicitly anyway so
+        # the shard's intent is visible in the job log.
+        run: echo "CREWDAY_TEST_DB=sqlite" >> "$GITHUB_ENV"
+      - name: Select backend (postgres)
         if: matrix.database == 'postgres'
-        run: echo "CREWDAY_TEST_DATABASE_URL=postgresql+psycopg://crewday:crewday@localhost:5432/crewday_test" >> "$GITHUB_ENV"
+        # testcontainers starts its own postgres:15-alpine container
+        # inside the pytest process (cd-rhaj). The ubuntu-latest
+        # runner has the Docker engine preinstalled, so no
+        # services: block is needed — this shard stays aligned with
+        # local dev where the same env var flips the backend.
+        run: echo "CREWDAY_TEST_DB=postgres" >> "$GITHUB_ENV"
       - name: pytest (integration)
         run: uv run pytest tests/integration -x -q
