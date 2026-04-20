@@ -63,8 +63,10 @@ from app.auth.passkey import (
     CloneDetected,
     InvalidLoginAttempt,
     InvalidRegistration,
+    LastPasskeyCredential,
     LoginResult,
     PasskeyCredentialRef,
+    PasskeyNotFound,
     RegistrationOptions,
     TooManyPasskeys,
     login_finish,
@@ -73,6 +75,7 @@ from app.auth.passkey import (
     register_finish_signup,
     register_start,
     register_start_signup,
+    revoke_passkey,
 )
 from app.auth.session import build_session_cookie
 from app.auth.session import (
@@ -288,6 +291,68 @@ def post_register_finish(
         backup_eligible=ref.backup_eligible,
         aaguid=ref.aaguid,
     )
+
+
+@router.delete(
+    "/{credential_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke one of the authenticated user's passkeys",
+)
+def delete_passkey(
+    credential_id: str,
+    ctx: _Ctx,
+    session: _Db,
+) -> Response:
+    """Revoke ``credential_id`` for the authenticated user.
+
+    * The credential must belong to the calling user — an id owned by
+      someone else is collapsed with "unknown id" into a single 404 so
+      the credential-id space is not an enumeration oracle.
+    * Revoking the user's **last** passkey is refused with 422
+      ``last_credential`` — leaving the user credential-less would
+      force them through the recovery flow. The SPA should guide the
+      user to enrol another passkey first or use ``/recover``
+      intentionally.
+    * Every session for the user is invalidated with cause
+      ``"passkey_revoked"`` (§15 "Shared-origin XSS containment" /
+      cd-geqp) in the same UoW as the delete. Audit rows land in
+      cause-then-effect order: ``passkey.revoked`` first, then
+      ``session.invalidated``.
+
+    204 on success with an empty body — standard REST shape for a
+    successful DELETE.
+    """
+    try:
+        credential_id_bytes = base64url_to_bytes(credential_id)
+    except (ValueError, TypeError) as exc:
+        # Malformed base64url → 404 rather than 400: the bytes wouldn't
+        # match any credential anyway, and surfacing "invalid
+        # base64url" would let an attacker distinguish "well-formed id
+        # for another user" from "syntactically invalid id".
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "passkey_not_found"},
+        ) from exc
+
+    try:
+        revoke_passkey(
+            ctx,
+            session,
+            user_id=ctx.actor_id,
+            credential_id=credential_id_bytes,
+        )
+    except PasskeyNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "passkey_not_found"},
+        ) from exc
+    except LastPasskeyCredential as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "last_credential"},
+        ) from exc
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------

@@ -109,8 +109,10 @@ __all__ = [
     "CloneDetected",
     "InvalidLoginAttempt",
     "InvalidRegistration",
+    "LastPasskeyCredential",
     "LoginResult",
     "PasskeyCredentialRef",
+    "PasskeyNotFound",
     "RegistrationOptions",
     "TooManyPasskeys",
     "login_finish",
@@ -120,6 +122,7 @@ __all__ = [
     "register_start",
     "register_start_recovery",
     "register_start_signup",
+    "revoke_passkey",
 ]
 
 
@@ -346,6 +349,30 @@ class ChallengeSubjectMismatch(ValueError):
     router should not distinguish this from :class:`InvalidRegistration`
     for privacy, but the type exists so domain tests can pin the
     cross-subject bug.
+    """
+
+
+class PasskeyNotFound(LookupError):
+    """Target credential either does not exist or is owned by another user.
+
+    404-equivalent. The HTTP router maps this to 404 regardless of the
+    underlying cause — leaking "exists but belongs to someone else" vs.
+    "no such credential" would turn the credential-id space into an
+    enumeration oracle. The domain service collapses both shapes into
+    this single type on purpose.
+    """
+
+
+class LastPasskeyCredential(ValueError):
+    """Revoking this credential would leave the user with zero passkeys.
+
+    422-equivalent. The HTTP router maps this to ``last_credential`` so
+    the SPA can surface a clear "enrol another passkey or use recovery"
+    message rather than silently locking the user out. §03
+    "Self-service lost-device recovery" is the recovery door; a
+    dedicated step-up-then-revoke seam that would let the user revoke
+    anyway (and step right back into the recovery flow) is a
+    follow-up — tracked separately.
     """
 
 
@@ -765,6 +792,129 @@ def register_finish(
     )
 
     return credential_ref
+
+
+def revoke_passkey(
+    ctx: WorkspaceContext,
+    session: Session,
+    *,
+    user_id: str,
+    credential_id: bytes,
+    clock: Clock | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Delete one passkey credential + invalidate the owner's sessions.
+
+    Spec §15 "Shared-origin XSS containment" / cd-geqp: revoking a
+    passkey is a credential-population change — a stolen session cookie
+    must not outlive the user's "remove this device" action. The
+    ``audit.passkey.revoked`` row lands **before**
+    ``audit.session.invalidated`` so the forensic trail reads in
+    cause-then-effect order.
+
+    The caller's UoW owns the transaction boundary — everything below
+    runs under the same :class:`UnitOfWorkImpl` and either all lands
+    (happy path) or all rolls back (any raise).
+
+    Ownership is enforced: ``user_id`` is the authenticated actor;
+    a credential owned by a different user is indistinguishable from
+    a non-existent credential and both collapse to
+    :class:`PasskeyNotFound` (the HTTP layer maps that to 404).
+    Admin-revocation-on-behalf-of-another-user is not a v1 surface —
+    an owner who needs to revoke a worker's passkey uses the existing
+    ``POST /api/v1/users/{id}/reset_passkey`` door (§03
+    "Owner-initiated worker passkey reset") which rides on the same
+    re-enrolment pipeline.
+
+    Refuses to revoke the user's **last** passkey: deleting it would
+    leave them with no way to log in short of the recovery flow. We
+    surface :class:`LastPasskeyCredential` so the SPA can guide the
+    user to enrol another credential first or use the recovery door
+    intentionally.
+
+    Returns the base64url-encoded credential id so the HTTP layer can
+    surface it in the response / log without re-encoding.
+
+    Raises:
+
+    * :class:`PasskeyNotFound` — credential id is unknown, or the
+      credential exists but does not belong to ``user_id``.
+    * :class:`LastPasskeyCredential` — this is the user's only passkey.
+
+    Audit writes (in order, both under the caller's UoW):
+
+    1. ``audit.passkey.revoked`` — entity_kind ``passkey_credential``,
+       entity_id the base64url credential id. Diff carries the user
+       id and the credential's public metadata (AAGUID whitelisted by
+       §03 "Privacy").
+    2. ``audit.session.invalidated`` with cause ``"passkey_revoked"``
+       — emitted by :func:`app.auth.session.invalidate_for_user`.
+    """
+    resolved_now = now if now is not None else _now(clock)
+
+    # justification: passkey_credential is identity-scoped; no tenant
+    # predicate applies. Same gate pattern register_finish uses.
+    with tenant_agnostic():
+        row = session.get(PasskeyCredential, credential_id)
+
+    # Collapse "unknown credential" and "wrong owner" into the same
+    # type so the HTTP layer cannot leak the credential-id space as
+    # an enumeration oracle.
+    if row is None or row.user_id != user_id:
+        raise PasskeyNotFound(bytes_to_base64url(credential_id))
+
+    # Last-credential gate — leaving the user with zero passkeys would
+    # force them through the recovery flow to regain access. Refuse so
+    # the caller surfaces an actionable error rather than a silent
+    # lockout.
+    if _count_passkeys(session, user_id=user_id) <= 1:
+        raise LastPasskeyCredential(
+            f"user {user_id!r} has one remaining passkey; "
+            "enrol another or use recovery before revoking"
+        )
+
+    credential_id_b64 = bytes_to_base64url(credential_id)
+
+    # Audit BEFORE the destructive write so a flush failure on the
+    # audit insert doesn't leave a revoked credential without a paper
+    # trail. Both rows live under the same UoW — rollback takes them
+    # together.
+    write_audit(
+        session,
+        ctx,
+        entity_kind="passkey_credential",
+        entity_id=credential_id_b64,
+        action="passkey.revoked",
+        diff={
+            "user_id": user_id,
+            "transports": row.transports,
+            "backup_eligible": row.backup_eligible,
+            "label": row.label,
+        },
+        clock=clock,
+    )
+
+    # justification: passkey_credential is identity-scoped.
+    with tenant_agnostic():
+        session.delete(row)
+        session.flush()
+
+    # §15 "Shared-origin XSS containment" / cd-geqp: a revocation is a
+    # credential-population change. Invalidate every active session for
+    # this user. The caller's own session is invalidated with the rest
+    # — a user revoking their only-other-device's passkey needs to
+    # re-auth to confirm intent, and the SPA surfaces that as a clean
+    # re-login. Forensic rows survive (invalidation is non-destructive,
+    # see :func:`app.auth.session.invalidate_for_user`).
+    session_module.invalidate_for_user(
+        session,
+        user_id=user_id,
+        cause="passkey_revoked",
+        now=resolved_now,
+        clock=clock,
+    )
+
+    return credential_id_b64
 
 
 # ---------------------------------------------------------------------------

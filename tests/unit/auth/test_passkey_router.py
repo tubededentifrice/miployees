@@ -328,3 +328,182 @@ class TestSignupRouter:
             },
         )
         assert finish.status_code == 200, finish.text
+
+
+class TestDeletePasskeyRouter:
+    """DELETE /auth/passkey/{credential_id} — cd-hiko.
+
+    Exercises the HTTP shape end-to-end through the router override
+    harness: happy 204, 404 on unknown id, 404 on wrong owner
+    (privacy: we don't leak "exists but not yours"), 404 on malformed
+    base64url, 422 on last-credential.
+    """
+
+    @staticmethod
+    def _seed_credential(
+        factory: sessionmaker[Session],
+        *,
+        user_id: str,
+        credential_id: bytes,
+    ) -> None:
+        with factory() as s:
+            s.add(
+                PasskeyCredential(
+                    id=credential_id,
+                    user_id=user_id,
+                    public_key=b"\xaa" * 32,
+                    sign_count=0,
+                    transports="internal",
+                    backup_eligible=False,
+                    label=None,
+                    created_at=_PINNED,
+                )
+            )
+            s.commit()
+
+    def test_happy_path_returns_204_and_drops_row(
+        self,
+        app_with_overrides: FastAPI,
+        factory: sessionmaker[Session],
+        seeded: tuple[WorkspaceContext, str],
+    ) -> None:
+        from app.auth.webauthn import bytes_to_base64url
+
+        _, user_id = seeded
+        cid = b"\xaa" * 32
+        other = b"\xbb" * 32
+        # Seed two credentials so the last-credential gate passes.
+        self._seed_credential(factory, user_id=user_id, credential_id=cid)
+        self._seed_credential(factory, user_id=user_id, credential_id=other)
+
+        client = TestClient(app_with_overrides)
+        resp = client.delete(
+            f"/api/v1/auth/passkey/{bytes_to_base64url(cid)}",
+        )
+        assert resp.status_code == 204, resp.text
+        assert resp.content == b""
+
+        with factory() as s:
+            assert s.get(PasskeyCredential, cid) is None
+            assert s.get(PasskeyCredential, other) is not None
+
+    def test_unknown_credential_returns_404(
+        self,
+        app_with_overrides: FastAPI,
+    ) -> None:
+        from app.auth.webauthn import bytes_to_base64url
+
+        client = TestClient(app_with_overrides)
+        resp = client.delete(
+            f"/api/v1/auth/passkey/{bytes_to_base64url(b'\xff' * 32)}",
+        )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "passkey_not_found"
+
+    def test_credential_owned_by_another_user_returns_404(
+        self,
+        app_with_overrides: FastAPI,
+        factory: sessionmaker[Session],
+    ) -> None:
+        """An id that exists for someone else collapses with "unknown"."""
+        from app.auth.webauthn import bytes_to_base64url
+
+        # Seed a different user with a credential. The router's
+        # overridden ctx points at the *seeded* user, so this row is
+        # not theirs.
+        with factory() as s:
+            stranger = bootstrap_user(
+                s,
+                email="stranger@example.com",
+                display_name="Stranger",
+                clock=FrozenClock(_PINNED),
+            )
+            stranger_id = stranger.id
+            s.commit()
+        cid = b"\xcc" * 32
+        self._seed_credential(factory, user_id=stranger_id, credential_id=cid)
+
+        client = TestClient(app_with_overrides)
+        resp = client.delete(
+            f"/api/v1/auth/passkey/{bytes_to_base64url(cid)}",
+        )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "passkey_not_found"
+        # The stranger's credential survives — no cross-user blast.
+        with factory() as s:
+            assert s.get(PasskeyCredential, cid) is not None
+
+    def test_malformed_base64url_returns_404(
+        self,
+        app_with_overrides: FastAPI,
+    ) -> None:
+        """A malformed base64url path segment folds into the same 404 shape.
+
+        ``webauthn.helpers.base64url_to_bytes`` raises
+        :class:`binascii.Error` (a ``ValueError`` subclass) when the
+        character count is ``1 mod 4`` — a lone ``"A"`` is the shortest
+        reliable trigger. Strings like ``"not-base64-!@#"`` look
+        malformed but the decoder silently drops non-alphabet bytes
+        and returns well-formed (but unknown) bytes — which would hit
+        the domain-side ``PasskeyNotFound`` path instead of the
+        router's ``except (ValueError, TypeError)`` branch we actually
+        want to cover here.
+        """
+        client = TestClient(app_with_overrides)
+        resp = client.delete("/api/v1/auth/passkey/A")
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "passkey_not_found"
+
+    def test_last_credential_returns_422(
+        self,
+        app_with_overrides: FastAPI,
+        factory: sessionmaker[Session],
+        seeded: tuple[WorkspaceContext, str],
+    ) -> None:
+        """A user with exactly one passkey cannot revoke it."""
+        from app.auth.webauthn import bytes_to_base64url
+
+        _, user_id = seeded
+        cid = b"\xdd" * 32
+        self._seed_credential(factory, user_id=user_id, credential_id=cid)
+
+        client = TestClient(app_with_overrides)
+        resp = client.delete(
+            f"/api/v1/auth/passkey/{bytes_to_base64url(cid)}",
+        )
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "last_credential"
+        # Row stayed — a 422 is refused, not partially-committed.
+        with factory() as s:
+            assert s.get(PasskeyCredential, cid) is not None
+
+    def test_unauthenticated_returns_401(
+        self,
+        factory: sessionmaker[Session],
+    ) -> None:
+        """No ctx override → the shared dep raises 401."""
+        from app.api.deps import current_workspace_context, db_session
+
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+
+        def _override_db() -> Iterator[Session]:
+            from app.adapters.db.session import UnitOfWorkImpl
+
+            uow = UnitOfWorkImpl(session_factory=factory)
+            with uow as s:
+                assert isinstance(s, Session)
+                yield s
+
+        # DB override but NOT the ctx override — the real dep fires,
+        # finds no ambient ctx, and raises 401.
+        app.dependency_overrides[db_session] = _override_db
+        # Ensure we haven't accidentally installed a ctx override on
+        # the module-level router state by leaking from another test.
+        app.dependency_overrides.pop(current_workspace_context, None)
+
+        client = TestClient(app)
+        # Any base64url id — the auth gate fires before we decode it.
+        resp = client.delete("/api/v1/auth/passkey/AAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        assert resp.status_code == 401
+        assert resp.json()["detail"]["error"] == "not_authenticated"
