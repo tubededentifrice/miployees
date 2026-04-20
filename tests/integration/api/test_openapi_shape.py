@@ -180,8 +180,11 @@ class TestScopedEmptyContextReturns404:
     def test_admin_api_unknown_path_returns_canonical_404(
         self, pinned_settings: Settings, real_make_uow: None
     ) -> None:
-        """``/admin/api/v1/...`` 404s with the JSON envelope too."""
+        """``/admin/api/v1/...`` 404s with the RFC 7807 envelope (§12)."""
         client = _client(pinned_settings)
         resp = client.get("/admin/api/v1/nonexistent")
         assert resp.status_code == 404
-        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.headers["content-type"].startswith("application/problem+json")
+        body = resp.json()
+        assert body["type"] == "https://crewday.dev/errors/not_found"
+        assert body["status"] == 404

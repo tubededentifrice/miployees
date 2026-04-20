@@ -275,9 +275,11 @@ class TestContextRouterMount:
         assert list(admin_router_module.routes) == []
 
     def test_unknown_admin_api_path_returns_json_404(self) -> None:
-        """The admin mount answers 404 with the canonical JSON envelope."""
+        """The admin mount answers 404 with the RFC 7807 envelope (§12)."""
         client = _client(create_app(settings=_settings()))
         resp = client.get("/admin/api/v1/nonexistent")
         assert resp.status_code == 404
-        # Same envelope as the workspace-scoped 404 (§15).
-        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.headers["content-type"].startswith("application/problem+json")
+        body = resp.json()
+        assert body["type"] == "https://crewday.dev/errors/not_found"
+        assert body["status"] == 404

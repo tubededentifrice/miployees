@@ -40,13 +40,10 @@ OpenClaw, etc.) operating on this repository.
 
 1. Run `/resume-work` (or equivalent) to read recent git log, open
    PRs and issues, uncommitted changes, and active worktrees.
-2. Read the codebase map at `.claude/codebase/*.md`. Each carries a
-   `<!-- verified: YYYY-MM-DD -->` marker; spot-check and update if
-   older than 30 days.
-3. Read the relevant spec under `docs/specs/`. **Spec is the source
+2. Read the relevant spec under `docs/specs/`. **Spec is the source
    of truth; code follows.** Default to updating code on divergence
    unless an ADR or postmortem says otherwise.
-4. If `bd` is on `PATH`, skim `bd ready` and claim
+3. If `bd` is on `PATH`, skim `bd ready` and claim
    (`bd update <id> --claim`) any task that covers what you're about
    to do. If not, skip — don't block on Beads availability.
 
@@ -93,8 +90,8 @@ update in your wrap-up.
 
 ## Code quality bar
 
-- **DRY is first-class.** Search (`rg`, `fd`, codebase map) for an
-  existing helper or pattern before writing. Extract when two copies
+- **DRY is first-class.** Search (`rg`, `fd`) for an existing helper
+  or pattern before writing. Extract when two copies
   share a reason to change; wait for the third use otherwise. Same
   for prose — docs reference code, they don't restate it.
 - **Quality over speed, always.** Do it the *right* way even when
@@ -195,14 +192,12 @@ For larger changes, split work across the agents in
 | Agent | Role |
 |-------|------|
 | `director` (skill) | Plans, tracks via Beads, delegates |
-| `coder` | Implements within a narrow scope; runs only its module's tests |
-| `reviewer` | Returns `APPROVED` or `CHANGES_REQUIRED` |
-| `documenter` | Updates specs, READMEs, codebase maps, OpenAPI |
+| `coder` | Implements within a narrow scope (code + docs); runs only its module's tests |
 | `commiter` | Stages, signs off, commits, pushes — nothing else |
 | `oracle` | Deep research for hard decisions; no edits, just advice |
 
-Default flow: `director → coder → reviewer → documenter → commiter →
-/selfreview`. Pull in `oracle` when a decision is genuinely hard.
+Default flow: `director → coder → /selfreview → commiter`. Pull in
+`oracle` when a decision is genuinely hard.
 See [`.claude/README.md`](.claude/README.md).
 
 **Every plan must end with `/selfreview`** — regardless of scope —

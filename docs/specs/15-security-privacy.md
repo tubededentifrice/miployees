@@ -632,12 +632,13 @@ timing bands overlap without leaking through the padding
 distribution itself). No branch in the response path depends
 on whether the row exists under another workspace.
 
-The error envelope is the shared `{"error": "not_found",
-"detail": null}` shape — never `{"error":
-"forbidden_cross_workspace", ...}` or any variant that
-reveals scope. Logging records the real reason internally for
-operator diagnostics (`audit.tenant.cross_scope_miss`); the
-wire response does not.
+The error envelope is the shared `not_found` shape defined in
+§12 — never `forbidden_cross_workspace` or any variant that
+reveals scope. Both the "missing" and "exists-elsewhere" branches
+emit byte-identical bodies by routing through the same helper.
+Logging records the real reason internally for operator
+diagnostics (`audit.tenant.cross_scope_miss`); the wire response
+does not.
 
 §17 tenant-isolation test suite asserts:
 

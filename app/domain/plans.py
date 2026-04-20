@@ -12,9 +12,8 @@ initial caps" (§03 "Self-serve signup" → "Tight initial caps") the
 signup flow applies — 10 % of the free-tier ceiling, lifted once the
 workspace reaches ``verification_state='human_verified'``.
 
-**Flagged for the Documenter**: reconcile these numbers with
-§02 once the plan spec lands; they are intentionally conservative
-placeholders.
+The numbers are intentionally conservative placeholders; reconcile
+with §02 once the plan catalogue spec lands.
 """
 
 from __future__ import annotations

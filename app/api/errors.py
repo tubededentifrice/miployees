@@ -62,6 +62,7 @@ from app.domain.errors import (
     UpstreamUnavailable,
     Validation,
 )
+from app.domain.identity.permission_groups import LastOwnerMember
 
 __all__ = [
     "CONTENT_TYPE_PROBLEM_JSON",
@@ -93,6 +94,7 @@ CORRELATION_HEADERS: Final[tuple[str, ...]] = ("X-Correlation-Id", "X-Request-Id
 # at import time rather than at first 500.
 _DOMAIN_STATUS_MAP: Final[dict[type[DomainError], int]] = {
     Validation: 422,
+    LastOwnerMember: 422,
     NotFound: 404,
     Conflict: 409,
     IdempotencyConflict: 409,

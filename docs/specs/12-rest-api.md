@@ -262,7 +262,7 @@ Canonical error `type` URIs — full URI is
 - `validation` (422), `not_found` (404), `conflict` (409),
   `unauthorized` (401), `forbidden` (403), `rate_limited` (429),
   `upstream_unavailable` (502), `idempotency_conflict` (409),
-  `approval_required` (409).
+  `would_orphan_owners_group` (422), `approval_required` (409).
 - `internal` (500) — fallback when an unregistered `DomainError`
   subclass reaches the handler. Unknown `HTTPException` statuses fall
   back to `http_<status>` (e.g. `http_418`).

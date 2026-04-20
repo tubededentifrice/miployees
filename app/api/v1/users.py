@@ -146,12 +146,15 @@ def _http_for_invite(exc: Exception) -> HTTPException:
 
 
 def _http_for_remove(exc: Exception) -> HTTPException:
-    """Map a :func:`membership.remove_member` error to an HTTP response."""
-    if isinstance(exc, LastOwnerMember):
-        return HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"error": "last_owner_member"},
-        )
+    """Map a :func:`membership.remove_member` error to an HTTP response.
+
+    :class:`LastOwnerMember` is **not** handled here: it is a
+    :class:`~app.domain.errors.Validation` subclass, so the RFC 7807
+    exception handler in :mod:`app.api.errors` translates it directly
+    into a 422 ``would_orphan_owners_group`` problem+json envelope.
+    The router still intercepts it to write the forensic rejection
+    audit row on a fresh UoW, then re-raises the typed exception.
+    """
     if isinstance(exc, membership.NotAMember):
         return HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -285,9 +288,11 @@ def build_users_router(
         """Strip every grant + group-member + session tied to ``user_id``."""
         try:
             membership.remove_member(session, ctx, user_id=user_id)
-        except LastOwnerMember as exc:
+        except LastOwnerMember:
             # Typed refusal — forensic row lands on a fresh UoW so
-            # the primary UoW's rollback does not sweep it.
+            # the primary UoW's rollback does not sweep it. Re-raise
+            # the typed exception so the RFC 7807 seam translates it
+            # into a 422 ``would_orphan_owners_group`` envelope.
             try:
                 with make_uow() as fresh:
                     assert isinstance(fresh, Session)
@@ -297,11 +302,11 @@ def build_users_router(
                         group_id=_resolve_owners_group_id(session, ctx.workspace_id)
                         or "",
                         user_id=user_id,
-                        reason="last_owner_member",
+                        reason="would_orphan_owners_group",
                     )
             except Exception:
                 _log.exception("remove_member refusal audit failed on fresh UoW")
-            raise _http_for_remove(exc) from exc
+            raise
         except (membership.NotAMember, membership.InviteStateInvalid) as exc:
             raise _http_for_remove(exc) from exc
 

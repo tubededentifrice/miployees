@@ -80,7 +80,8 @@ DIRECTOR: pick next ready task from `bd ready`
 **No separate Reviewer or Documenter agents.** The review step is
 (1) close the main task and (2) run the paired selfreview Beads task
 via a Coder subagent. Documentation updates happen inside the main
-or selfreview task itself when the scope calls for them.
+or selfreview task itself — the Coder owns spec / README / OpenAPI
+changes for the scope it touched.
 
 For hard architectural decisions: invoke **ORACLE** for deep research
 before planning, not after.
@@ -125,8 +126,6 @@ Read, in order:
 - [`AGENTS.md`](../../../AGENTS.md) — authoritative rules.
 - Relevant [`docs/specs/*.md`](../../../docs/specs/) — product + system
   contracts.
-- [`.claude/codebase/*.md`](../../codebase/) — slice maps (if they
-  exist).
 - Relevant `app/<module>/` code.
 - `bd list --status open` — current in-flight work, to avoid creating
   duplicate tasks.

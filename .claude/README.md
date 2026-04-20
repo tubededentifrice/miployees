@@ -21,12 +21,9 @@ operate primarily on specifications. More will land as code does.
 ```
 .claude/
 ├── README.md              # This file
-├── codebase/              # Generated codebase maps (see AGENTS.md §Session bootstrap)
 ├── agents/                # Specialised agent roles
 │   ├── oracle.md          # Deep research / hard decisions (slow, expensive)
-│   ├── coder.md           # Implementation
-│   ├── reviewer.md        # Quality review → APPROVED | CHANGES_REQUIRED
-│   ├── documenter.md      # Keeps specs + READMEs in sync with code
+│   ├── coder.md           # Implementation (code + docs in scope)
 │   └── commiter.md        # Stage, commit, push
 ├── skills/                # Reusable playbooks loaded per task
 │   ├── audit-spec/        # Spec ↔ code drift audit (matches `/audit-spec` trigger)
@@ -52,15 +49,13 @@ decision is hard enough to warrant a dedicated research role.
 ## Typical workflow
 
 ```
-DIRECTOR (plan) → CODER (implement) → REVIEWER (verify)
-                                           │
-                    (CHANGES_REQUIRED) ←───┘
-                                           │
-                                  (APPROVED) ↓
-                                    DOCUMENTER (specs + READMEs)
-                                           │
-                                           ▼
-                                    COMMITER (commit + push)
+DIRECTOR (plan) → CODER (implement + docs) → /selfreview (paired task)
+                                                     │
+                                                     ▼
+                                             COMMITER (commit + push)
 ```
+
+See [`.claude/skills/director/SKILL.md`](skills/director/SKILL.md) for
+the full per-task loop.
 
 For hard problems, any agent may invoke **ORACLE** for deep research.

@@ -9,9 +9,7 @@ installed:
 * :func:`seed_system_permission_groups` seeds **exactly** the three
   non-owners system groups (``managers``, ``all_workers``,
   ``all_clients``) — four total counting owners, matching §02
-  "permission_group" §"System groups". The task description's
-  off-spec "fifth" group is flagged for the Documenter but NOT
-  seeded.
+  "permission_group" §"System groups".
 * :func:`app.domain.identity.permission_groups.remove_member`
   refuses to drop the last member of the ``owners`` group and
   raises :class:`LastOwnerMember`; a non-last owner removal
@@ -668,7 +666,7 @@ class TestRejectedAuditHelper:
         assert row.workspace_id == ctx.workspace_id
         assert row.actor_id == user_id
         assert row.diff == {
-            "reason": "last_owner_member",
+            "reason": "would_orphan_owners_group",
             "group_id": owners_id,
             "user_id": user_id,
         }

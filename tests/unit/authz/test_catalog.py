@@ -58,11 +58,6 @@ class TestShape:
 
         A hard number — if it changes, either the spec or the catalog
         drifted and the author needs to say which.
-
-        cd-whl bumped from 76 → 78 by adding ``time.clock_self`` and
-        ``time.edit_others``; the §05 "Rule-driven actions" table
-        still needs updating to match (flagged to the Documenter in
-        cd-whl's handoff).
         """
         assert len(ACTION_CATALOG) == 78
 

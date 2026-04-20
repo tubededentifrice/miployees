@@ -320,22 +320,25 @@ class TestSpaCatchAll:
         assert resp.headers["content-type"].startswith("text/html")
 
     def test_unknown_api_path_returns_json_404(self, app_factory: Settings) -> None:
-        """API paths never fall through to the SPA."""
+        """API paths never fall through to the SPA — they get the §12 envelope."""
         client = _client(create_app(settings=app_factory))
         resp = client.get("/api/nonexistent")
         assert resp.status_code == 404
-        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.headers["content-type"].startswith("application/problem+json")
 
     def test_unknown_bare_api_path_returns_json_not_html(
         self, app_factory: Settings
     ) -> None:
-        """Even under the bare-host ``/api/v1`` tree, a miss is JSON."""
+        """Bare-host ``/api/v1`` miss → RFC 7807 ``not_found`` envelope (§12)."""
         client = _client(create_app(settings=app_factory))
         resp = client.get("/api/v1/nonexistent")
         assert resp.status_code == 404
-        assert resp.headers["content-type"].startswith("application/json")
-        # The canonical spec envelope (§15) keys on ``error``.
-        assert resp.json() == {"error": "not_found", "detail": None}
+        assert resp.headers["content-type"].startswith("application/problem+json")
+        body = resp.json()
+        assert body["type"] == "https://crewday.dev/errors/not_found"
+        assert body["title"] == "Not found"
+        assert body["status"] == 404
+        assert body["instance"] == "/api/v1/nonexistent"
 
 
 # ---------------------------------------------------------------------------

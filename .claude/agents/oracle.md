@@ -137,7 +137,7 @@ Tell the Director how to proceed:
 **Bad** (don't use Oracle):
 
 - "How do I add a field to this model?" → Coder.
-- "Is this code formatted correctly?" → Reviewer.
+- "Is this code formatted correctly?" → run the linter / selfreview.
 - "What's in this file?" → Just read it.
 
 ---

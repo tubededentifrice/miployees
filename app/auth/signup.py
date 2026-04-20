@@ -327,11 +327,8 @@ def _is_slug_in_grace_period(session: Session, *, slug: str, now: datetime) -> b
     part of cd-3i5's Phase 1 tables — the predicate is intentionally
     false until that table lands. When it does, replace the body with
     a ``SELECT reserved_until FROM slug_reservation WHERE slug = :slug
-    AND reserved_until > :now`` query.
-
-    Flagged for the Documenter: once ``slug_reservation`` lands, this
-    predicate becomes a real DB read and :class:`SlugInGracePeriod`
-    starts firing.
+    AND reserved_until > :now`` query; :class:`SlugInGracePeriod` will
+    then start firing.
     """
     del session, slug, now
     return False

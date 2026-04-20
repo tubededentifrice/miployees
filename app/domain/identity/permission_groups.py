@@ -57,7 +57,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -65,6 +65,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.db.authz.models import PermissionGroup, PermissionGroupMember
 from app.audit import write_audit
+from app.domain.errors import Validation
 from app.domain.identity._action_catalog import ACTION_CATALOG
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
@@ -153,23 +154,25 @@ class UnknownCapability(ValueError):
     """
 
 
-class LastOwnerMember(ValueError):
+class LastOwnerMember(Validation):
     """Refuse to remove the sole member of the system ``owners`` group.
 
-    409-equivalent (task cd-ckr; §02 "permission_group" §"Invariants"
-    also maps this to 422 ``would_orphan_owners_group`` — see the
-    spec-drift note flagged to the Documenter). The service rejects
-    the remove **before** the DELETE lands, so the caller's UoW
-    rolls back and the ``owners`` group keeps its member. The
-    router is expected to write the forensic rejection audit row
-    on a fresh UoW (see :func:`write_member_remove_rejected_audit`)
-    so the refusal trail survives the rollback.
+    HTTP 422 with ``type = would_orphan_owners_group`` per §02
+    "permission_group" §"Invariants". The service rejects the remove
+    **before** the DELETE lands, so the caller's UoW rolls back and
+    the ``owners`` group keeps its member. The router is expected to
+    write the forensic rejection audit row on a fresh UoW (see
+    :func:`write_member_remove_rejected_audit`) so the refusal trail
+    survives the rollback.
 
     The guard is scoped to the **system** ``owners`` group only
     (``slug == 'owners'`` AND ``system is True``). A user-defined
     group that happens to be named ``owners`` never triggers it —
     it is not the governance anchor.
     """
+
+    title: ClassVar[str] = "Would orphan owners group"
+    type_name: ClassVar[str] = "would_orphan_owners_group"
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +657,7 @@ def write_member_remove_rejected_audit(
     *,
     group_id: str,
     user_id: str,
-    reason: str = "last_owner_member",
+    reason: str = "would_orphan_owners_group",
     clock: Clock | None = None,
 ) -> None:
     """Append the forensic rejection row for a refused ``remove_member`` call.

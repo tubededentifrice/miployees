@@ -16,6 +16,7 @@ Canonical ``type`` URIs under test (spec §12 "Errors"):
 * ``rate_limited``
 * ``upstream_unavailable``
 * ``idempotency_conflict``
+* ``would_orphan_owners_group``
 * ``approval_required``
 * ``internal`` (fallback for unknown :class:`DomainError` subclass)
 
@@ -48,6 +49,7 @@ from app.domain.errors import (
     UpstreamUnavailable,
     Validation,
 )
+from app.domain.identity.permission_groups import LastOwnerMember
 
 pytestmark = pytest.mark.integration
 
@@ -151,6 +153,12 @@ def _build_probe_router() -> APIRouter:
         raise IdempotencyConflict(
             "idempotency key reused with a different body",
             extra={"idempotency_key": "abc-123"},
+        )
+
+    @r.get("/api/_probe/would_orphan_owners_group", include_in_schema=False)
+    def probe_would_orphan_owners_group() -> None:
+        raise LastOwnerMember(
+            "cannot remove the last member of the 'owners' group",
         )
 
     @r.get("/api/_probe/approval_required", include_in_schema=False)
@@ -307,6 +315,16 @@ class TestCanonicalTypeSnapshots:
         assert body["detail"] == ("idempotency key reused with a different body")
         assert body["idempotency_key"] == "abc-123"
 
+    def test_would_orphan_owners_group(self, composed_client: TestClient) -> None:
+        """§02 "permission_group" §"Invariants": 422 + specific type URI."""
+        resp = composed_client.get("/api/_probe/would_orphan_owners_group")
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["type"] == _type_uri("would_orphan_owners_group")
+        assert body["title"] == "Would orphan owners group"
+        assert body["status"] == 422
+        assert body["detail"] == "cannot remove the last member of the 'owners' group"
+
     def test_approval_required(self, composed_client: TestClient) -> None:
         resp = composed_client.get("/api/_probe/approval_required")
         assert resp.status_code == 409
@@ -344,6 +362,7 @@ _PROBE_PATHS: tuple[str, ...] = (
     "/api/_probe/rate_limited",
     "/api/_probe/upstream_unavailable",
     "/api/_probe/idempotency_conflict",
+    "/api/_probe/would_orphan_owners_group",
     "/api/_probe/approval_required",
     "/api/_probe/internal",
 )

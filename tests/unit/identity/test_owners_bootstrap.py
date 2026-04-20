@@ -16,6 +16,7 @@ groups, and action catalog" and ``docs/specs/02-domain-model.md``
 from __future__ import annotations
 
 from app.authz import is_owner_member, resolve_is_owner
+from app.domain.errors import DomainError, Validation
 from app.domain.identity.permission_groups import (
     LastOwnerMember,
     write_member_remove_rejected_audit,
@@ -25,9 +26,14 @@ from app.domain.identity.permission_groups import (
 class TestLastOwnerMemberType:
     """The new guard exception has the spec-expected hierarchy."""
 
-    def test_last_owner_member_is_value_error(self) -> None:
-        """409-style domain errors subclass :class:`ValueError`."""
-        assert issubclass(LastOwnerMember, ValueError)
+    def test_last_owner_member_is_validation(self) -> None:
+        """422-style domain errors subclass :class:`Validation`."""
+        assert issubclass(LastOwnerMember, Validation)
+        assert issubclass(LastOwnerMember, DomainError)
+
+    def test_last_owner_member_type_name(self) -> None:
+        """The canonical ``type`` URI short-name matches §02."""
+        assert LastOwnerMember.type_name == "would_orphan_owners_group"
 
     def test_last_owner_member_carries_message(self) -> None:
         """The message mentions the ``owners`` group so logs are legible."""

@@ -135,9 +135,12 @@ class TestSpaProdMountAgainstRealDist:
     def test_api_404_stays_json(
         self, pinned_settings: Settings, real_make_uow: None
     ) -> None:
-        """``/api/*`` routes are not shadowed by the SPA catch-all."""
+        """``/api/*`` routes are not shadowed by the SPA catch-all.
+
+        FastAPI-handled 404s go through the RFC 7807 seam (§12).
+        """
         app = create_app(settings=pinned_settings)
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/api/v1/does-not-exist")
         assert resp.status_code == 404
-        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.headers["content-type"].startswith("application/problem+json")
