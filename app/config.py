@@ -68,6 +68,23 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_user: str | None = None
     smtp_password: SecretStr | None = None
+    # Envelope sender for every outgoing message. ``None`` when SMTP
+    # isn't configured; the :class:`app.adapters.mail.smtp.SMTPMailer`
+    # requires it at construction time and will refuse to start without
+    # one — the spec (§10) treats a message with no From as a bug.
+    smtp_from: str | None = None
+    # Whether STARTTLS (port 587) or implicit TLS (port 465) is attempted.
+    # Plain-port 25 always skips TLS regardless. Operators who front the
+    # relay over a trusted socket (localhost, unix socket bridge) can
+    # flip this off; in every other deployment it must stay ``True``.
+    smtp_use_tls: bool = True
+    # Socket timeout (seconds) passed to ``smtplib.SMTP`` / ``SMTP_SSL``.
+    # Applies to the initial connection and every subsequent I/O.
+    smtp_timeout: int = 10
+    # Domain used to build the ``Return-Path: bounce+<token>@<domain>``
+    # header for future bounce-webhook correlation (§10). When ``None``,
+    # the SMTPMailer falls back to the domain parsed from ``smtp_from``.
+    smtp_bounce_domain: str | None = None
 
     # --- LLM (optional; see §11 llm-and-agents) ---
     openrouter_api_key: SecretStr | None = None

@@ -56,6 +56,10 @@ class TestDefaults:
         assert s.smtp_port == 587
         assert s.smtp_user is None
         assert s.smtp_password is None
+        assert s.smtp_from is None
+        assert s.smtp_use_tls is True
+        assert s.smtp_timeout == 10
+        assert s.smtp_bounce_domain is None
         assert s.openrouter_api_key is None
         assert s.root_key is None
         assert s.demo_mode is False
