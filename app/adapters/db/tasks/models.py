@@ -56,6 +56,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -545,6 +546,22 @@ class Occurrence(Base):
     )
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # cd-22e property-local ISO-8601 timestamp mirroring ``starts_at``.
+    # Stored as text (not ``DateTime``) for parity with
+    # ``Schedule.dtstart_local``: the value is intentionally tz-naive
+    # in the property frame, and routing it through a typed column
+    # would invite implicit UTC coercion. Nullable for backward compat
+    # with pre-cd-22e rows; the scheduler worker populates it on every
+    # insert and the partial unique index below keys off it.
+    scheduled_for_local: Mapped[str | None] = mapped_column(String, nullable=True)
+    # cd-22e historical anchor: the property-local timestamp the
+    # scheduler worker chose for this occurrence at generation time.
+    # Immutable — even if the task is later rescheduled (pull-back,
+    # manager edit), this field keeps the original pick so reports
+    # can tell an SLA slip from a deliberate move. Seeded equal to
+    # ``scheduled_for_local`` at creation time. Nullable for backward
+    # compat with pre-cd-22e rows.
+    originally_scheduled_for: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -592,6 +609,23 @@ class Occurrence(Base):
             "workspace_id",
             "state",
             "starts_at",
+        ),
+        # cd-22e idempotency guard: two generator runs over the same
+        # window must not materialise the same ``(schedule_id,
+        # scheduled_for_local)`` twice. Scoped to ``schedule_id IS
+        # NOT NULL`` via the dialect ``_where`` kwargs so one-off
+        # tasks (no parent schedule) don't trip the unique constraint
+        # on a ``NULL`` schedule_id. Both SQLite and PostgreSQL
+        # respect partial unique indexes; the kwargs are dialect-
+        # specific and SQLAlchemy passes them through to the DDL
+        # emitter on the matching backend.
+        Index(
+            "uq_occurrence_schedule_scheduled_for_local",
+            "schedule_id",
+            "scheduled_for_local",
+            unique=True,
+            sqlite_where=text("schedule_id IS NOT NULL"),
+            postgresql_where=text("schedule_id IS NOT NULL"),
         ),
     )
 
