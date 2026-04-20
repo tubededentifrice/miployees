@@ -1654,6 +1654,18 @@
 .login__recover { display: inline-block; margin-top: 14px; color: var(--ink-3); font-size: 12px; text-decoration: underline; }
 .login__footnote { color: var(--ink-3); font-size: 12px; margin-top: 18px; max-width: 400px; text-align: center; }
 .login__card--wide .login__footnote { text-align: left; }
+/* Inline notice slot used by LoginPage for passkey-ceremony errors —
+   absent from the mock (which is static) but required by §14 so the
+   typed PasskeyCancelled / Unsupported / ApiError 429 paths have
+   somewhere to surface. `--danger` flips the accent to rust for a
+   real failure; the default tone stays muted for the benign
+   "user closed the prompt" case. */
+.login__notice {
+  margin: 0 0 14px; padding: 10px 12px; border-radius: 10px;
+  background: var(--paper-2); border: 1px solid var(--line);
+  color: var(--ink-2); font-size: 13px; text-align: left;
+}
+.login__notice--danger { border-color: var(--rust); background: var(--rust-soft); color: var(--ink-1); }
 
 .enroll-steps { list-style: none; padding: 0; margin: 24px 0 0; display: flex; flex-direction: column; gap: 14px; }
 .enroll-step { display: flex; gap: 14px; align-items: flex-start; padding: 14px; background: var(--paper-2); border-radius: 10px; opacity: 0.6; }
