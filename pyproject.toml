@@ -147,6 +147,20 @@ ignore_imports = [
     # land these exceptions drop together.
     "app.domain.identity.role_grants -> app.adapters.db.authz.models",
     "app.domain.identity.role_grants -> app.adapters.db.places.models",
+    # v1 stopgap (cd-jpa): ``app.domain.identity.membership`` reads
+    # identity + authz + workspace ORM models directly. Same
+    # Protocol-seam refactor as the siblings above; tracked by
+    # cd-duv6 (extended scope). Drops once the repositories land.
+    "app.domain.identity.membership -> app.adapters.db.authz.models",
+    "app.domain.identity.membership -> app.adapters.db.identity.models",
+    "app.domain.identity.membership -> app.adapters.db.workspace.models",
+    # The invite flow delegates token mint + consume to
+    # :mod:`app.auth.magic_link`, which itself reads identity ORM
+    # models directly (cd-4zz stopgap at the auth-layer level).
+    # Shielding the transitive edge keeps the "domain can't touch
+    # adapters" contract honest without forcing every auth domain
+    # call to route through a port.
+    "app.domain.identity.membership -> app.auth.magic_link",
     # v1 stopgap (cd-ckr): the owners-membership check lives under
     # ``app.authz.owners`` so the tenancy middleware (cd-7y4) and
     # the identity domain share one SELECT shape. ``app.authz``

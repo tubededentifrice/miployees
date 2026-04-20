@@ -151,12 +151,16 @@ _VALID_PURPOSES: Final[frozenset[str]] = frozenset(
 )
 
 # Per-purpose TTL ceiling (§03). Requests for a shorter TTL are
-# respected; longer requests silently cap at the value below.
+# respected; longer requests silently cap at the value below. The
+# ``grant_invite`` ceiling is 24 hours per §03 "Additional users
+# (invite → click-to-accept)" — invitees often discover the email
+# the morning after, and a tighter cap would force managers to
+# re-send constantly.
 _TTL_BY_PURPOSE: Final[dict[str, timedelta]] = {
     "signup_verify": timedelta(minutes=15),
     "recover_passkey": timedelta(minutes=10),
     "email_change_confirm": timedelta(minutes=10),
-    "grant_invite": timedelta(minutes=10),
+    "grant_invite": timedelta(hours=24),
 }
 
 # itsdangerous salt. Changing the value invalidates every link in
@@ -481,7 +485,7 @@ def request_link(
     email: str,
     purpose: MagicLinkPurpose,
     ip: str,
-    mailer: Mailer,
+    mailer: Mailer | None,
     base_url: str,
     now: datetime | None = None,
     ttl: timedelta | None = None,
@@ -489,8 +493,9 @@ def request_link(
     settings: Settings | None = None,
     clock: Clock | None = None,
     subject_id: str | None = None,
-) -> None:
-    """Mint + send one magic-link; always returns ``None`` (enumeration guard).
+    send_email: bool = True,
+) -> str | None:
+    """Mint one magic-link; optionally send it via ``mailer``.
 
     Steps:
 
@@ -498,7 +503,7 @@ def request_link(
     2. Rate-limit on (ip, email_hash) — :class:`RateLimited` propagates
        up so the HTTP router can return 429.
     3. Resolve the subject id (new ULID for signup/invite, existing
-       user id for recover/email-change). No subject → return early
+       user id for recover/email-change). No subject → return ``None``
        silently; the 202 response is identical whether or not the
        email existed. Callers that already own a subject row (e.g. the
        signup service pre-inserts a :class:`SignupAttempt` row) pass
@@ -507,13 +512,19 @@ def request_link(
     4. Server-cap the TTL at the per-purpose ceiling, mint jti +
        token.
     5. Insert a pending :class:`MagicLinkNonce` row.
-    6. Send via ``mailer``; a transport failure propagates so the
-       caller's UoW rolls back and a future retry mints a fresh
-       token.
+    6. When ``send_email`` is ``True`` (the default), send via
+       ``mailer``; a transport failure propagates so the caller's UoW
+       rolls back and a future retry mints a fresh token. When
+       ``send_email`` is ``False``, the mailer is not touched and the
+       signed URL is returned to the caller so they can re-frame it
+       with flow-specific copy (e.g. the invite surface). ``mailer``
+       may be ``None`` in that case.
     7. Audit ``audit.magic_link.sent`` with hashes only.
 
-    The caller's UoW owns the transaction (§01). This function never
-    calls ``session.commit()``.
+    Returns the signed acceptance URL on success (``/auth/magic/<token>``),
+    or ``None`` if the enumeration guard short-circuited. The caller's
+    UoW owns the transaction (§01). This function never calls
+    ``session.commit()``.
     """
     if purpose not in _VALID_PURPOSES:
         # Router body validation should have caught this, but the
@@ -537,7 +548,7 @@ def request_link(
         # No user row for a recovery / email-change request — silently
         # return without inserting a nonce or sending mail.
         # Enumeration guard: the caller sees the same 202 either way.
-        return
+        return None
 
     # Cap the TTL at the per-purpose ceiling. Callers passing a larger
     # window get silently clamped; passing a shorter window is fine.
@@ -553,6 +564,7 @@ def request_link(
         jti=jti,
         exp=int(expires_at.timestamp()),
     )
+    url = f"{base_url.rstrip('/')}/auth/magic/{token}"
 
     # Insert the pending row inside the caller's UoW. Failing here
     # (e.g. a unique-violation on ``jti`` — vanishingly unlikely on a
@@ -574,14 +586,17 @@ def request_link(
         )
         session.flush()
 
-    _send_link_email(
-        mailer=mailer,
-        to_email=email,
-        base_url=base_url,
-        token=token,
-        purpose=purpose,
-        ttl=effective_ttl,
-    )
+    if send_email:
+        if mailer is None:
+            raise ValueError("send_email=True requires a non-None mailer")
+        _send_link_email(
+            mailer=mailer,
+            to_email=email,
+            base_url=base_url,
+            token=token,
+            purpose=purpose,
+            ttl=effective_ttl,
+        )
 
     write_audit(
         session,
@@ -597,6 +612,7 @@ def request_link(
         },
         clock=clock,
     )
+    return url
 
 
 def _send_link_email(

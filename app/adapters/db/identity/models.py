@@ -47,6 +47,7 @@ from app.adapters.db.base import Base
 
 __all__ = [
     "ApiToken",
+    "Invite",
     "MagicLinkNonce",
     "PasskeyCredential",
     "Session",
@@ -447,6 +448,135 @@ class SignupAttempt(Base):
         ),
         Index("ix_signup_attempt_expires", "expires_at"),
         Index("ix_signup_attempt_email_hash", "email_hash"),
+    )
+
+
+class Invite(Base):
+    """Pending "come join this workspace" row — primary entity of the
+    click-to-accept flow.
+
+    Created by :func:`app.domain.identity.membership.invite` when a
+    manager / owner invites someone; its lifecycle mirrors the spec's
+    §03 "Additional users (invite → click-to-accept)" two-surface
+    flow:
+
+    * born ``state = 'pending'`` with ``workspace_id`` pinned, the
+      invitee's email + display name, and the requested
+      ``grants_json`` + ``group_memberships_json`` payloads waiting
+      to activate;
+    * consumed (``state = 'accepted'`` + ``accepted_at``) once the
+      invitee's click-to-accept ceremony lands every row in one
+      transaction — for a new user that is the post-passkey
+      ``complete_invite`` callback; for an existing user it is the
+      second ``POST /invite/{id}/confirm`` press;
+    * pruned (``state = 'expired'``) by a future nightly
+      ``signup_gc`` worker once ``expires_at`` lapses.
+
+    **PII minimisation (§15).** We store the invitee's email in the
+    clear on this row (``pending_email``) because the accept flow
+    needs to seed the :class:`User` row's ``email`` on first click —
+    the value has to round-trip from the DB intact to hand to the
+    UX. The canonical ``email_lower`` mirrors the :class:`User` row
+    pattern so idempotent re-invites collapse onto a single row.
+    Audit diffs never carry the plaintext — only :attr:`email_hash`
+    (same SHA-256 + HKDF pepper shape as every other identity row).
+
+    **``grants_json``** is the serialised spec payload:
+
+    .. code-block:: json
+
+        [
+          {
+            "scope_kind": "workspace",
+            "scope_id": "01HWA...",
+            "grant_role": "worker",
+            "scope_property_id": null
+          },
+          ...
+        ]
+
+    Only ``workspace`` scope and the four v1 grant roles (``manager
+    | worker | client | guest``) are validated on insert; the
+    ``binding_org_id`` / ``organization`` scope variants are
+    deferred to a follow-up (the ``organization`` table doesn't
+    land in Phase 1).
+
+    **``group_memberships_json``** is a list of group ids the
+    invitee lands in on accept. The domain service validates each
+    id against :class:`PermissionGroup` before activation — no
+    cross-workspace membership is possible.
+
+    **Soft FK on ``user_id``.** Populated on accept by the domain
+    service (tracks the :class:`User` row inserted at accept time
+    for a brand-new invitee, or the pre-existing row for a known
+    email). No hard FK because the user row may not exist at
+    insert time.
+    """
+
+    __tablename__ = "invite"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Set at creation time iff the email already matched an existing
+    # :class:`User` row; left NULL for a fresh invitee and filled on
+    # accept. Soft reference (no FK) so a future user hard-delete
+    # doesn't cascade the audit-forensic row.
+    user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    pending_email: Mapped[str] = mapped_column(String, nullable=False)
+    pending_email_lower: Mapped[str] = mapped_column(String, nullable=False)
+    # SHA-256 of ``canonicalise_email(email) + hkdf_subkey``. Carried
+    # in audit diffs instead of the plaintext.
+    email_hash: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    # One of ``pending | accepted | expired | revoked``.
+    state: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    # Payload shapes documented above. JSON so the v2 schema can add
+    # fields without a migration — callers validate at the domain
+    # boundary.
+    grants_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    group_memberships_json: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    invited_by_user_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending', 'accepted', 'expired', 'revoked')",
+            name="ck_invite_state",
+        ),
+        # One live invite per ``(workspace, email_lower)`` — a second
+        # call for the same pair reuses / refreshes the existing row
+        # rather than stacking duplicates. The domain service is the
+        # enforcement point; the unique index is the safety net.
+        UniqueConstraint(
+            "workspace_id",
+            "pending_email_lower",
+            "state",
+            name="uq_invite_workspace_email_state",
+        ),
+        Index("ix_invite_workspace", "workspace_id"),
+        Index("ix_invite_email_lower", "pending_email_lower"),
+        Index("ix_invite_expires", "expires_at"),
     )
 
 

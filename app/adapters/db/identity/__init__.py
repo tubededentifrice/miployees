@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from app.adapters.db.identity.models import (
     ApiToken,
+    Invite,
     MagicLinkNonce,
     PasskeyCredential,
     Session,
@@ -33,9 +34,20 @@ from app.adapters.db.identity.models import (
     User,
     WebAuthnChallenge,
 )
+from app.tenancy.registry import register
+
+# ``invite`` carries a ``workspace_id`` and is always queried under a
+# live :class:`~app.tenancy.WorkspaceContext` once the manager is
+# authenticated. The ORM tenant filter auto-injects the predicate on
+# every SELECT / UPDATE / DELETE so a misconfigured membership
+# service can't leak a sibling workspace's invites. The accept flow
+# at the bare host wraps its lookup in :func:`app.tenancy.tenant_agnostic`
+# because the redeemed token has not yet resolved a workspace ctx.
+register("invite")
 
 __all__ = [
     "ApiToken",
+    "Invite",
     "MagicLinkNonce",
     "PasskeyCredential",
     "Session",
