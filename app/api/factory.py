@@ -66,7 +66,7 @@ from app.adapters.mail.smtp import SMTPMailer
 from app.api.admin import admin_router
 from app.api.errors import add_exception_handlers
 from app.api.health import router as health_router
-from app.api.middleware import SecurityHeadersMiddleware
+from app.api.middleware import IdempotencyMiddleware, SecurityHeadersMiddleware
 from app.api.v1 import CONTEXT_ROUTERS
 from app.api.v1.auth import invite as invite_module
 from app.api.v1.auth import magic as magic_module
@@ -572,8 +572,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     #
     # 1. CORS — reject cross-origin preflights before any stateful work.
     # 2. SecurityHeaders — stamp every response, even middleware rejects.
-    # 3. WorkspaceContextMiddleware — bind the tenancy ctx for routers.
-    # 4. CSRFMiddleware — double-submit check on mutation verbs.
+    # 3. WorkspaceContextMiddleware — bind the tenancy ctx + stash the
+    #    resolved :class:`~app.tenancy.middleware.ActorIdentity` on
+    #    ``request.state`` (so the idempotency middleware can read
+    #    ``token_id`` without re-verifying the bearer token).
+    # 4. IdempotencyMiddleware — replay cache for ``POST`` retries
+    #    carrying ``Idempotency-Key``. Runs AFTER auth (so
+    #    ``token_id`` is known) and BEFORE the handler. Spec §12
+    #    "Idempotency".
+    # 5. CSRFMiddleware — double-submit check on mutation verbs.
     #
     # To get that layout we register INNER → OUTER: CSRF first (ends up
     # innermost), CORS last (ends up outermost). CORS defaults to
@@ -583,6 +590,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Dev work behind a separate Vite origin can populate
     # ``CREWDAY_CORS_ALLOW_ORIGINS`` with an explicit list.
     app.add_middleware(CSRFMiddleware)
+    app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(WorkspaceContextMiddleware)
     app.add_middleware(SecurityHeadersMiddleware, settings=cfg)
     app.add_middleware(

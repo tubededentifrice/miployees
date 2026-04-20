@@ -89,6 +89,7 @@ from app.tenancy.slug import InvalidSlug, validate_slug
 from app.util.ulid import new_ulid
 
 __all__ = [
+    "ACTOR_STATE_ATTR",
     "CORRELATION_ID_HEADER",
     "SKIP_PATHS",
     "TEST_ACTOR_ID_HEADER",
@@ -98,6 +99,14 @@ __all__ = [
     "resolve_actor",
     "resolve_workspace",
 ]
+
+
+# Attribute name the middleware sets on ``request.state`` to expose
+# the resolved :class:`ActorIdentity` to downstream middleware and
+# handlers. Kept as a module constant so readers (currently the
+# idempotency middleware at :mod:`app.api.middleware.idempotency`)
+# import the exact string instead of inlining it.
+ACTOR_STATE_ATTR: str = "actor_identity"
 
 
 # Outgoing + incoming correlation id header. Accepted from the client
@@ -709,7 +718,7 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
 
         # 2) Scoped request — build the context or 404.
         settings = get_settings()
-        ctx, outcome = self._resolve_context(request, settings, correlation_id)
+        ctx, actor, outcome = self._resolve_context(request, settings, correlation_id)
 
         if ctx is None:
             _log_tenancy_event(
@@ -732,12 +741,23 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
             workspace_id=ctx.workspace_id,
             actor_id=ctx.actor_id,
             actor_kind=ctx.actor_kind,
-            token_id=None,
-            session_id=None,
+            token_id=actor.token_id if actor is not None else None,
+            session_id=actor.session_id if actor is not None else None,
             correlation_id=correlation_id,
             skip_path=False,
             outcome=outcome,
         )
+
+        # Expose the resolved actor to downstream middleware / handlers.
+        # The idempotency middleware (§12 "Idempotency") reads
+        # ``token_id`` from here to key its replay cache without
+        # re-verifying the bearer token; a session-authenticated
+        # request (no token) leaves ``token_id`` ``None`` and the
+        # idempotency middleware skips caching (spec §12 keys on
+        # ``(token_id, idempotency_key)``). ``None`` is written for
+        # the stub path too so downstream readers can rely on the
+        # attribute always being present under a resolved ctx.
+        setattr(request.state, ACTOR_STATE_ATTR, actor)
 
         token = set_current(ctx)
         try:
@@ -755,22 +775,28 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
         request: Request,
         settings: Settings,
         correlation_id: str,
-    ) -> tuple[WorkspaceContext | None, str]:
+    ) -> tuple[WorkspaceContext | None, ActorIdentity | None, str]:
         """Run the Phase-0 stub OR the real resolver and report an outcome tag.
 
         Split out of :meth:`dispatch` so the DB session + UoW lifecycle
         lives in one place and :meth:`dispatch` stays a flat switchboard
         between "skip / resolved / 404".
 
-        The outcome tag is purely for the log line — it has no effect
-        on the wire response, which stays the shared 404 envelope on
-        every rejection.
+        Returns a ``(ctx, actor, outcome)`` triple. ``actor`` is the
+        resolved :class:`ActorIdentity` on both the happy path and the
+        membership-miss path (the caller has a valid bearer token but
+        lacks ``user_workspace``); otherwise ``None``. The stub path
+        returns ``None`` for ``actor`` — the stub does not resolve a
+        real token, only a synthesised workspace context. The outcome
+        tag is purely for the log line — it has no effect on the wire
+        response, which stays the shared 404 envelope on every
+        rejection.
         """
         path = request.url.path
         slug = _parse_scoped_path(path)
         if slug is None:
             # Upstream already guarded; defensive only.
-            return None, "not_scoped"
+            return None, None, "not_scoped"
 
         # Phase-0 stub — guarded by the env flag. When off, the
         # ``X-Test-Workspace-Id`` header is simply ignored and the real
@@ -779,11 +805,11 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
             try:
                 validate_slug(slug)
             except InvalidSlug:
-                return None, "slug_invalid_stub"
+                return None, None, "slug_invalid_stub"
             ctx = _phase0_stub_context(request, slug, correlation_id)
             if ctx is None:
-                return None, "stub_header_missing"
-            return ctx, "stub_resolved"
+                return None, None, "stub_header_missing"
+            return ctx, None, "stub_resolved"
 
         # Real resolver path. Open a UoW so domain calls that flush
         # audit rows (``session.refreshed`` on sliding refresh, the
@@ -799,6 +825,6 @@ class WorkspaceContextMiddleware(BaseHTTPMiddleware):
             )
             if ctx is None:
                 if actor is None:
-                    return None, "anon_or_unresolved"
-                return None, "membership_miss"
-            return ctx, "resolved"
+                    return None, None, "anon_or_unresolved"
+                return None, actor, "membership_miss"
+            return ctx, actor, "resolved"
