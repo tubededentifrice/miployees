@@ -530,7 +530,7 @@ Rationale:
 
 | Env        | Purpose                                                | DB                 | Storage  | Mail       | LLM                    |
 |------------|--------------------------------------------------------|--------------------|----------|------------|------------------------|
-| dev        | local dev loop (uv run, hot reload)                    | SQLite             | local fs | MailHog    | OpenRouter (or a mock) |
+| dev        | local dev loop (uv run, hot reload)                    | SQLite             | local fs | Mailpit    | OpenRouter (or a mock) |
 | ci         | pytest + playwright in GH Actions                      | SQLite + PG        | tmpfs    | fake       | record/replay          |
 | staging    | operators' + managers' shared test instance            | Postgres           | local fs | real SMTP  | OpenRouter             |
 | saas-stage | multi-tenant SaaS staging (e.g. `staging.crew.day`) | Postgres           | S3       | real SMTP  | OpenRouter             |

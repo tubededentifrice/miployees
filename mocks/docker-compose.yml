@@ -80,17 +80,17 @@ services:
       - "traefik.http.services.crewday-dev.loadbalancer.healthcheck.interval=10s"
       - "traefik.http.services.crewday-dev.loadbalancer.healthcheck.hostname=dev.crew.day"
 
-  # Local SMTP sink for dev. MailHog accepts any SMTP session on :1025
+  # Local SMTP sink for dev. Mailpit accepts any SMTP session on :1025
   # (no auth, no TLS) and serves a web UI + JSON API on :8025 so the
   # operator can inspect what crewday would have delivered in prod.
   # Ports are bound to 127.0.0.1 only per the AGENTS.md bind guard —
   # this container never needs to be reachable from outside the host.
-  # Point ``CREWDAY_SMTP_HOST=mailhog`` / ``_PORT=1025`` at it from the
+  # Point ``CREWDAY_SMTP_HOST=mailpit`` / ``_PORT=1025`` at it from the
   # mocks app's environment (or export from a local .env) when wiring
   # up magic-link / digest smoke tests.
-  mailhog:
-    image: mailhog/mailhog:latest
-    container_name: crewday-mailhog
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: crewday-mailpit
     restart: unless-stopped
     ports:
       - "127.0.0.1:1025:1025"

@@ -1,10 +1,10 @@
 """End-to-end test for :class:`app.adapters.mail.smtp.SMTPMailer`.
 
 Spins up a :class:`testcontainers.core.container.DockerContainer` with
-the ``mailhog/mailhog`` image — no auth, no TLS, just an SMTP listener
+the ``axllent/mailpit`` image — no auth, no TLS, just an SMTP listener
 on ``:1025`` and an HTTP API on ``:8025``. We send one message through
-the real :class:`SMTPMailer`, then poll MailHog's
-``/api/v2/messages`` endpoint and assert the delivered envelope
+the real :class:`SMTPMailer`, then poll Mailpit's
+``/api/v1/messages`` endpoint and assert the delivered envelope
 matches what we sent.
 
 The test skips cleanly when Docker isn't reachable so dev hosts
@@ -30,72 +30,86 @@ from app.adapters.mail.smtp import SMTPMailer
 
 pytestmark = pytest.mark.integration
 
-_MAILHOG_IMAGE = "mailhog/mailhog:latest"
+_MAILPIT_IMAGE = "axllent/mailpit:latest"
 _SMTP_PORT = 1025
 _HTTP_PORT = 8025
 
 
 def _fetch_messages(api_url: str) -> list[dict[str, Any]]:
-    """Return the ``items`` array from MailHog's ``/api/v2/messages``.
+    """Return the ``messages`` array from Mailpit's ``/api/v1/messages``.
 
-    MailHog's JSON shape is documented and stable; the runtime
-    ``isinstance`` guard keeps mypy honest without pretending we know
-    more than we do about third-party JSON.
+    Mailpit's JSON shape — ``{"total": N, "messages": [...]}`` — is
+    documented and stable; the runtime ``isinstance`` guard keeps mypy
+    honest without pretending we know more than we do about
+    third-party JSON.
     """
-    with urllib.request.urlopen(f"{api_url}/api/v2/messages", timeout=5) as resp:
+    with urllib.request.urlopen(f"{api_url}/api/v1/messages", timeout=5) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     if not isinstance(payload, dict):
-        raise AssertionError(f"MailHog returned non-object payload: {payload!r}")
-    items = payload.get("items", [])
-    if not isinstance(items, list):
-        raise AssertionError(f"MailHog 'items' is not a list: {items!r}")
-    return [item for item in items if isinstance(item, dict)]
+        raise AssertionError(f"Mailpit returned non-object payload: {payload!r}")
+    messages = payload.get("messages", [])
+    if not isinstance(messages, list):
+        raise AssertionError(f"Mailpit 'messages' is not a list: {messages!r}")
+    return [item for item in messages if isinstance(item, dict)]
+
+
+def _fetch_headers(api_url: str, internal_id: str) -> dict[str, list[str]]:
+    """Return Mailpit's per-message header map (``/api/v1/message/{id}/headers``).
+
+    Mailpit normalises header keys to ``Canonical-Case`` and yields
+    each header's values as a list of strings — exactly the shape the
+    caller wants for ``Reply-To`` / ``X-…`` assertions.
+    """
+    with urllib.request.urlopen(
+        f"{api_url}/api/v1/message/{internal_id}/headers", timeout=5
+    ) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise AssertionError(f"Mailpit headers payload is not a dict: {payload!r}")
+    out: dict[str, list[str]] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not isinstance(value, list):
+            continue
+        str_values = [v for v in value if isinstance(v, str)]
+        out[key] = str_values
+    return out
 
 
 def _wait_for_message(
     api_url: str,
     *,
-    message_id: str | None = None,
+    message_id: str,
     deadline_s: float = 10.0,
 ) -> dict[str, Any]:
-    """Poll MailHog until the expected message arrives, then return it.
+    """Poll Mailpit until the envelope with ``message_id`` arrives, then return it.
 
-    When ``message_id`` is given, we search every stored envelope's
-    ``Message-ID`` header for an exact match so the assertion is
-    keyed to *this* test's send — a future caller adding a second
-    send in the same module doesn't accidentally assert against the
-    wrong envelope. Without ``message_id`` (e.g. a smoke case that
-    only cares that *something* arrived) we fall back to the first
-    stored message.
+    We key on each stored envelope's top-level ``MessageID`` field
+    (the angle-brackets-stripped form Mailpit surfaces in its list
+    endpoint) so the assertion is tied to *this* test's send — a
+    future caller adding a second send in the same module doesn't
+    accidentally assert against the wrong envelope.
     """
-    expected_header = f"<{message_id}>" if message_id is not None else None
     end = time.monotonic() + deadline_s
     while time.monotonic() < end:
         items = _fetch_messages(api_url)
-        if expected_header is None:
-            if items:
-                return items[0]
-        else:
-            for item in items:
-                headers = item.get("Content", {}).get("Headers", {})
-                stored_ids = headers.get("Message-ID", [])
-                if expected_header in stored_ids:
-                    return item
+        for item in items:
+            if item.get("MessageID") == message_id:
+                return item
         time.sleep(0.2)
     raise AssertionError(
-        f"MailHog at {api_url} never received the expected message "
+        f"Mailpit at {api_url} never received the expected message "
         f"({message_id!r}) within {deadline_s}s"
     )
 
 
 @pytest.fixture(scope="module")
-def mailhog() -> Iterator[tuple[str, int, str]]:
-    """Spin up MailHog, yield ``(smtp_host, smtp_port, http_api_url)``.
+def mailpit_container() -> Iterator[tuple[str, int, str]]:
+    """Spin up Mailpit, yield ``(smtp_host, smtp_port, http_api_url)``.
 
     Uses the generic :class:`DockerContainer` rather than a
-    community-maintained image-specific wrapper — MailHog's shape
+    community-maintained image-specific wrapper — Mailpit's shape
     (single binary, two ports, zero config) doesn't justify a bespoke
-    class. Bind guard: MailHog listens on ``0.0.0.0`` inside the
+    class. Bind guard: Mailpit listens on ``0.0.0.0`` inside the
     container, but Docker only publishes on ``127.0.0.1`` by default
     when the host isn't told otherwise. ``testcontainers`` follows
     that default, so there's no way for the exposed ports to reach
@@ -110,13 +124,13 @@ def mailhog() -> Iterator[tuple[str, int, str]]:
     except ImportError as exc:  # pragma: no cover - dep is in dev group
         pytest.skip(f"testcontainers not installed: {exc}")
 
-    container = DockerContainer(_MAILHOG_IMAGE).with_exposed_ports(
+    container = DockerContainer(_MAILPIT_IMAGE).with_exposed_ports(
         _SMTP_PORT, _HTTP_PORT
     )
     try:
         container.start()
     except Exception as exc:  # pragma: no cover - env-dependent
-        pytest.skip(f"Docker/MailHog container unavailable: {exc}")
+        pytest.skip(f"Docker/Mailpit container unavailable: {exc}")
 
     try:
         host = container.get_container_host_ip()
@@ -125,7 +139,7 @@ def mailhog() -> Iterator[tuple[str, int, str]]:
         api_url = f"http://{host}:{http_port}"
 
         # Wait for the HTTP API to answer — the container is up well
-        # before MailHog finishes binding its listeners, and urlopen
+        # before Mailpit finishes binding its listeners, and urlopen
         # against a not-yet-open port throws :class:`ConnectionRefusedError`.
         _wait_for_http(api_url, deadline_s=15.0)
 
@@ -135,40 +149,45 @@ def mailhog() -> Iterator[tuple[str, int, str]]:
 
 
 def _wait_for_http(base_url: str, *, deadline_s: float) -> None:
-    """Poll ``base_url/api/v2/messages`` until it returns 2xx or we time out."""
+    """Poll Mailpit's ``/livez`` until it returns 2xx or we time out."""
     end = time.monotonic() + deadline_s
     last_exc: BaseException | None = None
     while time.monotonic() < end:
         try:
-            with urllib.request.urlopen(
-                f"{base_url}/api/v2/messages", timeout=2
-            ) as resp:
+            with urllib.request.urlopen(f"{base_url}/livez", timeout=2) as resp:
                 if 200 <= resp.status < 300:
                     return
         except (urllib.error.URLError, ConnectionError, OSError) as exc:
             last_exc = exc
         time.sleep(0.2)
     raise RuntimeError(
-        f"MailHog HTTP API at {base_url} never came up in {deadline_s}s "
+        f"Mailpit HTTP API at {base_url} never came up in {deadline_s}s "
         f"(last error: {last_exc!r})"
     )
 
 
-def test_send_delivers_envelope_to_mailhog(
-    mailhog: tuple[str, int, str],
+def test_send_delivers_envelope_to_mailpit(
+    mailpit_container: tuple[str, int, str],
 ) -> None:
-    """One :meth:`SMTPMailer.send` → one stored message with matching headers.
+    """One :meth:`SMTPMailer.send` → one stored message with matching fields.
 
     Covers the full live-SMTP path end-to-end:
 
     * TCP + SMTP handshake succeeds against a real server.
-    * ``EmailMessage`` serialises into bytes MailHog's SMTP stack
+    * ``EmailMessage`` serialises into bytes Mailpit's SMTP stack
       accepts (multipart/alternative included).
-    * The headers we set (From, To, Subject, Message-ID, Return-Path,
-      Reply-To) round-trip through SMTP and land on the stored copy.
-    * The returned message id matches the stored ``Message-ID``.
+    * The envelope fields we set (From, To, Subject, Message-ID,
+      Reply-To) and any custom headers (e.g. ``X-Crewday-Template``)
+      round-trip through SMTP and land on the stored copy.
+    * The returned message id matches the stored ``MessageID``.
+
+    Note on ``Return-Path``: Mailpit rewrites that header to the SMTP
+    envelope sender at ingest, so the bounce token we put on the
+    outgoing message cannot be observed here. Round-tripping the
+    bounce token belongs in an adapter-level test that inspects the
+    serialised :class:`EmailMessage`, not in this sink-level check.
     """
-    host, smtp_port, api_url = mailhog
+    host, smtp_port, api_url = mailpit_container
 
     mailer = SMTPMailer(
         host=host,
@@ -176,7 +195,7 @@ def test_send_delivers_envelope_to_mailhog(
         from_addr="crew.day <noreply@example.com>",
         user=None,
         password=None,
-        use_tls=False,  # MailHog has no TLS listener
+        use_tls=False,  # Mailpit has no TLS listener
         timeout=10,
     )
 
@@ -193,22 +212,38 @@ def test_send_delivers_envelope_to_mailhog(
 
     stored = _wait_for_message(api_url, message_id=returned_id)
 
-    # MailHog surfaces headers as lists-of-strings under ``Content.Headers``.
-    headers = stored["Content"]["Headers"]
-    assert headers["Subject"][0] == "Hello from crew.day"
-    assert headers["From"][0].endswith("<noreply@example.com>")
-    assert headers["To"][0] == "alice@example.com"
-    assert headers["Reply-To"][0] == "ops@example.com"
-    assert headers["X-Crewday-Template"][0] == "test-message"
-    assert headers["Message-ID"][0] == f"<{returned_id}>"
-    # Return-Path survives and carries the bounce token.
-    return_path = headers["Return-Path"][0]
-    assert return_path.startswith("<bounce+")
-    assert return_path.endswith("@example.com>")
+    # Mailpit's list endpoint exposes the envelope fields directly:
+    # ``MessageID`` (no angle brackets), ``From``/``To`` as
+    # ``{"Name": ..., "Address": ...}`` records, and ``Subject`` as a
+    # plain string.
+    assert stored["MessageID"] == returned_id
+    assert stored["Subject"] == "Hello from crew.day"
+    assert stored["From"]["Address"] == "noreply@example.com"
+    assert stored["From"]["Name"] == "crew.day"
+    to_records = stored["To"]
+    assert isinstance(to_records, list) and len(to_records) == 1
+    assert to_records[0]["Address"] == "alice@example.com"
 
-    # MIME: multipart/alternative with both halves.
+    # Custom headers and Reply-To live on the per-message headers
+    # endpoint. Mailpit canonicalises header names to ``Canonical-Case``
+    # — note ``Message-Id`` (not the raw ``Message-ID`` we sent).
+    internal_id = stored["ID"]
+    assert isinstance(internal_id, str) and internal_id
+    headers = _fetch_headers(api_url, internal_id)
+    assert headers["Subject"] == ["Hello from crew.day"]
+    assert headers["From"] == ["crew.day <noreply@example.com>"]
+    assert headers["To"] == ["alice@example.com"]
+    assert headers["Reply-To"] == ["ops@example.com"]
+    assert headers["X-Crewday-Template"] == ["test-message"]
+    assert headers["Message-Id"] == [f"<{returned_id}>"]
+
+    # MIME: multipart/alternative with both halves. Mailpit exposes
+    # the rendered text/html bodies on the message-detail endpoint.
     content_type = headers["Content-Type"][0]
     assert content_type.startswith("multipart/alternative")
-    body = stored["Content"]["Body"]
-    assert "Plain-text body" in body
-    assert "HTML body with" in body
+    with urllib.request.urlopen(
+        f"{api_url}/api/v1/message/{internal_id}", timeout=5
+    ) as resp:
+        detail = json.loads(resp.read().decode("utf-8"))
+    assert "Plain-text body" in detail["Text"]
+    assert "HTML body with" in detail["HTML"]
