@@ -126,6 +126,23 @@ forbidden_modules = ["app.adapters"]
 ignore_imports = [
     "app.domain.** -> app.adapters.*.ports",
     "app.domain.** -> app.adapters.*.ports.*",
+    # v1 stopgap (cd-zkr): ``app.domain.identity.permission_groups``
+    # imports :class:`PermissionGroup` / :class:`PermissionGroupMember`
+    # directly from ``app.adapters.db.authz.models`` instead of going
+    # through a Protocol seam. Tracked for proper-seam refactor by
+    # cd-duv6 — once ``PermissionGroupRepository`` lands under
+    # ``app.adapters.db.authz.repositories`` this exception drops.
+    "app.domain.identity.permission_groups -> app.adapters.db.authz.models",
+    # ``app.audit`` is the canonical write seam for the audit log and
+    # is intended to be called from every domain service (see
+    # ``docs/specs/01-architecture.md`` §"Shared kernel" —
+    # the audit writer sits above both domain and adapters). Its
+    # implementation imports the ORM model class from
+    # ``app.adapters.db.audit.models`` purely so ``write_audit`` can
+    # construct a row; callers never see that dependency. Shielding
+    # the transitive import keeps the contract honest without
+    # forcing every domain caller to route through a third-party port.
+    "app.audit -> app.adapters.db.audit.models",
 ]
 unmatched_ignore_imports_alerting = "none"
 
