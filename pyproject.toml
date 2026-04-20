@@ -37,6 +37,12 @@ dev = [
     "locust",
     "factory-boy",
     "hypothesis",
+    # Postgres driver for the integration-test shard in CI. The sync
+    # engine builds `postgresql+psycopg://` URLs (see
+    # `app/adapters/db/session.py::normalise_sync_url`) so psycopg 3 must
+    # be installed wherever integration tests target PG. SQLite shards
+    # don't need it but installing in dev keeps parity with CI.
+    "psycopg[binary]",
 ]
 
 [tool.ruff]

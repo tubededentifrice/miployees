@@ -1,0 +1,182 @@
+# CI — lint, type, import boundaries, unit, integration.
+#
+# Task: cd-4al (spec: docs/specs/17-testing-quality.md §"Quality gates",
+# docs/specs/01-architecture.md §"Enforcement").
+#
+# Five jobs:
+#   * lint         — ruff check + ruff format --check
+#   * type         — mypy --strict on app/ (extends to cli/ via cd-j202
+#                    once that tree exists)
+#   * boundaries   — import-linter. Advisory (continue-on-error) until
+#                    cd-ev0 lands the strict config.
+#   * unit         — pytest tests/unit tests/api tests/property tests/llm
+#                    on SQLite only (the default).
+#   * integration  — pytest tests/integration on both SQLite (default)
+#                    and Postgres 15 via services container.
+#
+# Matrix over Python 3.12 and 3.13 on every job.
+# integration additionally matrices database = [sqlite, postgres]
+# (4 shards total on that job).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install deps
+        run: uv sync --group dev
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+  type:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install deps
+        run: uv sync --group dev
+      # cd-j202 will extend this to `uv run mypy app cli` once the CLI
+      # tree exists. Until then mypy only sweeps app/.
+      - name: mypy --strict app
+        run: uv run mypy app
+
+  boundaries:
+    # Advisory until cd-ev0 lands the import-linter config + contracts.
+    # The job still runs so we catch the first real run quickly, but a
+    # red result does not block merges until cd-ev0 flips the gate.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: uv sync --group dev
+      - name: lint-imports
+        # import-linter discovers its config from pyproject.toml
+        # ([tool.importlinter]) or from .importlinter / setup.cfg in
+        # the repo root. cd-ev0 adds the real contracts; until then,
+        # skip with a note rather than fail (contract-less runs emit
+        # "no contracts configured" which some versions treat as an
+        # error).
+        run: |
+          has_config=0
+          if grep -q '\[tool\.importlinter\]' pyproject.toml 2>/dev/null; then
+            has_config=1
+          elif [ -f .importlinter ]; then
+            has_config=1
+          elif [ -f setup.cfg ] && grep -q '\[importlinter\]' setup.cfg 2>/dev/null; then
+            has_config=1
+          fi
+          if [ "$has_config" = "1" ]; then
+            uv run lint-imports
+          else
+            echo "No import-linter config yet (cd-ev0). Skipping."
+          fi
+
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install deps
+        run: uv sync --group dev
+      - name: pytest (unit + api + property + llm, SQLite)
+        run: uv run pytest tests/unit tests/api tests/property tests/llm -x -q
+
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+        database: [sqlite, postgres]
+    services:
+      # Always defined so the workflow is valid; only consumed on the
+      # postgres shard via the CREWDAY_TEST_DATABASE_URL step below.
+      # tests/integration/conftest.py honours the env var (see
+      # db_url fixture there).
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: crewday
+          POSTGRES_PASSWORD: crewday
+          POSTGRES_DB: crewday_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install deps
+        run: uv sync --group dev
+      - name: Set DB URL (sqlite)
+        if: matrix.database == 'sqlite'
+        # Integration conftest falls back to a per-session SQLite file
+        # when CREWDAY_TEST_DATABASE_URL is unset; no env override
+        # needed for this shard.
+        run: echo "Using default SQLite file-based DB."
+      - name: Set DB URL (postgres)
+        if: matrix.database == 'postgres'
+        run: echo "CREWDAY_TEST_DATABASE_URL=postgresql+psycopg://crewday:crewday@localhost:5432/crewday_test" >> "$GITHUB_ENV"
+      - name: pytest (integration)
+        run: uv run pytest tests/integration -x -q
