@@ -34,21 +34,30 @@ per case.
 A **booking** is a worker × property × time-window commitment. It is
 the **canonical billable and payable atom** of crew.day: scheduled
 time *is* paid time and billed time, by default. This replaces the
-v0 clock-in / clock-out shift model — there is no clock state, no
-idle timer, no dispute machine. The booking is the contract; tasks
-done within it are the work; task-completion timestamps (§06) are
-forensic evidence consulted only when the contract is questioned.
+v0 clock-in / clock-out shift model as the **primary pay record** —
+the booking is the contract; tasks done within it are the work;
+task-completion timestamps (§06) are forensic evidence consulted
+only when the contract is questioned.
 
-> **Why no clock-in / clock-out?** The clock-tap is weak evidence
-> (workers forget, double-tap, can game it by ticking tasks early),
-> and household / cleaning bookings are commercially per-slot anyway:
-> the client books 4h, the agency bills 4h, the maid is paid 4h —
-> regardless of whether the actual broom-time was 3h 40 or 4h 10.
-> Genuine variances (the place was a disaster; client cancelled
-> last-minute) are handled explicitly via the **amend** operation
-> below, with audit trail and policy. Labour-law compliance is
-> satisfied by the booking + (when amended) `actual_minutes`
-> record — no minute-by-minute self-reporting needed.
+> **Why not clock-in / clock-out as the pay basis?** The clock-tap
+> is weak evidence (workers forget, double-tap, can game it by
+> ticking tasks early), and household / cleaning bookings are
+> commercially per-slot anyway: the client books 4h, the agency
+> bills 4h, the maid is paid 4h — regardless of whether the actual
+> broom-time was 3h 40 or 4h 10. Genuine variances (the place was
+> a disaster; client cancelled last-minute) are handled explicitly
+> via the **amend** operation below, with audit trail and policy.
+> Labour-law compliance is satisfied by the booking + (when
+> amended) `actual_minutes` record — no minute-by-minute
+> self-reporting needed.
+
+Note: a lightweight `shift` entity does exist for workspaces that
+want explicit clock-in / clock-out records alongside (not instead
+of) bookings — see `app/domain/time/shifts.py` and §12 "Time,
+payroll, expenses". Shifts are not pay-bearing in the current
+pipeline; their relationship to `booking_billing` is deferred to a
+future spec update (see `docs/specs/02-domain-model.md`
+§"Time / pay / expenses").
 
 ### Model
 

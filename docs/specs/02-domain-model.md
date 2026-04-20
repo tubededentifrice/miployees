@@ -274,11 +274,18 @@ catalog pair (see `permission_rule` below and the catalog in
 - **Instructions / SOPs** (§07): `instruction`, `instruction_revision`,
   `instruction_link`.
 - **Inventory** (§08): `inventory_item`, `inventory_movement`.
-- **Time / pay / expenses** (§09): `booking`, `pay_rule`, `pay_period`,
-  `pay_period_entry`, `payslip`, `payout_destination`, `expense_claim`,
-  `expense_line`, `expense_attachment`. All pay-pipeline rows
-  reference `work_engagement_id` (not `user_id` directly), so the
-  same person on different workspaces bills/accrues independently.
+- **Time / pay / expenses** (§09): `shift`, `booking`, `pay_rule`,
+  `pay_period`, `pay_period_entry`, `payslip`, `payout_destination`,
+  `expense_claim`, `expense_line`, `expense_attachment`. All
+  pay-pipeline rows reference `work_engagement_id` (not `user_id`
+  directly), so the same person on different workspaces
+  bills/accrues independently.
+  `shift` is the atomic clocked-time record (see
+  `app/domain/time/shifts.py:ShiftView`). Key invariant: exactly
+  one open shift (``ends_at IS NULL``) is permitted per (user,
+  workspace) at any time — the service rejects a second
+  `open_shift` call with `ShiftAlreadyOpen` until the existing
+  shift is closed.
 - **Clients, vendors, work orders** (§22): `organization`,
   `client_rate`, `client_user_rate`, `booking_billing`,
   `work_order`, `quote`, `vendor_invoice`,

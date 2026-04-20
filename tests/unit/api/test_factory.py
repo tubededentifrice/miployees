@@ -133,12 +133,24 @@ class TestOpenapiShape:
     def test_empty_context_has_no_paths(self) -> None:
         """A context whose router carries no routes must not appear in
         ``paths`` — only the tag seed is active.
+
+        Contexts whose router does carry routes (``time`` after cd-whl)
+        are excluded: their presence is the whole point. The assertion
+        targets the still-empty scaffolds so an accidental route
+        leakage anywhere else still fails the test.
         """
+        # ``time`` carries routes as of cd-whl; add any further
+        # implemented contexts here as they land. Every name in this
+        # set must still appear in :data:`CONTEXT_ROUTERS` so the tag
+        # seed check above keeps firing.
+        implemented_contexts = {"time"}
         client = _client(create_app(settings=_settings()))
         schema = client.get("/api/openapi.json").json()
         # None of the empty context prefixes should be in ``paths``.
         # e.g. ``/w/{slug}/api/v1/tasks`` must not be a key.
         for context_name, _router in CONTEXT_ROUTERS:
+            if context_name in implemented_contexts:
+                continue
             prefix = f"/w/{{slug}}/api/v1/{context_name}"
             for path in schema.get("paths", {}):
                 assert not path.startswith(prefix), (

@@ -209,6 +209,20 @@ ignore_imports = [
     # pattern as the identity stopgaps above; tracked by cd-duv6
     # (extended scope) — drops once the tasks repositories land.
     "app.domain.tasks.templates -> app.adapters.db.tasks.models",
+    # v1 stopgap (cd-whl): ``app.domain.time.shifts`` reads
+    # :class:`Shift` + ``_SHIFT_SOURCE_VALUES`` from
+    # ``app.adapters.db.time.models`` directly. Same Protocol-seam
+    # pattern as ``app.domain.tasks.templates``; tracked by cd-duv6
+    # (extended scope) — drops once the time repositories land.
+    "app.domain.time.shifts -> app.adapters.db.time.models",
+    # v1 stopgap (cd-whl): ``app.domain.time.shifts`` invokes
+    # :func:`app.authz.enforce.require` for the ``time.clock_self``
+    # / ``time.edit_others`` capability checks. ``app.authz``
+    # transitively reads ORM models (see the sibling
+    # ``app.domain.identity.role_grants -> app.authz.owners`` ignore
+    # above); the intermediate edge is therefore whitelisted with the
+    # same reasoning. Drops with cd-duv6.
+    "app.domain.time.shifts -> app.authz",
 ]
 unmatched_ignore_imports_alerting = "none"
 
@@ -217,6 +231,20 @@ name = "Domain forbids handlers (api/web/cli/worker)"
 type = "forbidden"
 source_modules = ["app.domain"]
 forbidden_modules = ["app.api", "app.web", "app.cli", "cli", "app.worker"]
+ignore_imports = [
+    # v1 stopgap (cd-whl): ``app.domain.time.shifts`` imports
+    # :func:`app.authz.require`; ``app.authz.enforce`` pulls
+    # :func:`app.api.deps.current_workspace_context` purely as a
+    # FastAPI-dep seam for :func:`Permission`. The seam is on the
+    # HTTP-router surface and is not referenced from the shift
+    # service path, but the linter walks every transitive edge.
+    # Whitelist the intermediate chain so the contract stays honest
+    # without forcing the service to duplicate the enforcement body.
+    # Drops when the enforcement body moves to a pure-domain seam
+    # (or when app.authz.enforce stops reaching into app.api.deps).
+    "app.domain.time.shifts -> app.authz",
+]
+unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "Adapters forbid handlers (api/web/cli/worker)"

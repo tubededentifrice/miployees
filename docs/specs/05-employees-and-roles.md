@@ -544,6 +544,8 @@ configuration.
 | `property_workspace.revoke`             | `workspace`, `property`        | `owners, managers`            | ✅ | §22 |
 | `messaging.comments.author_global`      | `workspace`, `property`        | `owners, managers, all_workers` | — | §10 |
 | `messaging.report_issue.triage`         | `workspace`, `property`        | `owners, managers`            | —  | §10 |
+| `time.clock_self`                       | `workspace`, `property`        | `owners, managers, all_workers` | — | §09 |
+| `time.edit_others`                      | `workspace`, `property`        | `owners, managers`            | —  | §09 |
 | `agent_prefs.edit_workspace`            | `workspace`                    | `owners, managers`            | —  | §11 |
 | `agent_prefs.edit_property`             | `workspace`, `property`        | `owners, managers`            | —  | §11 |
 | `deployment.view`                       | `deployment`                   | `owners, managers`            | ✅ | §14 |
@@ -572,11 +574,12 @@ Notes:
   they need to do their job:
   - `all_workers` carries `expenses.submit`,
     `messaging.comments.author_global`, `tasks.create`,
-    `bookings.create_pending`, and any task/booking actions
-    scoped to themselves (viewing / amending / declining
-    *your own* booking is not in this catalog — those are
-    identity-scoped actions, not scope-scoped, and do not flow
-    through the resolver). Workers may create tasks; if
+    `bookings.create_pending`, `time.clock_self`, and any
+    task/booking actions scoped to themselves (viewing /
+    amending / declining *your own* booking is not in this
+    catalog — those are identity-scoped actions, not
+    scope-scoped, and do not flow through the resolver).
+    Workers may create tasks; if
     `is_personal = true` (the quick-add default) the task is
     private to the creator; otherwise it is a normal team task.
     Workers may propose ad-hoc bookings via `bookings.create_pending`

@@ -39,9 +39,12 @@ from app.events import (
 )
 from app.events import registry as registry_module
 
-# The six event classes registered at import time. The autouse fixture
+# The event classes registered at import time. The autouse fixture
 # snapshots ``registered_events()`` rather than hard-coding this list,
-# so a seventh event added later is picked up automatically.
+# so another event added later is picked up automatically. The
+# assertion below is a superset check — adding events without
+# modifying this list is fine (e.g. cd-whl added
+# ``time.shift.changed``).
 INITIAL_EVENT_NAMES = frozenset(
     {
         "task.created",

@@ -816,6 +816,31 @@ GET    /inventory/reports/burn_rate
 ### Time, payroll, expenses
 
 ```
+GET    /time/shifts                # list shifts; ?user_id=…&starts_from=…&starts_until=…&open_only=true|false
+                                   # shifts ordered (starts_at ASC, id ASC).
+                                   # response: {"items": [ShiftPayload, ...]}
+POST   /time/shifts/open           # clock-in: body ShiftOpen {user_id?, property_id?, source?, notes_md?}
+                                   # omit user_id to clock in the caller (time.clock_self).
+                                   # supply user_id to open for someone else (time.edit_others).
+                                   # 201 ShiftPayload on success.
+                                   # 409 {"error": "already_open", "existing_shift_id": "…"} if an open
+                                   #   shift already exists for the target user.
+                                   # 403 {"error": "forbidden"} on insufficient capability.
+POST   /time/shifts/{shift_id}/close  # clock-out: body ShiftClose {ends_at?}
+                                   # ends_at defaults to wall clock; idempotent on already-closed shifts.
+                                   # 200 ShiftPayload on success.
+                                   # 404 {"error": "not_found"} if unknown in workspace.
+                                   # 422 {"error": "invalid_window", "message": "…"} if ends_at < starts_at.
+                                   # 403 {"error": "forbidden"} on insufficient capability.
+PATCH  /time/shifts/{shift_id}     # manager retroactive amend: body ShiftEdit {starts_at?, ends_at?, property_id?, notes_md?}
+                                   # PATCH semantics: omitted fields are left untouched.
+                                   # always requires time.edit_others (even for own shift).
+                                   # 200 ShiftPayload on success.
+                                   # 404 / 422 / 403 as above; 422 rejects ends_at <= starts_at
+                                   #   (strict on edit path; clock-out tolerates zero-length).
+GET    /time/shifts/{shift_id}     # read a single shift; 404 if unknown.
+                                   # 200 ShiftPayload.
+
 GET    /bookings                   # filter: ?user_id=…&property_id=…&from=…&to=…&status=…&pending_amend=true
 GET    /bookings/{id}
 POST   /bookings                   # body: {property_id?, work_engagement_id?,

@@ -12,7 +12,7 @@ of events and their purpose.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import field_validator
 
@@ -20,12 +20,20 @@ from app.events.registry import Event, register
 
 __all__ = [
     "ExpenseApproved",
+    "ShiftChanged",
+    "ShiftChangedAction",
     "ShiftEnded",
     "StayUpcoming",
     "TaskCompleted",
     "TaskCreated",
     "TaskOverdue",
 ]
+
+
+# Values the ``ShiftChanged.action`` field narrows to. Kept as a
+# module-level ``Literal`` alias so domain callers + tests can import
+# it alongside the event class without re-declaring the union.
+ShiftChangedAction = Literal["opened", "closed", "edited"]
 
 
 def _require_aware_utc(value: datetime) -> datetime:
@@ -119,3 +127,27 @@ class ShiftEnded(Event):
     @classmethod
     def _ended_at_is_utc(cls, value: datetime) -> datetime:
         return _require_aware_utc(value)
+
+
+@register
+class ShiftChanged(Event):
+    """A shift row mutated — opened, closed, or edited.
+
+    The SSE transport (cd-clz9) fans this out to subscribed clients so
+    the manager timesheet + worker clock widget update without polling.
+    The ``action`` field narrows the mutation shape; downstream
+    invalidation maps can switch on it (open → refresh "my open
+    shift" query, closed → refresh timesheet totals, edited → both).
+
+    The name is ``time.shift.changed`` — dotted by bounded context
+    (``time``) + entity (``shift``) + action (``changed``). A sibling
+    ``shift.ended`` event already exists for the legacy "clock out
+    happened" narrow signal; ``time.shift.changed`` is the richer
+    union that carries the action verb on the payload.
+    """
+
+    name: ClassVar[str] = "time.shift.changed"
+
+    shift_id: str
+    user_id: str
+    action: ShiftChangedAction

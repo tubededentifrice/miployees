@@ -540,6 +540,28 @@ _RULE_DRIVEN: tuple[ActionSpec, ...] = (
         root_protected_deny=False,
     ),
     ActionSpec(
+        key="time.clock_self",
+        # §09's shift model is property-anchored (``shift.property_id``
+        # optional but typically set), so property + workspace scope
+        # both make sense. ``all_workers`` gets the default so a worker
+        # can clock in without an explicit rule. Listed in
+        # ``docs/specs/05-employees-and-roles.md`` §"Rule-driven actions".
+        valid_scope_kinds=("workspace", "property"),
+        default_allow=("owners", "managers", "all_workers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
+        key="time.edit_others",
+        # Manager-only: amend someone else's shift (add a retroactive
+        # entry, correct a misclicked clock-out, etc.). Listed in
+        # ``docs/specs/05-employees-and-roles.md`` §"Rule-driven actions".
+        valid_scope_kinds=("workspace", "property"),
+        default_allow=("owners", "managers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
         key="users.archive",
         valid_scope_kinds=("workspace", "property", "organization"),
         default_allow=("owners", "managers"),

@@ -54,12 +54,17 @@ class TestShape:
         assert frozenset(ACTION_CATALOG.keys()) == ACTION_KEYS
 
     def test_catalog_has_expected_size(self) -> None:
-        """v1 spec §05 enumerates 7 root-only + 69 rule-driven = 76 keys.
+        """v1 spec §05 enumerates 7 root-only + 71 rule-driven = 78 keys.
 
         A hard number — if it changes, either the spec or the catalog
         drifted and the author needs to say which.
+
+        cd-whl bumped from 76 → 78 by adding ``time.clock_self`` and
+        ``time.edit_others``; the §05 "Rule-driven actions" table
+        still needs updating to match (flagged to the Documenter in
+        cd-whl's handoff).
         """
-        assert len(ACTION_CATALOG) == 76
+        assert len(ACTION_CATALOG) == 78
 
     def test_entries_are_action_spec_instances(self) -> None:
         for key, spec in ACTION_CATALOG.items():
