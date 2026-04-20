@@ -14,9 +14,20 @@ bootstrap).
 >   `app/events/`): `app/abuse/` — shared `@throttle` decorator,
 >   `ShieldStore`, and the disposable-domain blocklist
 >   (`app/abuse/data/disposable_domains.txt`). Added by cd-7huk.
->   Key entry points as of cd-ika7:
+>   Key entry points as of cd-ika7 / cd-waq3:
 >   - `app/api/factory.py` — `create_app(settings) -> FastAPI`; the
->     composition root that wires middleware, routers, OpenAPI, and SPA.
+>     composition root that wires middleware, routers, OpenAPI, SPA, and
+>     RFC 7807 exception handlers (`add_exception_handlers`).
+>   - `app/api/errors.py` — RFC 7807 `problem+json` seam (cd-waq3).
+>     `add_exception_handlers(app)` wires three handlers: `DomainError`
+>     subclasses, `RequestValidationError`/`ValidationError`, and
+>     `HTTPException`. `problem_response()` is the shared envelope builder.
+>   - `app/domain/errors.py` — transport-agnostic domain error hierarchy
+>     (cd-waq3). `DomainError` base + eight concrete subclasses
+>     (`Validation`, `NotFound`, `Conflict`, `IdempotencyConflict`,
+>     `Unauthorized`, `Forbidden`, `RateLimited`, `UpstreamUnavailable`,
+>     `ApprovalRequired`). `CANONICAL_TYPE_BASE` constant. No FastAPI
+>     dependency — safe to import from workers and CLI.
 >   - `app/main.py` — thin re-export shim; `from app.main import create_app`
 >     still works for backward compat (uvicorn `--factory`, test monkeypatches).
 >   - `app/api/v1/__init__.py` — `CONTEXT_ROUTERS` registry of the 13

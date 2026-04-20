@@ -242,16 +242,30 @@ Problem Details (RFC 7807):
   "detail": "property_id must be provided",
   "instance": "/api/v1/tasks",
   "errors": [
-    {"loc": ["body", "property_id"], "msg": "field required"}
+    {"loc": ["body", "property_id"], "msg": "field required", "type": "missing"}
   ]
 }
 ```
 
-Canonical error `type` URIs:
+Every error response sets `Content-Type: application/problem+json`. Any
+inbound `X-Correlation-Id` or `X-Request-Id` header is echoed on the
+response (both names are always echoed so either side of a proxy chain
+sees it). `RateLimited` responses additionally carry a `Retry-After`
+header when `retry_after_seconds` is present in the envelope `extra`.
 
-- `validation`, `not_found`, `conflict`, `unauthorized`,
-  `forbidden`, `rate_limited`, `upstream_unavailable`,
-  `idempotency_conflict`, `approval_required`.
+`errors[]` items carry exactly `loc`, `msg`, and `type` — pydantic's
+`input`/`ctx`/`url` fields are stripped to avoid echoing PII (§15).
+
+Canonical error `type` URIs — full URI is
+`https://crewday.dev/errors/<name>` (see `app/domain/errors.py:CANONICAL_TYPE_BASE`):
+
+- `validation` (422), `not_found` (404), `conflict` (409),
+  `unauthorized` (401), `forbidden` (403), `rate_limited` (429),
+  `upstream_unavailable` (502), `idempotency_conflict` (409),
+  `approval_required` (409).
+- `internal` (500) — fallback when an unregistered `DomainError`
+  subclass reaches the handler. Unknown `HTTPException` statuses fall
+  back to `http_<status>` (e.g. `http_418`).
 
 ### Idempotency
 
@@ -1283,6 +1297,8 @@ See §10 for the envelope and headers.
 
 Worked request/response examples are served by the generated
 OpenAPI document (`GET /api/openapi.json`) and by the mock
-FastAPI app under `mocks/app/`. A 202 approval_required response
-follows the RFC 7807 envelope with `approval_id` and
-`expires_at` added to the body — see §11 for the pipeline.
+FastAPI app under `mocks/app/`. An `approval_required` response
+is **HTTP 409** (not 202 — the action is blocked, not queued for
+the caller), RFC 7807 envelope, with `approval_request_id` and
+optional `expires_at` merged into the body — see §11 for the
+end-to-end pipeline.

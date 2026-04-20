@@ -17,6 +17,9 @@
   :data:`app.api.v1.CONTEXT_ROUTERS` are mounted under
   ``/w/{slug}/api/v1/<ctx>``, and the admin tree
   (:data:`app.api.admin.admin_router`) under ``/admin/api/v1``;
+* RFC 7807 ``problem+json`` exception handlers
+  (:func:`app.api.errors.add_exception_handlers`) are registered
+  after routers so every surface shares the §12 "Errors" envelope;
 * a custom OpenAPI generator emits a 3.1 document with one tag per
   context (§12 "OpenAPI");
 * ``/healthz``, ``/readyz``, ``/version`` are the unconditional ops
@@ -61,6 +64,7 @@ from starlette.middleware.cors import CORSMiddleware
 from app.adapters.mail.ports import Mailer
 from app.adapters.mail.smtp import SMTPMailer
 from app.api.admin import admin_router
+from app.api.errors import add_exception_handlers
 from app.api.health import router as health_router
 from app.api.middleware import SecurityHeadersMiddleware
 from app.api.v1 import CONTEXT_ROUTERS
@@ -598,6 +602,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         capabilities=capabilities,
     )
     _mount_context_routers(app)
+    # Exception handlers are registered AFTER every router is mounted
+    # so the :class:`DomainError` hierarchy and validation/HTTP-exception
+    # handlers cover every surface — and BEFORE the custom OpenAPI
+    # install so the schema generator sees the fully-assembled app
+    # (spec §12 "Errors", Beads cd-waq3).
+    add_exception_handlers(app)
     _install_custom_openapi(app)
 
     # SPA seam MUST register last — its ``/{full_path:path}`` pattern
