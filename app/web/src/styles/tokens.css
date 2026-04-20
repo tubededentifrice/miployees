@@ -1,0 +1,61 @@
+/* crewday — design tokens (§14 palette).
+   Exposed as CSS custom properties on :root, with a dark override
+   under [data-theme="dark"]. Dark mode is a manual toggle; we don't
+   follow prefers-color-scheme. */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --paper:       #FAF7F2;
+  --paper-2:     #F3ECE0;
+  --paper-3:     #EBE1D0;
+  --ink:         #1F1A14;
+  --ink-2:       #524A3E;
+  --ink-3:       #8C8274;
+  --ink-4:       #B5AD9F;
+  --line:        #E7E0D1;
+  --line-strong: #D6CCB7;
+  --card:        #FFFDF9;
+  --card-raised: #FFFCF5;
+  --moss:        #3F6E3B;
+  --moss-2:      #2F5A2C;
+  --moss-3:      #254623;
+  --moss-soft:   rgba(63, 110, 59, 0.10);
+  --moss-softer: rgba(63, 110, 59, 0.05);
+  --rust:        #B04A27;
+  --rust-soft:   rgba(176, 74, 39, 0.10);
+  --sand:        #D9A441;
+  --sand-soft:   rgba(217, 164, 65, 0.12);
+  --sky:         #4F7CA8;
+  --sky-soft:    rgba(79, 124, 168, 0.10);
+  --shadow:      0 2px 4px rgba(63, 110, 59, 0.06), 0 8px 24px rgba(31, 26, 20, 0.06);
+  --shadow-raised: 0 6px 18px rgba(31, 26, 20, 0.10);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --paper:       #151310;
+  --paper-2:     #1E1A14;
+  --paper-3:     #27211A;
+  --ink:         #F4EFE6;
+  --ink-2:       #D7CEBE;
+  --ink-3:       #958A77;
+  --ink-4:       #5E5749;
+  --line:        #2C261E;
+  --line-strong: #3E372C;
+  --card:        #1A1712;
+  --card-raised: #201B14;
+  --moss:        #6BA05E;
+  --moss-2:      #8BC27A;
+  --moss-3:      #C3DDB0;
+  --moss-soft:   rgba(107, 160, 94, 0.18);
+  --moss-softer: rgba(107, 160, 94, 0.08);
+  --rust:        #E07656;
+  --rust-soft:   rgba(224, 118, 86, 0.18);
+  --sand:        #EAB65F;
+  --sand-soft:   rgba(234, 182, 95, 0.18);
+  --sky:         #8AB2D6;
+  --sky-soft:    rgba(138, 178, 214, 0.18);
+  --shadow:      0 2px 4px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-raised: 0 6px 18px rgba(0, 0, 0, 0.55);
+}

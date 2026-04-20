@@ -1,0 +1,5363 @@
+/* crewday mocks — §14 design system.
+   Semantic BEM blocks are global (per project CLAUDE.md "no utility
+   classes" rule). Element/modifier sub-selectors for truly private
+   structure can live in per-component `.module.css` files.
+
+   Tokens are in tokens.css; reset + base typography are in reset.css.
+
+   This file is a direct descendant of the original
+   mocks/app/static/styles.css and is the single source of visual truth.
+*/
+
+/* ── Grain overlay per §14 — SVG noise at 2–4% opacity on warm paper. */
+.grain {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+  opacity: 0.035; pointer-events: none; z-index: 0; mix-blend-mode: multiply;
+}
+[data-theme="dark"] .grain { opacity: 0.06; mix-blend-mode: screen; }
+
+/* ── Preview banner ──────────────────────────────────────────── */
+.preview-banner {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 16px;
+  background: linear-gradient(90deg, var(--moss), var(--moss-2));
+  color: #fff; font-size: 13px;
+  min-height: 40px;
+}
+.preview-banner__badge {
+  background: rgba(255,255,255,0.18); padding: 2px 8px;
+  border-radius: 4px; font-weight: 700; letter-spacing: 0.08em; font-size: 11px;
+  flex: 0 0 auto;
+}
+.preview-banner__note { opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-banner__switch { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+
+@media (max-width: 640px) {
+  .preview-banner { gap: 8px; padding: 6px 10px; }
+  .preview-banner__note { display: none; }
+}
+@media (max-width: 420px) {
+  .preview-banner .pill { padding: 3px 8px; font-size: 12px; }
+  .preview-banner .pill--ghost:last-of-type { display: none; }
+}
+.pill {
+  padding: 4px 12px; border-radius: 999px;
+  font-size: 13px; color: rgba(255,255,255,0.85);
+  border: 1px solid rgba(255,255,255,0.35); line-height: 1.4;
+  cursor: pointer; background: transparent; font: inherit;
+}
+.pill--active { background: #fff; color: var(--moss); border-color: #fff; font-weight: 600; }
+.pill--ghost { border-color: rgba(255,255,255,0.22); padding: 4px 10px; }
+.preview-banner__theme {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px 8px; min-width: 30px; line-height: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   EMPLOYEE (phone) layout.
+
+   Below 720px the container is edge-to-edge: the screen is already
+   small, so every horizontal pixel has to earn its keep. The old
+   480px "device frame" letterbox at tablet-ish widths wasted real
+   estate without adding clarity. At 720px+ the layout switches to
+   the three-column desktop grid (see below).
+   ══════════════════════════════════════════════════════════════ */
+.phone {
+  min-height: calc(100dvh - var(--banner-h, 40px));
+  padding-bottom: 132px; position: relative; z-index: 1;
+}
+.phone__body { display: contents; }
+
+.phone__section { padding: 16px 20px; }
+.phone__section--hero { padding-top: 18px; }
+.phone__section--detail { padding-bottom: 160px; }
+
+/* "Hi, <first name>" + date. Only rendered on the Me page; everything
+   else skips the greeting because it was noise on functional views. */
+.me-greet { display: flex; flex-direction: column; gap: 2px; }
+.me-greet__hello {
+  font-family: "Fraunces", ui-serif, serif; font-weight: 600;
+  font-size: 1.55rem; line-height: 1.1; letter-spacing: -0.02em;
+}
+.me-greet__date { color: var(--ink-3); font-size: 13px; }
+
+/* Booking hint pill. Replaces the v0 clock-in toggle: under §09's
+   booking model the booking IS the time record (no clock-in / clock-out
+   tap). The hint shows the user's next scheduled booking and links to
+   `/schedule` (which folded in the retired `/bookings` page). Used
+   twice: sidebar action slot (desktop) and `.phone__dock` above the
+   tab bar (phone). */
+.booking-hint {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; padding: 10px 16px; border-radius: 999px;
+  border: 1px solid var(--moss-soft); background: var(--moss-soft);
+  font-family: inherit; font-size: 14px; font-weight: 600;
+  color: var(--moss); cursor: pointer; white-space: nowrap;
+  text-decoration: none;
+  transition: background 120ms ease, color 120ms ease,
+              border-color 120ms ease;
+}
+.booking-hint:hover { border-color: var(--moss); }
+
+/* Phone dock: a thin full-width bar that sits directly on top of the
+   fixed tab bar. On chat the composer takes this space, so the dock
+   is not rendered there. No gradient fade — the bar is solid so body
+   content does not bleed through beneath the icon row. */
+.phone__dock {
+  position: fixed; left: 0; right: 0; z-index: 19;
+  bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+}
+.phone__dock > .booking-hint {
+  width: 100%;
+  padding: 7px 16px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.phone__dock > .booking-hint:hover {
+  background: var(--moss-soft);
+  border-color: transparent;
+}
+
+.section-title {
+  font-family: "Fraunces", ui-serif, serif; font-size: 14px; font-weight: 600;
+  margin-bottom: 10px; color: var(--ink-2);
+  text-transform: uppercase; letter-spacing: 0.09em;
+}
+.section-title--sm { font-size: 12px; margin-top: 22px; margin-bottom: 8px; }
+
+.section-title-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 10px;
+}
+.section-title-row .section-title { margin-bottom: 0; }
+
+.field--inline {
+  display: flex; flex-direction: row; align-items: center; gap: 8px;
+}
+.field--inline > span { font-size: 13px; color: var(--ink-2); }
+
+.task-card--personal { border-left: 3px solid var(--sky, #9bb8d9); }
+
+/* Shared "Me" page container. Renders inside `.phone__body` (worker
+   PWA) and `.desk__main` (manager shell) with the same panel
+   aesthetic as `/settings`. */
+.me-page {
+  display: flex; flex-direction: column; gap: 22px;
+  padding: 16px 20px;
+}
+@media (min-width: 720px) {
+  .me-page { padding: 24px 0; }
+}
+
+/* Panels on /me wrap what used to be bespoke phone cards. Strip the
+   inner card chrome when these row/card components sit directly
+   inside a `.panel`, so the panel itself is the card — no double
+   framing. */
+.panel > .stack-row,
+.panel > a.stack-row,
+.panel > ul > li.stack-row {
+  background: transparent; border: 0; border-radius: 0;
+  padding: 0; margin-bottom: 0;
+}
+.panel > ul > li.stack-row + li.stack-row { margin-top: 10px; }
+.panel > .profile-card {
+  background: transparent; border: 0; border-radius: 0;
+  padding: 0; box-shadow: none;
+}
+
+.phone__tabs {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  background: var(--card); border-top: 1px solid var(--line);
+  padding: 6px 0 max(6px, env(safe-area-inset-bottom));
+  backdrop-filter: saturate(1.1);
+}
+.tab {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; padding: 6px 4px; min-height: 48px; font-size: 11px; color: var(--ink-3);
+}
+.tab__glyph { font-size: 18px; line-height: 1; }
+.tab--active { color: var(--moss); font-weight: 600; }
+
+/* ══════════════════════════════════════════════════════════════
+   TABLET / DESKTOP EMPLOYEE LAYOUT
+
+   Below 720px the employee app is a phone — bottom tabs, edge-to-
+   edge, fixed-to-viewport composer and CTA. The shared <SideNav />
+   (same component, same CSS classes as the manager) is still in the
+   DOM but hidden by CSS at this width.
+
+   At 720px and above the bottom tab bar hides, the SideNav takes
+   over the left column, and the phone container becomes a two-column
+   grid that reuses the manager sidebar chrome 1:1.
+   ══════════════════════════════════════════════════════════════ */
+
+/* Shared sidebar is hidden on phone widths (the `.phone__tabs`
+   bottom bar owns navigation there). This selector is scoped to
+   `.phone` so the manager's `.desk > .desk__nav` is untouched. */
+.phone > .desk__nav { display: none; }
+
+@media (min-width: 720px) {
+  .surface[data-role="employee"] {
+    min-height: calc(100dvh - var(--banner-h, 40px));
+    display: flex;
+    flex-direction: column;
+  }
+  .phone {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    height: calc(100dvh - var(--banner-h, 40px));
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr) 340px;
+    background: var(--paper);
+  }
+
+  .phone > .desk__nav {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1 / -1;
+  }
+
+  /* Right rail: shared AgentSidebar mounts here on desktop for both
+     layouts. Mirrors the manager `.desk` grid (col 3 = agent). */
+  .phone > .desk__agent {
+    grid-column: 3;
+    grid-row: 1 / -1;
+  }
+  .phone:has(.desk__agent--collapsed),
+  .phone[data-agent-collapsed="true"] {
+    grid-template-columns: 232px minmax(0, 1fr) 52px;
+  }
+  .phone:has(.desk__nav--collapsed),
+  .phone[data-nav-collapsed="true"] {
+    grid-template-columns: auto minmax(0, 1fr) 340px;
+  }
+  .phone:has(.desk__nav--collapsed):has(.desk__agent--collapsed),
+  .phone[data-nav-collapsed="true"][data-agent-collapsed="true"] {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  /* Hide the phone-mode bottom tab bar (shared between both shells)
+     and employee clock-in dock; the shared SideNav hosts navigation
+     and the clock-in at this width. */
+  .phone__tabs { display: none; }
+  .phone > .phone__dock { display: none; }
+
+  .phone__body {
+    grid-column: 2;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+    /* Top padding is 0 on purpose: `.page-topbar` supplies its own
+       36px top breathing room, matching the ≥1080px rule below. */
+    padding: 0 40px 40px;
+    align-items: stretch;
+  }
+  .phone__section { padding: 16px 0; width: 100%; max-width: 880px; margin: 0 auto; }
+  .phone__section--detail { padding-bottom: 32px; max-width: 880px; margin: 0 auto; }
+  /* Shared routes (/today, /week, /my/expenses, /schedule, /history,
+     /issues/new, /task/:tid) also mount inside .desk__main when a
+     manager views them. Drop the 880px cap there so they fill the
+     manager column like /me; the cap applies only to the .phone
+     (employee) shell. */
+  .desk__main .phone__section,
+  .desk__main .phone__section--detail,
+  .desk__main .phone__section--hero {
+    max-width: none;
+  }
+  .task-list { gap: 10px; }
+  .task-card--now { padding: 20px; }
+
+  /* Chat: the composer sticks to the bottom of the main column
+     instead of the viewport. */
+  .phone--chat {
+    height: calc(100dvh - var(--banner-h, 40px));
+  }
+  .phone--chat .chat-screen { margin-bottom: 0; }
+  .phone--chat .phone__body {
+    padding: 0;
+    overflow: hidden;
+  }
+  .phone--chat .chat-screen { padding: 0 0 0; }
+  .phone--chat .chat-log { padding: 20px 40px; }
+  .phone--chat .chat-msg { max-width: min(560px, 70%); }
+  .chat-composer {
+    position: sticky;
+    bottom: 0;
+    left: auto;
+    right: auto;
+    max-width: none;
+    transform: none;
+    border-left: 0;
+    border-right: 0;
+    padding: 10px 40px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+}
+
+@media (min-width: 1080px) {
+  .phone__body { padding: 0 56px 48px; }
+  .phone--chat .chat-log { padding: 24px 56px; }
+  .chat-composer { padding: 12px 56px calc(12px + env(safe-area-inset-bottom, 0px)); }
+}
+
+@media (max-width: 360px) {
+  .phone__section { padding: 14px; }
+}
+
+/* ── Task cards ─────────────────────────────────────────────── */
+.task-card {
+  display: block; background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px;
+  box-shadow: var(--shadow);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.task-card:active { transform: scale(0.995); }
+.task-card--now { border-color: var(--moss); border-width: 1.5px; padding: 16px; }
+.task-card--compact { padding: 10px 12px; box-shadow: none; }
+.task-card--done { opacity: 0.62; }
+.task-card--split {
+  display: flex; align-items: flex-start; gap: 12px;
+}
+.task-card--split .task-card__main { flex: 1; min-width: 0; }
+.task-card--split .task-card__main > .task-card__title { margin-top: 0; }
+.task-card--split .task-card__aside {
+  display: flex; align-items: center; gap: 6px;
+  flex-shrink: 0;
+}
+.task-card--split .task-card__aside .task-card__when { margin-left: 0; }
+.task-card__head {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.task-card__when { margin-left: auto; color: var(--ink-3); font-size: 12px; font-family: "JetBrains Mono", monospace; }
+.task-card__title {
+  font-family: "Fraunces", serif; font-size: 1.18rem; font-weight: 600;
+  line-height: 1.22; margin: 4px 0 2px;
+}
+.task-card__title--sm { font-size: 0.98rem; }
+.task-card__meta { color: var(--ink-3); font-size: 13px; margin-top: 2px; }
+.task-card__progress { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.progress-bar { flex: 1; height: 6px; background: var(--paper-2); border-radius: 999px; overflow: hidden; }
+.progress-bar--slim { height: 4px; }
+.progress-bar > span { display: block; height: 100%; background: var(--moss); border-radius: 999px; }
+.progress-label { font-size: 12px; color: var(--ink-3); }
+.task-card__cta { margin-top: 14px; color: var(--moss); font-weight: 600; font-size: 14px; }
+
+.task-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.task-list--desk { gap: 0; }
+.task-row {
+  display: grid; grid-template-columns: 170px 1fr auto auto;
+  gap: 12px; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--line);
+}
+.task-row:last-child { border-bottom: 0; }
+.task-row__time { color: var(--ink-3); font-size: 13px; }
+.task-row__title strong { display: block; }
+.task-row__area { color: var(--ink-3); font-size: 12px; }
+
+/* ── Chips & dots ───────────────────────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 500; line-height: 1.4;
+  background: var(--paper-2); color: var(--ink-2);
+  border: 1px solid transparent; white-space: nowrap;
+}
+.chip--sm { padding: 1px 8px; font-size: 11px; }
+.chip--lg { padding: 7px 16px; font-size: 13px; }
+.chip--moss  { background: var(--moss-soft); color: var(--moss); }
+.chip--rust  { background: var(--rust-soft); color: var(--rust); }
+.chip--sand  { background: var(--sand-soft); color: #8A6A22; }
+[data-theme="dark"] .chip--sand { color: var(--sand); }
+.chip--sky   { background: var(--sky-soft);  color: var(--sky); }
+.chip--ghost { background: var(--paper-2);   color: var(--ink-2); }
+.chip--active { background: var(--moss); color: #fff; }
+
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot--moss { background: var(--moss); }
+.dot--rust { background: var(--rust); }
+.dot--sand { background: var(--sand); }
+
+/* ── Checklist ──────────────────────────────────────────────── */
+.checklist ul { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
+.checklist__item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 4px; border-bottom: 1px solid var(--line);
+  cursor: pointer; user-select: none;
+}
+.checklist__box {
+  width: 22px; height: 22px; border-radius: 6px;
+  border: 1.5px solid var(--ink-3);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px; color: transparent; flex-shrink: 0;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.checklist__item--done .checklist__box {
+  background: var(--moss); border-color: var(--moss); color: #fff;
+  transform: scale(1.04);
+}
+.checklist__item--done .checklist__label {
+  text-decoration: line-through; color: var(--ink-3);
+}
+
+.instructions { margin-top: 22px; }
+.instruction-card {
+  background: var(--paper-2); border: 1px solid var(--line);
+  border-radius: 10px; margin-bottom: 8px; padding: 12px 14px;
+}
+.instruction-card summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; justify-content: space-between;
+  font-family: "Fraunces", serif; font-weight: 600; font-size: 1rem;
+}
+.instruction-card summary::-webkit-details-marker { display: none; }
+.instruction-card__title { flex: 1; }
+.instruction-card__body {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+  color: var(--ink-2); line-height: 1.55;
+}
+
+/* ── Evidence ─────────────────────────────────────────────── */
+.evidence { margin-top: 22px; display: flex; flex-direction: column; gap: 12px; }
+.evidence__picker {
+  display: flex; flex-direction: column; gap: 4px; align-items: center;
+  border: 1.5px dashed var(--ink-4); padding: 22px; text-align: center;
+  border-radius: 10px; cursor: pointer;
+}
+.evidence__picker input { display: none; }
+.evidence__picker-cta { font-weight: 600; font-family: "Fraunces", serif; }
+.evidence__picker-sub { color: var(--ink-3); font-size: 12px; }
+.evidence__note-hint { margin: 4px 2px 0; font-size: 13px; line-height: 1.5; }
+
+/* ── Task detail ──────────────────────────────────────────── */
+.task-detail__head { margin-top: 8px; }
+.task-detail__chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.task-detail__title {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 1.65rem; line-height: 1.1; letter-spacing: -0.02em;
+  margin: 12px 0 4px;
+  font-variation-settings: "opsz" 72;
+}
+.task-detail__meta { color: var(--ink-3); font-size: 13px; }
+
+.task-detail__sticky {
+  position: fixed; bottom: 70px; left: 0; right: 0; z-index: 10;
+  padding: 12px 20px 14px;
+  background: linear-gradient(180deg, transparent, var(--paper) 30%, var(--paper) 100%);
+  display: flex; gap: 10px;
+}
+@media (min-width: 720px) {
+  /* Desktop: sticky CTA flows inline instead of pinning to the
+     viewport. The main column is wide enough that the primary action
+     sits above the fold; no need for a fixed bar. */
+  .task-detail__sticky {
+    position: static;
+    max-width: none;
+    transform: none;
+    padding: 0 0 12px;
+    background: none;
+  }
+}
+.task-detail__sticky-form { flex: 1; }
+.task-detail__sticky .btn { width: 100%; justify-content: center; }
+.done-banner {
+  width: 100%; padding: 14px; background: var(--moss-soft);
+  color: var(--moss); border-radius: 10px; text-align: center; font-weight: 600;
+  margin-top: 16px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.done-banner--rust { background: var(--rust-soft); color: var(--rust); }
+
+/* Skip modal */
+.modal[open] {
+  border: none; border-radius: 14px; padding: 0;
+  background: var(--card); color: var(--ink);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  width: min(420px, 90vw);
+}
+.modal::backdrop { background: rgba(31, 26, 20, 0.55); backdrop-filter: blur(4px); }
+.modal__body { padding: 24px; display: flex; flex-direction: column; gap: 14px; }
+.modal__title { font-family: "Fraunces", serif; font-size: 1.35rem; font-weight: 600; }
+.modal__sub { color: var(--ink-3); font-size: 13px; }
+.modal__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+/* ── Comments ─────────────────────────────────────────────── */
+.comments { margin-top: 24px; }
+.comment {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px; margin-bottom: 10px;
+}
+.comment__head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 13px; }
+.comment__time { margin-left: auto; color: var(--ink-3); font-size: 11px; font-family: "JetBrains Mono", monospace; }
+.comment__compose { display: flex; gap: 8px; align-items: flex-end; }
+.comment__compose textarea { flex: 1; }
+
+/* ── Buttons & forms ────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 14px; border-radius: 999px;
+  border: 1px solid transparent; cursor: pointer;
+  font-family: "Inter Tight", sans-serif; font-size: 14px; font-weight: 500;
+  background: var(--paper-2); color: var(--ink);
+  transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+  line-height: 1.3;
+}
+.btn:active { transform: scale(0.98); }
+.btn--lg { padding: 12px 20px; font-size: 15px; }
+.btn--sm { padding: 4px 10px; font-size: 12px; }
+.btn--moss  { background: var(--moss); color: #fff; }
+.btn--moss:hover  { background: var(--moss-2); }
+.btn--rust  { background: var(--rust); color: #fff; }
+.btn--ghost { background: transparent; border-color: var(--line-strong); color: var(--ink-2); }
+.btn--ghost:hover { background: var(--paper-2); }
+
+/* Full-width button. Pairs with any color + size modifier; guarantees
+   a 44px minimum tap target (iOS HIG / Material) so even a .btn--sm
+   promoted to block is still thumb-safe on phones. Use standalone
+   for a single card CTA, or inside .btn-group--stack/--split for a
+   row/column of equally-sized actions. */
+.btn--block { width: 100%; min-height: 44px; }
+.btn--block.btn--sm { padding-block: 10px; }
+.btn--block.btn--lg { min-height: 52px; }
+
+/* Button groups — semantic layouts for a collection of .btn.
+   .btn-group            → inline row, left-aligned, wraps on overflow
+   .btn-group--end       → push to the trailing edge (modal footers)
+   .btn-group--center    → center the row
+   .btn-group--between   → split ends (e.g. back / next)
+   .btn-group--split     → equal-width children, no wrap (best with
+                           .btn--block on phones; dialog 2-up CTAs)
+   .btn-group--stack     → vertical stack; children fill container
+                           (stacked CTAs, login cards, pref panels) */
+.btn-group {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.btn-group--end     { justify-content: flex-end; }
+.btn-group--center  { justify-content: center; }
+.btn-group--between { justify-content: space-between; }
+.btn-group--split   { flex-wrap: nowrap; }
+.btn-group--split > .btn { flex: 1 1 0; min-width: 0; }
+.btn-group--stack {
+  flex-direction: column; flex-wrap: nowrap; align-items: stretch;
+}
+.btn-group--stack > .btn { width: 100%; }
+
+.form { display: flex; flex-direction: column; gap: 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
+
+/* Form controls share the same card look — white fill, card border and
+   radius — so text inputs, selects and textareas read as "slotted into
+   the card." Any new control should extend this selector group rather
+   than roll its own background/border. */
+.field input, .field textarea, .field select,
+.comment__compose textarea,
+.agent-prefs__textarea,
+.me-chat-channels__field input {
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit; color: inherit;
+  font-family: "Inter Tight", sans-serif;
+}
+.field textarea,
+.comment__compose textarea,
+.agent-prefs__textarea {
+  resize: none; min-height: 44px; overflow-y: auto;
+}
+.field input:focus, .field textarea:focus, .field select:focus,
+.comment__compose textarea:focus,
+.agent-prefs__textarea:focus,
+.me-chat-channels__field input:focus {
+  outline: 2px solid var(--moss); outline-offset: -1px;
+}
+.field--warn input,
+.field--warn textarea,
+.field--warn select {
+  border-color: var(--sand);
+  background: var(--sand-soft);
+}
+.field--warn input:focus,
+.field--warn textarea:focus,
+.field--warn select:focus {
+  outline-color: var(--sand);
+}
+.form__row { display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+.form__row .field--grow { flex: 1; }
+.form__row .field--currency { flex: none; width: 80px; }
+
+.form__manual-entry { text-align: center; margin-top: 12px; }
+
+.chip-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-radio { display: inline-block; cursor: pointer; }
+.chip-radio input { position: absolute; opacity: 0; }
+.chip-radio span {
+  display: inline-block; padding: 6px 12px; border-radius: 999px;
+  background: var(--paper-2); color: var(--ink-2);
+  border: 1px solid var(--line-strong); font-size: 13px;
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+.chip-radio input:checked + span {
+  background: var(--moss); color: #fff; border-color: var(--moss);
+}
+
+.recovery-code { letter-spacing: 0.18em; font-family: "JetBrains Mono", monospace; text-transform: uppercase; }
+
+/* ── Profile / me screen ───────────────────────────────────── */
+.profile-card {
+  display: flex; gap: 14px; align-items: center;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 16px; box-shadow: var(--shadow);
+}
+.profile-card__name { font-size: 1.35rem; margin-bottom: 4px; }
+.profile-card__roles { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+.profile-card__meta { color: var(--ink-3); font-size: 12px; }
+
+.stack-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 12px 14px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; margin-bottom: 8px;
+}
+.stack-row__sub { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+
+.cap-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.cap-list li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.cap-list__key { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--ink-2); }
+
+/* ── Bookings / expenses / messages ───────────────────────── */
+.booking-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.booking-card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.booking-card--scheduled { border-color: var(--moss); }
+.booking-card--completed { opacity: 0.92; }
+.booking-card--adjusted { border-color: var(--sand); }
+.booking-card--cancelled_by_client,
+.booking-card--cancelled_by_agency,
+.booking-card--no_show_worker { border-color: var(--rust); opacity: 0.85; }
+.booking-card--pending_approval { border-style: dashed; border-color: var(--sand); }
+.booking-card__head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  font-family: "Fraunces", serif;
+}
+.booking-card__time {
+  font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--ink-2);
+}
+.booking-card__meta {
+  display: flex; align-items: center; gap: 10px;
+}
+.booking-card__pill {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: var(--paper-2); color: var(--ink-2);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.booking-card__dur {
+  font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--ink-3);
+  margin-left: auto;
+}
+.booking-card__note { color: var(--ink-3); font-size: 13px; margin: 0; }
+.booking-card__pending {
+  color: var(--sand-deep, var(--rust)); font-size: 12px; margin: 0;
+}
+.booking-card__actions {
+  display: flex; gap: 8px; padding-top: 4px;
+}
+
+.expense-list { list-style: none; padding: 0; margin: 0; }
+.expense-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.expense-row__main { display: flex; flex-direction: column; gap: 2px; }
+.expense-row__note { color: var(--ink-3); font-size: 13px; }
+.expense-row__time { color: var(--ink-3); font-size: 11px; font-family: "JetBrains Mono", monospace; }
+.expense-row__side { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.expense-row__amount { font-family: "Fraunces", serif; font-weight: 600; }
+.expense-row__owed {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.reimbursement-totals { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.reimbursement-totals__row { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.reimbursement-totals__amount { font-family: "Fraunces", serif; font-weight: 600; font-size: 20px; }
+.reimbursement-totals__ccy { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--ink-3); letter-spacing: 0.04em; }
+
+.thread-list { list-style: none; padding: 0; margin: 0; }
+.thread { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.thread--unread .thread__last { color: var(--ink); font-weight: 500; }
+.thread__main { flex: 1; min-width: 0; }
+.thread__head { display: flex; justify-content: space-between; gap: 8px; }
+.thread__time { color: var(--ink-3); font-size: 11px; font-family: "JetBrains Mono", monospace; }
+.thread__last { color: var(--ink-3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Tables ──────────────────────────────────────────────── */
+.table { width: 100%; border-collapse: collapse; }
+.table th {
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); padding: 10px 12px; border-bottom: 1px solid var(--line);
+  font-weight: 500;
+}
+.table td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.table tbody tr:last-child td { border-bottom: 0; }
+.table__sub { color: var(--ink-3); font-size: 12px; }
+.table tbody tr.table__foot td { border-top: 2px solid var(--line); border-bottom: 0; background: var(--paper); }
+.table--compact td, .table--compact th { padding: 6px 8px; font-size: 13px; }
+.table--roomy td, .table--roomy th { padding: 14px 16px; }
+.row--warn { background: var(--sand-soft); }
+.row--critical { background: var(--rust-soft); }
+
+.desk-filters {
+  display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 4px 16px;
+  border-bottom: 1px solid var(--line); margin-bottom: 12px;
+}
+
+/* ── Avatar ───────────────────────────────────────────── */
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--moss); color: #fff;
+  font-weight: 600; letter-spacing: 0.04em; flex-shrink: 0;
+  overflow: hidden;
+}
+.avatar--xs { width: 22px; height: 22px; font-size: 10px; }
+.avatar--sm { width: 28px; height: 28px; font-size: 11px; }
+.avatar--md { width: 36px; height: 36px; font-size: 13px; }
+.avatar--xl { width: 64px; height: 64px; font-size: 20px; font-family: "Fraunces", serif; }
+.avatar__img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Clickable avatar on /me — opens the editor modal. */
+.avatar-trigger {
+  position: relative; display: inline-block; cursor: pointer;
+  background: none; border: 0; padding: 0; border-radius: 50%;
+}
+.avatar-trigger:focus-visible { outline: 2px solid var(--moss); outline-offset: 3px; }
+.avatar-trigger__edit {
+  position: absolute; right: -2px; bottom: -2px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--moss); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+/* Avatar editor modal (§14). A circular viewport masks the image;
+   the user pans by dragging and zooms via a range slider. Stage is
+   sized responsively so the phone layout doesn't overflow. */
+.avatar-editor { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+.avatar-editor__stage {
+  position: relative;
+  width: min(320px, 86vw); aspect-ratio: 1;
+  background: var(--paper-3); border-radius: 12px; overflow: hidden;
+  touch-action: none; user-select: none;
+}
+.avatar-editor__canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  background-repeat: no-repeat; background-position: 50% 50%;
+}
+.avatar-editor__mask { position: absolute; inset: 0; pointer-events: none; }
+.avatar-editor__mask::before {
+  /* The circle "window". Everything outside is dimmed via an
+     oversized box-shadow; overflow: hidden on the stage clips it. */
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 92%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 9999px rgba(31, 26, 20, 0.55);
+  outline: 1px solid rgba(255, 255, 255, 0.75);
+}
+.avatar-editor__controls { display: flex; align-items: center; gap: 10px; width: 100%; }
+.avatar-editor__controls input[type="range"] { flex: 1; min-width: 0; }
+.avatar-editor__empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 32px 16px; text-align: center; color: var(--ink-3);
+  width: min(320px, 86vw);
+}
+.avatar-editor__hint { font-size: 12px; color: var(--ink-3); text-align: center; }
+
+/* Full-sheet variant of the base modal used by the avatar editor on
+   phones. Fills the viewport (minus safe-area insets) so the stage
+   gets room, the slider is reachable, and the action row never
+   collides with the stage. */
+.modal--sheet[open] {
+  width: min(480px, 100vw);
+}
+@media (max-width: 640px) {
+  .modal--sheet[open] {
+    width: 100vw; max-width: 100vw;
+    max-height: 100dvh; height: 100dvh;
+    border-radius: 0;
+    margin: 0;
+  }
+  .modal--sheet .modal__body {
+    height: 100%; box-sizing: border-box;
+    padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+    overflow-y: auto;
+    justify-content: flex-start;
+  }
+  .modal--sheet .modal__actions {
+    margin-top: auto; flex-wrap: wrap; justify-content: space-between;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MANAGER (desktop) layout
+   ══════════════════════════════════════════════════════════════ */
+.desk {
+  display: grid; grid-template-columns: 232px 1fr 340px;
+  height: calc(100dvh - var(--banner-h, 40px)); position: relative; z-index: 1;
+  overflow: hidden; min-height: 0;
+}
+.desk__nav {
+  background: var(--card); border-right: 1px solid var(--line);
+  padding: 20px 12px; display: flex; flex-direction: column; gap: 16px;
+  height: 100%; min-height: 0; overflow-y: auto;
+}
+.desk__brand { display: flex; align-items: center; gap: 8px; padding: 0 8px; }
+.desk__logo { color: var(--moss); font-size: 22px; }
+.desk__wordmark {
+  font-family: "Fraunces", serif; font-weight: 700;
+  font-size: 1.25rem; letter-spacing: -0.03em;
+  font-variation-settings: "opsz" 72;
+}
+/* §02 — workspace switcher chip placed between the brand row and the
+   nav groups. Appears only when the user has more than one workspace
+   to switch into. */
+.ws-switcher { position: relative; padding: 0 4px; }
+.ws-switcher__trigger {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: var(--paper-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; cursor: pointer;
+  color: var(--ink-1); text-align: left;
+  font: inherit; font-size: 13px; font-weight: 600;
+}
+.ws-switcher__trigger:hover { background: var(--paper-3, var(--paper-2)); }
+.ws-switcher__trigger--inert { cursor: default; opacity: 0.85; }
+.ws-switcher__trigger--inert:hover { background: var(--paper-2); }
+.ws-switcher__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-switcher__role {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); font-weight: 500;
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
+}
+.ws-switcher__chev { color: var(--ink-3); flex-shrink: 0; }
+.ws-switcher__menu {
+  position: absolute; top: calc(100% + 4px); left: 4px; right: 4px;
+  list-style: none; margin: 0; padding: 4px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: var(--shadow);
+  z-index: 50; max-height: 60vh; overflow-y: auto;
+}
+.ws-switcher__opt {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: 0; padding: 8px 10px; cursor: pointer;
+  color: var(--ink-1); text-align: left; border-radius: 6px;
+  font: inherit; font-size: 13px;
+}
+.ws-switcher__opt:hover { background: var(--paper-2); }
+.ws-switcher__opt--active { background: var(--moss-soft); color: var(--moss); font-weight: 600; }
+.ws-switcher__opt-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-switcher__opt-role {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); font-weight: 500;
+}
+.ws-switcher__opt-check { flex-shrink: 0; }
+
+.desk__nav-group { display: flex; flex-direction: column; gap: 2px; }
+.nav-section {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--ink-3); padding: 12px 12px 4px 12px;
+}
+.nav-section__text { flex: 0 0 auto; }
+.nav-section__rule {
+  flex: 1 1 auto; height: 1px; background: var(--line);
+  align-self: center;
+}
+
+.nav-link {
+  position: relative;
+  display: grid; grid-template-columns: 18px 1fr;
+  align-items: center; gap: 10px;
+  padding: 7px 12px; border-radius: 8px; color: var(--ink-2);
+  font-weight: 500; font-size: 14px;
+  transition: background 140ms ease, color 140ms ease;
+}
+.nav-link__icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; color: var(--ink-3);
+  transition: color 140ms ease;
+}
+.nav-link__icon svg { display: block; }
+.nav-link__label {
+  display: block; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nav-link__marker {
+  position: absolute; left: 0; top: 50%;
+  width: 2px; height: 0; border-radius: 0 2px 2px 0;
+  background: var(--moss);
+  transform: translateY(-50%);
+  transition: height 160ms ease;
+}
+.nav-link__fallback-glyph {
+  font-family: "Fraunces", serif; font-weight: 600; font-size: 13px;
+  line-height: 1; color: var(--ink-3);
+}
+.nav-link:hover {
+  background: var(--paper-2); color: var(--ink);
+}
+.nav-link:hover .nav-link__icon { color: var(--ink-2); }
+.nav-link--active {
+  background: var(--moss-soft); color: var(--moss); font-weight: 600;
+}
+.nav-link--active .nav-link__icon { color: var(--moss); }
+.nav-link--active .nav-link__marker { height: 62%; }
+
+/* Hide items duplicated in the bottom tab bar from the off-canvas
+   hamburger drawer at phone widths. They still render in the desktop
+   side nav. Set per-item via SideNavItem.phoneHidden. */
+@media (max-width: 720px) {
+  .nav-link--phone-hidden,
+  .nav-section--phone-hidden { display: none; }
+}
+
+.desk__nav-action {
+  padding: 8px 4px 0;
+  display: flex; justify-content: stretch;
+}
+.desk__nav-action > .clock-toggle { width: 100%; }
+.desk__nav-action > .booking-hint { width: 100%; }
+
+.desk__me {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px; border-top: 1px solid var(--line);
+  position: relative;
+}
+.desk__me-meta { min-width: 0; flex: 1 1 auto; }
+.desk__me-name {
+  font-weight: 600; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.desk__me-role {
+  color: var(--ink-3); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* When present, the me footer is pinned to the bottom. The
+   nav-action slot (booking hint) sits just above it. */
+.desk__nav > .desk__nav-group ~ .desk__nav-action,
+.desk__nav > .desk__nav-group ~ .desk__me { margin-top: auto; }
+.desk__nav > .desk__nav-action ~ .desk__me { margin-top: 0; }
+
+/* Collapse-toggle hinge — a small icon button tucked into the brand
+   row, so it's always reachable even when the nav list is long and
+   scrolls. Acts as a "page pull" that folds the rail inward. */
+.desk__brand { position: relative; }
+.desk__nav-hinge {
+  margin-left: auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  padding: 0;
+  background: transparent; border: 1px solid transparent;
+  border-radius: 7px; color: var(--ink-3);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.desk__nav-hinge:hover {
+  background: var(--paper-2); color: var(--ink);
+  border-color: var(--line);
+}
+.desk__nav-hinge:focus-visible {
+  outline: 0;
+  background: var(--paper-2); border-color: var(--moss);
+  color: var(--moss);
+}
+.desk__nav-hinge__icon {
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.desk__nav-hinge__icon svg { display: block; }
+
+/* ── Tooltip (collapsed rail) ─────────────────────────────────
+   Semantic content lives in [data-tip]. The label slides out from
+   under the collapsed rail on hover/focus as a small cream tab with
+   a moss tick on its left edge — echoes the section rule. Only
+   activated inside a collapsed sidebar to avoid colliding with the
+   expanded label.                                               */
+.desk__nav--collapsed [data-tip] { position: relative; }
+.desk__nav--collapsed [data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: 50%; left: calc(100% + 8px);
+  transform: translate(-4px, -50%);
+  padding: 6px 12px 6px 10px;
+  background: var(--card-raised);
+  color: var(--ink);
+  font-family: "Inter Tight", sans-serif; font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+  border-radius: 6px;
+  border-left: 2px solid var(--moss);
+  box-shadow: 0 6px 20px rgba(31, 26, 20, 0.12), 0 1px 2px rgba(31, 26, 20, 0.06);
+  opacity: 0; pointer-events: none;
+  transition: opacity 140ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 40;
+}
+.desk__nav--collapsed [data-tip]:hover::after,
+.desk__nav--collapsed [data-tip]:focus-visible::after {
+  opacity: 1; transform: translate(0, -50%);
+}
+[data-theme="dark"] .desk__nav--collapsed [data-tip]::after {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+/* ── Collapsed side nav layout ───────────────────────────────── */
+/* Tooltips need to escape the rail rightward into `.desk__main` —
+   but we also need the rail to scroll internally for tall nav
+   lists. Split responsibilities: the rail itself stays
+   overflow-visible (so the ::after bubble can paint past the right
+   edge), and we give the nav-group a scrollable body via a hybrid
+   approach — a wide "hit-box" that extends past the rail so
+   tooltips have somewhere to render. The extra width is
+   `pointer-events: none` except on the actual link, so main-column
+   interactions are never blocked. */
+.desk__nav--collapsed {
+  padding: 20px 6px;
+  gap: 10px;
+  align-items: stretch;
+  overflow: visible;
+}
+.desk__nav--collapsed .desk__nav-group {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: visible;
+  /* Extend the scroll container rightward so the tooltip `::after`
+     bubble (absolutely-positioned inside each nav-link) has room to
+     render without being clipped by this overflow container. The
+     negative margin + positive padding keeps the visible hit-target
+     at the rail's 64px, while the box itself is wide enough for
+     tooltips. */
+  margin-right: -220px;
+  padding-right: 220px;
+  pointer-events: none;
+  scrollbar-width: none;
+}
+.desk__nav--collapsed .desk__nav-group::-webkit-scrollbar { width: 0; }
+.desk__nav--collapsed .desk__nav-group > * {
+  pointer-events: auto;
+}
+.desk__nav--collapsed .desk__brand {
+  flex-direction: column;
+  justify-content: center; align-items: center;
+  gap: 6px;
+  padding: 0;
+}
+.desk__nav--collapsed .desk__logo {
+  font-size: 26px; line-height: 1;
+}
+.desk__nav--collapsed .desk__wordmark { display: none; }
+.desk__nav--collapsed .desk__nav-hinge {
+  margin-left: 0;
+  width: 36px; height: 32px;
+  border-radius: 8px;
+  color: var(--ink-2);
+}
+.desk__nav--collapsed .desk__nav-hinge:hover {
+  background: var(--paper-2); color: var(--moss);
+  border-color: var(--line);
+}
+
+/* Workspace switcher and free-form action slot (e.g. booking hint)
+   don't collapse gracefully — hide them in the narrow rail. The user
+   re-opens the sidebar to switch workspace or tap the booking chip. */
+.desk__nav--collapsed .ws-switcher,
+.desk__nav--collapsed .desk__nav-action { display: none; }
+
+/* Section headers become a thin rule — the text is still in the DOM
+   for screen readers but hidden visually so the rail stays calm. */
+.desk__nav--collapsed .nav-section {
+  padding: 8px 10px 2px;
+  gap: 0;
+}
+.desk__nav--collapsed .nav-section__text {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+.desk__nav--collapsed .nav-section__rule {
+  width: 100%; background: var(--line-strong); opacity: 0.6;
+}
+
+/* Nav links: icon centered in a square tap target, label hidden. */
+.desk__nav--collapsed .nav-link {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 9px 0;
+  width: 44px; height: 40px;
+  margin: 0 auto;
+  border-radius: 10px;
+  gap: 0;
+}
+.desk__nav--collapsed .nav-link__label { display: none; }
+.desk__nav--collapsed .nav-link__icon {
+  width: 20px; height: 20px; color: var(--ink-2);
+}
+.desk__nav--collapsed .nav-link:hover .nav-link__icon { color: var(--ink); }
+.desk__nav--collapsed .nav-link--active {
+  background: var(--moss-soft);
+}
+.desk__nav--collapsed .nav-link--active .nav-link__icon { color: var(--moss); }
+.desk__nav--collapsed .nav-link__marker {
+  left: -6px; width: 3px; border-radius: 0 3px 3px 0;
+}
+.desk__nav--collapsed .nav-link--active .nav-link__marker { height: 56%; }
+
+/* Me footer: avatar only, centered. Hover shows the tooltip stash. */
+.desk__nav--collapsed .desk__me {
+  justify-content: center;
+  padding: 10px 4px;
+  gap: 0;
+}
+.desk__nav--collapsed .desk__me-meta { display: none; }
+
+
+.desk__main {
+  padding: 0 44px 80px;
+  height: 100%; min-height: 0; overflow-y: auto;
+}
+/* §14 "Page header" — three slots: leading (back or hamburger), heading
+   (title + optional sub), trailing (one primary action + overflow).
+   On desktop the large Fraunces title sits flush left; the slots are
+   present in the DOM but `:empty { display: none }` so the heading
+   pins to the left edge when no back button or action exists. Phone
+   overrides below turn this into a sticky, compact, safe-area bar. */
+.page-topbar {
+  display: flex; align-items: flex-start; gap: 16px;
+  margin-bottom: 26px;
+  padding-top: 36px; padding-bottom: 10px;
+}
+.page-topbar__leading {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 4px;
+  min-height: 44px;
+}
+.page-topbar__leading:empty { display: none; }
+.page-topbar__heading {
+  flex: 1 1 auto; min-width: 0;
+}
+.page-topbar__trailing {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  min-height: 44px;
+  margin-left: auto;
+}
+.page-topbar__trailing:empty { display: none; }
+.page-topbar__icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px;
+  padding: 0; border: 0;
+  background: transparent; color: var(--ink-2);
+  border-radius: 10px; cursor: pointer; text-decoration: none;
+  transition: background 120ms ease, color 120ms ease;
+}
+.page-topbar__icon-btn:hover { background: var(--moss-soft); color: var(--ink); }
+.page-topbar__icon-btn:focus-visible {
+  outline: 2px solid var(--moss); outline-offset: 2px;
+  background: var(--moss-soft); color: var(--ink);
+}
+/* The hamburger is only useful on phone — the left-nav / drawer lives
+   inline at desktop widths. Keep the DOM node (accessibility tree
+   stays consistent across breakpoints) but hide it visually. */
+@media (min-width: 720px) {
+  .page-topbar__menu-btn { display: none; }
+}
+.desk__content { display: flex; flex-direction: column; gap: 22px; }
+.page-title {
+  font-size: 2.05rem; margin-bottom: 4px; line-height: 1.1;
+  font-variation-settings: "opsz" 96;
+}
+.page-sub { color: var(--ink-3); font-size: 14px; }
+
+/* Overflow menu used by the header trailing slot. Rendered as a native
+   <dialog> so Escape + backdrop click + focus trap come for free. */
+.overflow-menu[open] {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 6px;
+  background: var(--card); color: var(--ink);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  min-width: min(260px, 86vw);
+}
+.overflow-menu::backdrop { background: rgba(31, 26, 20, 0.35); }
+.overflow-menu__list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.overflow-menu__item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 10px 12px;
+  min-height: 44px;
+  background: transparent; border: 0; border-radius: 8px;
+  font: inherit; color: var(--ink);
+  text-align: left; cursor: pointer;
+}
+.overflow-menu__item:hover,
+.overflow-menu__item:focus-visible {
+  background: var(--paper-2);
+  outline: none;
+}
+.overflow-menu__item--destructive { color: var(--rust); }
+.overflow-menu__icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; color: currentColor;
+}
+.overflow-menu__label { flex: 1; }
+
+.panel {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 20px 22px; box-shadow: var(--shadow);
+}
+.panel__head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.panel__head > .btn { flex-shrink: 0; }
+.panel__head-stack {
+  display: flex; flex-direction: column; gap: 4px;
+  min-width: 0;
+}
+.panel__head-stack h2 { margin: 0; }
+/* Canonical panel subtitle — sits under an h2, either inside a
+   panel__head-stack (tight 4px gap) or as its own <p> below the
+   head. Matches the muted token and keeps the rhythm consistent
+   across /me, /settings, and every other panel with a description. */
+.panel__sub {
+  margin: 0;
+  font-size: 13px; line-height: 1.55;
+  color: var(--ink-3);
+}
+.panel--article { padding: 32px 36px; }
+.panel--danger { border-color: var(--rust); border-width: 1.5px; }
+
+.grid { display: grid; gap: 22px; }
+.grid--stats { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.grid--split { grid-template-columns: 1.4fr 1fr; }
+@media (max-width: 1024px) { .grid--split { grid-template-columns: 1fr; } }
+.grid--cards { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+
+.stat-card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 18px 20px; box-shadow: var(--shadow);
+  position: relative;
+}
+.stat-card--warn { border-left: 3px solid var(--sand); }
+.stat-card__label {
+  font-size: 11px; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.stat-card__value {
+  font-family: "Fraunces", serif; font-size: 2.2rem; font-weight: 700;
+  line-height: 1.05; margin: 6px 0 2px;
+  font-variation-settings: "opsz" 96;
+}
+.stat-card__divider { color: var(--ink-3); font-weight: 400; margin: 0 4px; }
+.stat-card__sub { font-size: 12px; color: var(--ink-3); }
+
+.link { color: var(--moss); font-weight: 500; font-size: 13px; }
+.link--muted { color: var(--ink-3); }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; overflow-x: auto; }
+.tab-link { padding: 10px 14px; color: var(--ink-3); font-weight: 500; font-size: 14px; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; background: transparent; border-left: 0; border-right: 0; border-top: 0; font-family: inherit; }
+.tab-link--active { color: var(--ink); border-bottom-color: var(--moss); }
+
+/* ── Approvals / issues ───────────────────────────────────── */
+.approval-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.approval-list--wide { gap: 14px; }
+.approval {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; border-left: 3px solid var(--sky);
+}
+.approval--medium { border-left-color: var(--sand); }
+.approval--high   { border-left-color: var(--rust); }
+.approval__head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.approval__time { margin-left: auto; color: var(--ink-3); font-size: 12px; }
+.approval__title { font-family: "Fraunces", serif; margin-bottom: 4px; }
+.approval__reason { color: var(--ink-2); font-size: 13px; margin-bottom: 10px; }
+.approval__actions { display: flex; gap: 8px; }
+
+.expense-approval__grid {
+  display: grid; grid-template-columns: auto 1fr auto;
+  gap: 20px; align-items: center;
+  padding: 12px 0 14px; margin-bottom: 10px;
+  border-top: 1px dashed var(--line);
+  border-bottom: 1px dashed var(--line);
+}
+.expense-approval__amount {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding-right: 20px; border-right: 1px solid var(--line);
+}
+.expense-approval__value {
+  font-family: "Fraunces", serif; font-weight: 700;
+  font-size: 1.75rem; line-height: 1; letter-spacing: -0.02em;
+  font-variation-settings: "opsz" 72;
+}
+.expense-approval__currency { color: var(--ink-3); font-size: 11px; }
+.expense-approval__body { min-width: 0; }
+.expense-approval__note { color: var(--ink-2); font-size: 14px; line-height: 1.45; margin-bottom: 6px; }
+.expense-approval__meta { color: var(--ink-3); font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.expense-approval__receipt {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding-left: 16px; border-left: 1px solid var(--line);
+}
+.receipt-thumb {
+  width: 56px; height: 72px;
+  background: var(--paper-2); border: 1px solid var(--line-strong);
+  border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  font-size: 24px; color: var(--ink-3);
+}
+@media (max-width: 820px) {
+  .expense-approval__grid { grid-template-columns: 1fr; gap: 10px; }
+  .expense-approval__amount, .expense-approval__receipt { border: 0; padding: 0; }
+}
+
+.issue-list { list-style: none; padding: 0; margin: 0; }
+.issue-row {
+  display: grid; grid-template-columns: 1fr auto auto;
+  gap: 10px; align-items: center; padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.issue-row:last-child { border-bottom: 0; }
+
+/* ── Property cards ─────────────────────────────────────── */
+.prop-card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; overflow: hidden; box-shadow: var(--shadow);
+  transition: transform 120ms ease, box-shadow 200ms ease;
+  display: flex; flex-direction: column;
+}
+.prop-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-raised); }
+.prop-card__link { display: block; }
+.prop-card__swatch { height: 100px; position: relative; }
+.prop-card__swatch--moss { background: linear-gradient(135deg, var(--moss) 0%, #5A9155 100%); }
+.prop-card__swatch--sky  { background: linear-gradient(135deg, var(--sky)  0%, #6D98BF 100%); }
+.prop-card__swatch--rust { background: linear-gradient(135deg, var(--rust) 0%, #C76A4A 100%); }
+.prop-card__kind {
+  position: absolute; bottom: 8px; right: 10px;
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  color: rgba(255,255,255,0.85); letter-spacing: 0.1em;
+  background: rgba(0,0,0,0.2); padding: 2px 8px; border-radius: 4px;
+}
+.prop-card__body { padding: 14px 16px; flex: 1; }
+.prop-card__name {
+  font-family: "Fraunces", serif; font-size: 1.35rem; font-weight: 600;
+  font-variation-settings: "opsz" 96;
+}
+.prop-card__city { color: var(--ink-3); font-size: 13px; margin-top: 2px; }
+.prop-card__stats { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; color: var(--ink-2); font-size: 13px; }
+.prop-card__chips { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* §02 + §22 — sharing & client tab on PropertyDetail. */
+.sharing-add { display: flex; align-items: center; gap: 10px; }
+.sharing-client { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.sharing-client h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); }
+.sharing-client__row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.sharing-client__chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.sharing-client__owner { margin-top: 10px; font-size: 13px; }
+
+/* §22 — Organizations directory. Two-column page: list on the left,
+   detail panel on the right. */
+.org-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.org-list__row {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 8px; cursor: pointer;
+}
+.org-list__row:hover { background: var(--paper-2); }
+.org-list__row--active { background: var(--moss-soft); }
+.org-list__chips { display: flex; gap: 6px; flex-shrink: 0; }
+.org-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.org-section h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); }
+.org-meta { font-size: 13px; margin-top: 8px; }
+.org-contacts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.org-prop-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.org-portal { margin-top: 16px; font-size: 13px; }
+
+.prop-card__footer {
+  padding: 10px 16px; border-top: 1px solid var(--line);
+  display: flex; justify-content: space-between; align-items: center;
+}
+
+/* ── Calendars ──────────────────────────────────────────── */
+.mini-cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.mini-cal--wide { grid-template-columns: repeat(10, 1fr); }
+.mini-cal__day { background: var(--paper-2); border-radius: 6px; padding: 6px 8px; min-height: 52px; font-size: 12px; position: relative; }
+.mini-cal__day--today { outline: 2px solid var(--moss); }
+.mini-cal__day--closed { background: var(--paper-3); }
+.mini-cal__num { color: var(--ink-3); font-family: "JetBrains Mono", monospace; font-size: 11px; }
+.mini-cal__bar { display: block; height: 4px; margin-top: 2px; border-radius: 999px; }
+.mini-cal__bar--moss { background: var(--moss); }
+.mini-cal__bar--sky  { background: var(--sky);  }
+.mini-cal__bar--rust { background: var(--rust); }
+.mini-cal__bar--closed { background: var(--ink-4); opacity: 0.6; }
+
+.cal-wide { display: grid; gap: 2px; margin-top: 10px; overflow-x: auto; }
+.cal-wide__headers,
+.cal-wide__row {
+  display: grid;
+  grid-template-columns: 130px repeat(30, minmax(24px, 1fr));
+  gap: 2px; align-items: stretch;
+}
+.cal-wide__corner { padding: 4px 6px; font-family: "Fraunces", serif; color: var(--ink-3); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+.cal-wide__header {
+  padding: 2px 0; text-align: center;
+  background: var(--paper-2); border-radius: 4px;
+}
+.cal-wide__header--today { background: var(--moss); color: #fff; }
+.cal-wide__dow { display: block; font-size: 9px; color: var(--ink-3); font-family: "JetBrains Mono", monospace; }
+.cal-wide__header--today .cal-wide__dow { color: rgba(255,255,255,0.8); }
+.cal-wide__num { display: block; font-size: 11px; font-weight: 600; }
+.cal-wide__label { padding: 4px 0; font-size: 13px; }
+.cal-wide__cell {
+  background: var(--paper-2); border-radius: 3px; min-height: 28px; position: relative;
+  display: flex; align-items: center; justify-content: center; padding: 0 2px;
+  overflow: hidden;
+}
+.cal-wide__row--leaves .cal-wide__cell { background: var(--paper-3); }
+
+.cal-bar {
+  position: absolute; inset: 3px; border-radius: 3px; z-index: 2;
+  display: flex; align-items: center; padding: 0 4px;
+  font-size: 10px; color: #fff; font-weight: 500; white-space: nowrap; overflow: hidden;
+}
+.cal-bar--moss { background: var(--moss); }
+.cal-bar--sky  { background: var(--sky);  }
+.cal-bar--rust { background: var(--rust); }
+.cal-bar--turnover {
+  background: repeating-linear-gradient(45deg, var(--ink-4) 0 3px, transparent 3px 7px), var(--paper-3);
+  inset: auto 2px 2px 2px; height: 4px;
+}
+.cal-bar--closed {
+  background: var(--ink-4); opacity: 0.5;
+  background: repeating-linear-gradient(135deg, rgba(140, 130, 116, 0.8) 0 4px, rgba(140, 130, 116, 0.4) 4px 8px);
+}
+.cal-bar--leave {
+  background: var(--sand); color: #3b2c0b; font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.cal-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--ink-3); }
+.cal-legend__item { display: inline-flex; align-items: center; gap: 5px; }
+.swatch-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.swatch-dot--moss { background: var(--moss); }
+.swatch-dot--sky  { background: var(--sky); }
+.swatch-dot--rust { background: var(--rust); }
+.swatch-dot--turnover { background: repeating-linear-gradient(45deg, var(--ink-4) 0 2px, transparent 2px 4px); }
+.swatch-dot--closed { background: var(--ink-4); opacity: 0.6; }
+.swatch-dot--leave { background: var(--sand); }
+
+/* ── Misc ───────────────────────────────────────────────── */
+.empty-state {
+  padding: 24px; text-align: center; color: var(--ink-3);
+  background: var(--card); border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+.empty-state--celebrate { color: var(--moss); }
+.empty-state__glyph {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; margin: 0 auto 6px; color: var(--ink-3);
+}
+.empty-state--celebrate .empty-state__glyph {
+  color: var(--moss);
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--moss-softer);
+}
+.empty-state--quiet { background: transparent; border: 0; padding: 10px 0; }
+
+.completed-group summary {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  color: var(--ink-3); font-size: 13px; font-weight: 600; list-style: none;
+}
+.completed-group summary::-webkit-details-marker { display: none; }
+.completed-group summary::before { content: "▸"; margin-right: 4px; transition: transform 120ms ease; }
+.completed-group[open] summary::before { transform: rotate(90deg); }
+.completed-group ul { margin-top: 10px; }
+
+.tpl-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px; box-shadow: var(--shadow);
+}
+.tpl-card__head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.tpl-card__title {
+  font-family: "Fraunces", serif; font-size: 1.15rem;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.tpl-card__chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.tpl-card__desc { color: var(--ink-2); font-size: 13px; margin-bottom: 8px; }
+.tpl-card__meta { color: var(--ink-3); font-size: 12px; margin-bottom: 10px; font-family: "JetBrains Mono", monospace; }
+.tpl-card__duration { display: inline-flex; align-items: center; gap: 4px; }
+.tpl-card__checklist { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
+.tpl-card__checklist li { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 13px; border-bottom: 1px dashed var(--line); }
+.tpl-card__checklist li:last-child { border-bottom: 0; }
+
+.kb-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.kb-item {
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); overflow: hidden;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.kb-item:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+.kb-item__main { display: block; padding: 14px 16px; }
+.kb-item__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 4px; }
+.kb-item__title { font-family: "Fraunces", serif; font-size: 1.1rem; font-weight: 600; }
+.kb-item__preview { color: var(--ink-2); font-size: 13px; margin-bottom: 6px; line-height: 1.5; }
+.kb-item__meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+.kb-body {
+  font-size: 16px; line-height: 1.7; color: var(--ink); max-width: 72ch;
+  font-family: "Fraunces", serif;
+  font-variation-settings: "opsz" 18;
+  font-weight: 400;
+}
+.kb-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); }
+
+.settings-kv { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; }
+.settings-kv dt { color: var(--ink-3); font-size: 13px; }
+.settings-kv dd { margin: 0; font-weight: 500; }
+.settings-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.settings-list li { padding: 8px 0; border-bottom: 1px dashed var(--line); display: flex; justify-content: space-between; align-items: center; }
+.danger-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; color: var(--rust); }
+.danger-list li { padding: 6px 0; border-bottom: 1px dashed var(--rust-soft); }
+.setting-label { display: block; font-size: 0.8em; }
+.setting-scope { margin-left: 0.5rem; font-size: 0.8em; }
+
+/* §11 agent usage: percent-only envelope on the workspace budget. */
+.agent-usage__heading { display: flex; align-items: baseline; gap: 10px; }
+.agent-usage__row { display: flex; align-items: center; gap: 14px; }
+.agent-usage__value { min-width: 64px; font-weight: 600; }
+.agent-usage__pct { font-size: 20px; }
+.agent-usage__bar { flex: 1; display: flex; align-items: center; }
+.agent-usage__bar .progress-bar { display: block; width: 100%; }
+.agent-usage__window { font-size: 12px; }
+
+/* ── Assets ────────────────────────────────────────────── */
+.asset-card {
+  display: grid; grid-template-columns: auto 1fr auto;
+  gap: 10px; align-items: center;
+  padding: 12px 14px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.asset-card:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+.asset-card__icon { font-size: 24px; line-height: 1; }
+.asset-card__body { min-width: 0; }
+.asset-card__name { font-family: "Fraunces", serif; font-weight: 600; font-size: 1rem; }
+.asset-card__meta { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.asset-card__end { display: flex; align-items: center; gap: 8px; }
+
+.asset-kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; }
+.asset-kv dt { color: var(--ink-3); font-size: 13px; }
+.asset-kv dd { margin: 0; font-size: 14px; }
+
+/* Inline Lucide wrapper used by <AssetIcon/>. Every call-site sits
+ * inside a flex parent, so spacing is owned by the parent's `gap`
+ * rather than a per-icon margin — that prevents the gap from
+ * doubling up differently per surface. */
+.asset-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--ink-2);
+}
+.asset-name-link { display: inline-flex; align-items: center; gap: 6px; }
+.asset-type-line { display: inline-flex; align-items: center; gap: 6px; }
+
+.action-row {
+  display: grid; grid-template-columns: 1fr auto auto auto;
+  gap: 12px; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--line);
+}
+.action-row:last-child { border-bottom: 0; }
+.action-row__label { font-weight: 500; }
+.action-row__interval { color: var(--ink-3); font-size: 12px; font-family: "JetBrains Mono", monospace; }
+
+.doc-row {
+  display: grid; grid-template-columns: auto 1fr auto auto auto;
+  gap: 12px; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--line);
+}
+.doc-row:last-child { border-bottom: 0; }
+.doc-thumb {
+  width: 36px; height: 36px; border-radius: 6px;
+  background: var(--paper-2); border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: var(--ink-3);
+}
+
+.guest-equipment { margin-top: 8px; }
+.guest-asset-card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+}
+.guest-asset-card__name { font-family: "Fraunces", serif; font-weight: 600; margin-bottom: 4px; }
+.guest-asset-card__meta { color: var(--ink-3); font-size: 13px; margin-bottom: 6px; }
+.guest-asset-card__instructions { color: var(--ink-2); font-size: 14px; line-height: 1.5; }
+
+.qr-stub {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 80px; height: 80px;
+  background: var(--paper-2); border: 2px dashed var(--line-strong);
+  border-radius: 8px; color: var(--ink-3); font-size: 12px;
+  font-family: "JetBrains Mono", monospace; text-align: center;
+}
+
+.scan-overlay {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 60vh; gap: 20px; padding: 20px;
+}
+.scan-frame {
+  width: 200px; height: 200px;
+  border: 3px solid var(--moss); border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-3); font-size: 48px;
+  background: var(--paper-2);
+}
+.scan-text { color: var(--ink-3); font-size: 14px; text-align: center; }
+
+/* ── Login / public ──────────────────────────────────────── */
+.surface--login { background: linear-gradient(160deg, var(--paper), var(--paper-2)); }
+.login { min-height: calc(100vh - 40px); display: grid; place-items: center; padding: 40px 20px; position: relative; z-index: 1; }
+.login__card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 36px; width: 100%; max-width: 400px; text-align: center;
+  box-shadow: 0 20px 60px rgba(31,26,20,0.06);
+}
+.login__card--wide { max-width: 560px; text-align: left; }
+.login__brand { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 22px; }
+.login__headline {
+  font-family: "Fraunces", serif; font-size: 1.5rem; margin-bottom: 6px;
+  line-height: 1.2; font-variation-settings: "opsz" 48;
+}
+.login__sub { color: var(--ink-3); font-size: 14px; margin-bottom: 18px; }
+.login__primary { width: 100%; margin-bottom: 8px; }
+.login__card .btn { width: 100%; }
+.login__divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--ink-3); font-size: 12px; }
+.login__divider::before, .login__divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.login__recover { display: inline-block; margin-top: 14px; color: var(--ink-3); font-size: 12px; text-decoration: underline; }
+.login__footnote { color: var(--ink-3); font-size: 12px; margin-top: 18px; max-width: 400px; text-align: center; }
+.login__card--wide .login__footnote { text-align: left; }
+
+.enroll-steps { list-style: none; padding: 0; margin: 24px 0 0; display: flex; flex-direction: column; gap: 14px; }
+.enroll-step { display: flex; gap: 14px; align-items: flex-start; padding: 14px; background: var(--paper-2); border-radius: 10px; opacity: 0.6; }
+.enroll-step--active { opacity: 1; border: 1px solid var(--moss); }
+.enroll-step--done { opacity: 1; }
+.enroll-step--done .enroll-step__num { background: var(--moss); color: #fff; }
+.enroll-step__num {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--paper); border: 1px solid var(--line-strong);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: "Fraunces", serif; font-weight: 600; flex-shrink: 0;
+}
+.enroll-step__num::after { content: ""; }
+.enroll-step p { color: var(--ink-3); font-size: 13px; margin: 4px 0 8px; }
+
+/* ── Guest welcome page ───────────────────────────────── */
+.surface--guest { background:
+  radial-gradient(circle at 15% 10%, rgba(63,110,59,0.06), transparent 40%),
+  radial-gradient(circle at 85% 90%, rgba(79,124,168,0.05), transparent 50%),
+  var(--paper);
+}
+.guest { max-width: 960px; margin: 0 auto; padding: 48px 24px 80px; position: relative; z-index: 1; }
+.guest__hero { text-align: center; margin-bottom: 40px; }
+.guest__eyebrow { display: block; font-size: 12px; letter-spacing: 0.2em; color: var(--ink-3); text-transform: uppercase; margin-bottom: 8px; }
+.guest__name {
+  font-family: "Fraunces", serif; font-size: clamp(2.4rem, 5vw, 3.6rem);
+  font-weight: 600; letter-spacing: -0.03em; line-height: 1;
+  font-variation-settings: "opsz" 144;
+}
+.guest__stay { color: var(--ink-2); margin-top: 10px; font-size: 16px; }
+
+.guest__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+.guest-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 20px 22px; box-shadow: var(--shadow);
+}
+.guest-card--wide { grid-column: 1 / -1; }
+.guest-card__title { font-family: "Fraunces", serif; font-size: 1.15rem; margin-bottom: 10px; }
+.guest-card__kv { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 14px; }
+.guest-card__kv dt { color: var(--ink-3); }
+.guest-card__kv dd { margin: 0; }
+.guest-card__list { list-style: disc; padding-left: 18px; color: var(--ink-2); font-size: 14px; }
+.guest-card__list li { margin-bottom: 4px; }
+
+.guest-checklist { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.guest-checklist li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.guest-checklist li:last-child { border-bottom: 0; }
+
+.guest__footer { margin-top: 32px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* ── Styleguide page ─────────────────────────────────── */
+.styleguide {
+  max-width: 960px; margin: 0 auto; padding: 48px 24px 80px;
+  position: relative; z-index: 1;
+}
+.styleguide__hero { margin-bottom: 48px; }
+.styleguide__eyebrow { text-transform: uppercase; letter-spacing: 0.2em; font-size: 12px; color: var(--moss); }
+.styleguide__title {
+  font-family: "Fraunces", serif; font-weight: 700;
+  font-size: clamp(2.2rem, 5vw, 3.5rem); letter-spacing: -0.03em;
+  margin: 12px 0 6px; line-height: 1.05;
+  font-variation-settings: "opsz" 144;
+}
+.styleguide__lede { color: var(--ink-2); max-width: 56ch; font-size: 18px; line-height: 1.55; }
+.styleguide__section { margin-top: 42px; }
+.styleguide__section h2 {
+  font-family: "Fraunces", serif; font-size: 1.3rem;
+  margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.styleguide__demo-track { max-width: 420px; }
+.styleguide__demo-track h3 {
+  font-family: "Fraunces", serif; font-size: 1rem; font-weight: 500;
+  margin: 22px 0 10px; color: var(--ink-2);
+}
+.styleguide__note {
+  color: var(--ink-3); font-size: 13px; max-width: 62ch; margin: 0 0 10px;
+}
+.styleguide__note code {
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+  background: var(--paper-2); padding: 1px 6px; border-radius: 4px;
+}
+.swatch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.swatch {
+  display: flex; flex-direction: column; justify-content: space-between;
+  height: 110px; padding: 12px; border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.swatch span { font-family: "Fraunces", serif; font-weight: 600; font-size: 1.05rem; }
+.swatch code { font-size: 11px; opacity: 0.85; }
+.swatch--paper  { background: #FAF7F2; color: #1F1A14; }
+.swatch--ink    { background: #1F1A14; color: #FAF7F2; }
+.swatch--moss   { background: #3F6E3B; color: #fff; }
+.swatch--rust   { background: #B04A27; color: #fff; }
+.swatch--sand   { background: #D9A441; color: #1F1A14; }
+.swatch--sky    { background: #4F7CA8; color: #fff; }
+.swatch--night  { background: #151310; color: #F4EFE6; }
+
+.type-row { padding: 14px 0; border-bottom: 1px dashed var(--line); }
+.type-sample { font-size: 1.3rem; line-height: 1.3; }
+.type-sample--display { font-family: "Fraunces", serif; font-size: 2rem; font-weight: 600; letter-spacing: -0.02em; }
+.type-sample--mono { font-family: "JetBrains Mono", monospace; font-size: 0.95rem; color: var(--ink-2); }
+.type-caption { color: var(--ink-3); font-size: 12px; margin-top: 6px; font-family: "JetBrains Mono", monospace; }
+
+.demo-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.demo-row--stack { flex-direction: column; align-items: stretch; max-width: 440px; }
+
+/* ══════════════════════════════════════════════════════════════
+   MANAGER — agent sidebar
+   ══════════════════════════════════════════════════════════════ */
+.desk__agent {
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.desk__agent-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+  cursor: pointer;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.desk__agent-title {
+  font-family: "Fraunces", serif; font-weight: 600; font-size: 15px;
+}
+.desk__agent-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ink-3); font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
+}
+.desk__agent-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--moss);
+  box-shadow: 0 0 0 3px var(--moss-soft);
+}
+.desk__agent-chevron {
+  margin-left: auto; color: var(--ink-3);
+  display: inline-flex; transition: transform 160ms ease;
+}
+.desk__agent--collapsed .desk__agent-chevron { transform: rotate(-90deg); }
+
+.desk__agent-body {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.desk__agent--collapsed .desk__agent-body { display: none; }
+
+/* :has() lets the grid react without JS; data-agent-collapsed on
+   ManagerLayout mirrors this for older browsers. */
+.desk:has(.desk__agent--collapsed),
+.desk[data-agent-collapsed="true"] {
+  grid-template-columns: 232px 1fr auto;
+}
+
+/* Collapsed LEFT nav mirrors the same approach. `auto` lets the
+   rail's own transitioned width drive the grid column, so the main
+   column reclaims the space as the sidebar shrinks. The selector
+   carries `[data-nav-collapsed="true"]` to win over the media-query
+   overrides further down. */
+.desk:has(.desk__nav--collapsed),
+.desk[data-nav-collapsed="true"] {
+  grid-template-columns: auto 1fr 340px;
+}
+.desk:has(.desk__nav--collapsed):has(.desk__agent--collapsed),
+.desk[data-nav-collapsed="true"][data-agent-collapsed="true"] {
+  grid-template-columns: auto 1fr auto;
+}
+/* Smooth width transition as the sidebar flips between states. */
+.desk__nav {
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+              padding 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.desk__nav--collapsed { width: 64px; }
+
+.desk__agent--collapsed { width: 52px; }
+.desk__agent--collapsed .desk__agent-head {
+  flex-direction: column; gap: 8px; padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.desk__agent--collapsed .desk__agent-title {
+  writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: 0.06em;
+}
+.desk__agent--collapsed .desk__agent-status { display: none; }
+.desk__agent--collapsed .desk__agent-chevron { margin-left: 0; }
+
+.agent-log {
+  flex: 1 1 auto; min-height: 0;
+  padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 8px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+.agent-msg {
+  padding: 8px 12px; border-radius: 12px;
+  font-size: 13px; line-height: 1.45;
+  max-width: 86%;
+  word-wrap: break-word;
+}
+.agent-msg--agent {
+  background: var(--moss-soft); color: var(--moss-3);
+  align-self: flex-start; border-bottom-left-radius: 4px;
+}
+.agent-msg--user {
+  background: var(--paper-2); color: var(--ink);
+  align-self: flex-end; border-bottom-right-radius: 4px;
+}
+[data-theme="dark"] .agent-msg--agent { color: var(--ink); }
+.agent-msg__body { display: block; }
+.agent-msg__time {
+  display: block; font-size: 10px; color: var(--ink-3);
+  margin-top: 3px; font-family: "JetBrains Mono", monospace;
+}
+
+.agent-actions {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  padding: 10px 16px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  background: linear-gradient(180deg, var(--paper-2), var(--paper-2) 60%, var(--card));
+}
+.agent-actions__title {
+  display: flex; align-items: center; justify-content: space-between;
+  text-transform: uppercase; letter-spacing: 0.09em;
+  font-size: 10px; color: var(--ink-3); font-weight: 600;
+}
+.agent-actions__count {
+  background: var(--sand-soft); color: var(--ink);
+  padding: 2px 7px; border-radius: 999px;
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0;
+}
+.agent-actions__list {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.agent-action {
+  border: 1px solid var(--line-strong);
+  background: var(--card);
+  padding: 8px 10px; border-radius: 10px;
+  font-size: 12px;
+  display: grid; gap: 4px;
+  border-left: 3px solid var(--line-strong);
+}
+.agent-action--low    { border-left-color: var(--moss); }
+.agent-action--medium { border-left-color: var(--sand); }
+.agent-action--high   { border-left-color: var(--rust); }
+.agent-action__title { font-weight: 600; color: var(--ink); line-height: 1.3; }
+.agent-action__detail { color: var(--ink-2); line-height: 1.35; font-size: 11.5px; }
+.agent-action__fields {
+  margin: 2px 0 0;
+  display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px;
+  font-size: 11.5px; line-height: 1.3;
+}
+.agent-action__field { display: contents; }
+.agent-action__field dt { color: var(--ink-3); font-weight: 500; }
+.agent-action__field dd { margin: 0; color: var(--ink); font-weight: 500; }
+.agent-action__ctas { display: flex; gap: 6px; margin-top: 4px; }
+.agent-action__form { margin: 0; flex: 1; }
+.agent-action .btn {
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 7px; border: 1px solid var(--line-strong);
+  font: inherit; font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  background: var(--paper);
+}
+.agent-action .btn--approve {
+  background: var(--moss); color: #fff; border-color: var(--moss);
+}
+.agent-action .btn--approve:hover { background: var(--moss-2); }
+.agent-action .btn--deny {
+  background: var(--card); color: var(--ink-2);
+}
+.agent-action .btn--deny:hover { background: var(--paper-2); }
+
+/* Sidebar-scoped overrides for the shared ChatComposer. The composer
+   keeps the same markup as /chat (attach, mic-becomes-send) but flows
+   inside the right rail with a top divider and tighter padding. */
+.desk__agent .chat-composer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  background: var(--card);
+  padding: 10px 12px;
+  gap: 6px;
+}
+.desk__agent .chat-composer__icon { width: 36px; height: 36px; }
+.desk__agent .chat-composer__icon--inline { width: 30px; height: 30px; }
+.desk__agent .chat-composer__send { width: 36px; height: 36px; }
+.desk__agent .chat-composer__field { padding: 2px 8px 2px 12px; }
+.desk__agent .chat-composer textarea { font-size: 13px; padding: 7px 0; }
+
+/* ══════════════════════════════════════════════════════════════
+   MANAGER — icon button (used by hamburger inside the header's
+   leading slot on mobile; the legacy `.desk__mobile-bar` strip is
+   gone per §14 "Page header").
+   ══════════════════════════════════════════════════════════════ */
+.desk__icon-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink-2);
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  padding: 0;
+}
+.desk__icon-btn:hover { background: var(--paper-2); }
+.desk__icon-btn:active { transform: scale(0.97); }
+.desk__icon-btn--badge {
+  position: relative;
+}
+.desk__icon-btn__dot {
+  position: absolute; top: 8px; right: 8px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--moss);
+  box-shadow: 0 0 0 2px var(--card);
+}
+
+.desk__scrim {
+  position: fixed; inset: 0; z-index: 55;
+  background: rgba(31, 26, 20, 0.45);
+  backdrop-filter: blur(2px);
+  animation: scrim-in 160ms ease;
+}
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   RESPONSIVE MANAGER — tablet down to phone
+   ══════════════════════════════════════════════════════════════ */
+
+/* Tablet & small desktop: nav tightens, main column trims its padding.
+   The agent rail stays present and user-toggleable — the sidebar
+   defaults collapsed below 1600px (`initialAgentCollapsed` in
+   preferences.ts), but the head remains clickable to expand inline. */
+@media (max-width: 1600px) {
+  .desk { grid-template-columns: 216px 1fr 340px; }
+  .desk:has(.desk__agent--collapsed),
+  .desk[data-agent-collapsed="true"] { grid-template-columns: 216px 1fr auto; }
+  .desk:has(.desk__nav--collapsed),
+  .desk[data-nav-collapsed="true"] { grid-template-columns: auto 1fr 340px; }
+  .desk:has(.desk__nav--collapsed):has(.desk__agent--collapsed),
+  .desk[data-nav-collapsed="true"][data-agent-collapsed="true"] {
+    grid-template-columns: auto 1fr auto;
+  }
+  .phone { grid-template-columns: 216px minmax(0, 1fr) 340px; }
+  .phone:has(.desk__agent--collapsed),
+  .phone[data-agent-collapsed="true"] { grid-template-columns: 216px minmax(0, 1fr) auto; }
+  .phone:has(.desk__nav--collapsed),
+  .phone[data-nav-collapsed="true"] { grid-template-columns: auto minmax(0, 1fr) 340px; }
+  .phone:has(.desk__nav--collapsed):has(.desk__agent--collapsed),
+  .phone[data-nav-collapsed="true"][data-agent-collapsed="true"] {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .desk__main { padding: 0 28px 80px; }
+}
+
+/* Small tablet (≤960): no extra padding budget. The rail is still
+   present and inline — user expands via the head if they want chat. */
+@media (max-width: 960px) {
+  .desk__main { padding: 0 24px 80px; }
+}
+
+/* Phone / narrow tablet: off-canvas drawer for the nav, mobile top
+   bar visible, main column full-width. */
+@media (max-width: 720px) {
+  .desk {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--banner-h, 40px));
+    min-height: 0;
+  }
+  /* When the nav drawer is open, promote .desk's stacking context
+     above the preview banner (which also uses z-index: 50) so the
+     drawer overlays it end-to-end. */
+  .desk[data-nav-open="true"] {
+    z-index: 60;
+  }
+
+  .desk__nav {
+    position: fixed; top: 0; bottom: 0; left: 0;
+    width: min(280px, 82vw);
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  }
+  .desk[data-nav-open="true"] .desk__nav {
+    transform: translateX(0);
+  }
+
+  .desk__main {
+    flex: 1 1 auto;
+    padding: 0 18px 96px;
+    min-height: 0;
+    width: 100%;
+  }
+
+  /* §14 "Page header" — sticky compact bar on phone. Padded for the
+     iOS notch via env(safe-area-inset-top) and rendered as a solid
+     paper-coloured strip so content scrolls under it without
+     bleed-through. The `top` value depends on which scroll container
+     owns the page: the worker shell scrolls the document (so we must
+     clear the sticky preview banner), while the manager/admin/client
+     shells scroll `.desk__main`, which already sits below the banner
+     — sticky there must be top: 0 or the header floats 42px down. */
+  .page-topbar {
+    position: sticky; top: 0; z-index: 35;
+    display: flex; align-items: center;
+    flex-wrap: nowrap; gap: 4px;
+    padding: env(safe-area-inset-top, 0px) 10px 0;
+    min-height: calc(52px + env(safe-area-inset-top, 0px));
+    margin-bottom: 12px;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+  }
+  /* Inside the manager / admin / client shell the header lives one
+     level inside `.desk__main`, which has 18px horizontal padding
+     below 720px. Bleed the header out to the viewport edges with a
+     negative margin so the sticky strip looks anchored to the window,
+     matching the worker shell which sits directly under `.phone`. */
+  .desk__main > .page-topbar {
+    margin-inline: -18px;
+  }
+  /* Worker shell: the document is the scroll container, so the sticky
+     header must clear the sticky preview banner above it. */
+  .phone > .page-topbar,
+  .phone__body > .page-topbar {
+    margin-inline: 0;
+    top: var(--banner-h, 0px);
+  }
+  .page-topbar__leading,
+  .page-topbar__trailing {
+    min-height: 44px;
+  }
+  .page-topbar__heading {
+    padding: 6px 4px;
+  }
+  .page-title {
+    font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 1.05rem;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    margin: 0;
+    font-variation-settings: normal;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .page-sub {
+    font-size: 12px; line-height: 1.2;
+    margin: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* Phone mode: hide the inline rail entirely. Both shells route the
+     bottom Chat tab/dock to /chat (full-screen) instead. */
+  .desk__agent { display: none; }
+  .phone > .desk__agent { display: none; }
+
+  /* The desktop collapse hinge is a no-op inside the off-canvas
+     drawer — the drawer IS the "closed" state. Hide it there; it
+     returns at >=720px. */
+  .desk__nav-hinge { display: none; }
+  /* If the user collapsed on desktop then dropped into phone, the
+     drawer still needs full width/content. Force it open visually. */
+  .desk__nav--collapsed {
+    width: min(280px, 82vw);
+    padding: 20px 12px;
+  }
+  .desk__nav--collapsed .desk__wordmark { display: block; }
+  .desk__nav--collapsed .desk__brand {
+    flex-direction: row; justify-content: flex-start;
+    align-items: center; gap: 8px;
+    padding: 0 8px;
+  }
+  .desk__nav--collapsed .ws-switcher,
+  .desk__nav--collapsed .desk__nav-action { display: flex; }
+  .desk__nav--collapsed .ws-switcher { display: block; }
+  .desk__nav--collapsed .nav-link {
+    width: auto; height: auto;
+    grid-template-columns: 18px 1fr;
+    justify-items: start;
+    padding: 7px 12px;
+    margin: 0;
+    gap: 10px;
+  }
+  .desk__nav--collapsed .nav-link__label { display: block; }
+  .desk__nav--collapsed .nav-section__text {
+    position: static; width: auto; height: auto;
+    clip: auto; clip-path: none;
+  }
+  .desk__nav--collapsed .nav-section__rule { display: none; }
+  .desk__nav--collapsed .desk__me {
+    justify-content: flex-start; padding: 10px; gap: 10px;
+  }
+  .desk__nav--collapsed .desk__me-meta { display: block; }
+  .desk__nav--collapsed [data-tip]::after { display: none; }
+
+  /* Condense table rows. */
+  .task-row {
+    grid-template-columns: 1fr auto;
+    gap: 6px 10px;
+  }
+  .task-row__time { grid-column: 1 / -1; font-size: 11px; }
+  .task-row__area { display: none; }
+  .page-topbar__trailing .btn {
+    padding-inline: 14px;
+    min-height: 36px;
+  }
+
+  /* Let wide tables scroll horizontally inside panels instead of
+     forcing the whole page to scroll. */
+  .panel { padding: 16px; overflow-x: auto; }
+  .panel--article { padding: 20px; }
+  .table { min-width: 520px; }
+
+  /* Dashboard grids collapse to a single column. */
+  .grid--stats,
+  .grid--split,
+  .grid--cards { grid-template-columns: 1fr; gap: 14px; }
+  .permissions__split { grid-template-columns: 1fr; }
+
+  /* Approvals / expense-approval cards stack. */
+  .expense-approval__grid { grid-template-columns: 1fr; gap: 10px; }
+  .expense-approval__amount,
+  .expense-approval__receipt { border: 0; padding: 0; }
+  .issue-row { grid-template-columns: 1fr; gap: 4px; }
+  .doc-row { grid-template-columns: auto 1fr; gap: 8px; }
+  .doc-row > :nth-child(n+3) { grid-column: 2 / -1; }
+
+  /* Wide horizontal calendar defaults to horizontal scroll; make sure
+     the first column stays visible. */
+  .cal-wide { overflow-x: auto; }
+}
+
+/* Extra-small phones (≤400): tighter spacing. The header title is
+   already compact at the sticky breakpoint; no extra shrink needed. */
+@media (max-width: 400px) {
+  .desk__main { padding: 0 14px 96px; }
+  .desk__main > .page-topbar { margin-inline: -14px; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   EMPLOYEE — chat (WhatsApp-style)
+   ══════════════════════════════════════════════════════════════ */
+.phone--chat {
+  height: calc(100dvh - var(--banner-h, 40px));
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+  /* Chat is immersive: drop the 480px phone-frame cap so the log and
+     composer span the full viewport on tablet-ish phone widths
+     (480–720px). Without this the panel letterboxes with white gaps. */
+  max-width: none;
+}
+
+.chat-screen {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: calc(60px + 62px);
+  background:
+    radial-gradient(circle at 12% 8%,  var(--moss-softer), transparent 40%),
+    radial-gradient(circle at 88% 92%, var(--sand-soft), transparent 38%),
+    var(--paper);
+  border-top: 1px solid var(--line);
+}
+.chat-log {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 16px 14px 20px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+.chat-log--inline {
+  padding: 8px 0;
+  flex: initial;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.chat-msg {
+  padding: 8px 12px 6px; border-radius: 14px;
+  font-size: 14px; line-height: 1.4; max-width: 78%;
+  box-shadow: 0 1px 0.5px rgba(31, 26, 20, 0.08);
+  position: relative;
+  word-wrap: break-word;
+}
+.chat-msg__body { display: block; }
+.chat-msg--agent {
+  background: var(--card); color: var(--ink);
+  align-self: flex-start; border-bottom-left-radius: 4px;
+}
+.chat-msg--user {
+  background: var(--moss-soft); color: var(--ink);
+  align-self: flex-end; border-bottom-right-radius: 4px;
+}
+.chat-msg--action {
+  background: var(--card); border: 1px solid var(--sand);
+  align-self: flex-start; max-width: 90%;
+  display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 1px 2px rgba(217, 164, 65, 0.18);
+}
+.chat-msg__ctas { display: flex; gap: 6px; }
+.chat-msg__time {
+  display: block; font-size: 10px; color: var(--ink-3);
+  margin-top: 2px; text-align: right;
+  font-family: "JetBrains Mono", monospace;
+}
+
+/* §14 "Agent turn indicator" — WhatsApp-style three-dot bubble shown
+ * while an agent turn is in flight. Shares paint with .chat-msg--agent
+ * / .agent-msg--agent so the pill reads as "a future agent message
+ * that hasn't finished composing yet." Motion is bounded and respects
+ * prefers-reduced-motion per §14 "Motion". */
+.chat-msg--typing,
+.agent-msg--typing {
+  padding-top: 10px; padding-bottom: 10px;
+  min-width: 52px;
+}
+.chat-typing {
+  display: inline-flex; gap: 4px; align-items: center;
+  height: 10px;
+}
+.chat-typing__dot {
+  width: 6px; height: 6px; border-radius: 999px;
+  background: currentColor; opacity: 0.45;
+  animation: chat-typing-bounce 1.2s infinite ease-in-out both;
+}
+.chat-typing__dot:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing__dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30%           { transform: translateY(-3px); opacity: 0.95; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-typing__dot { animation: none; opacity: 0.6; }
+}
+
+/* Visually-hidden text for screen readers; the log region carries
+ * aria-live="polite", so this string is announced when the typing
+ * pill first renders. Used by §14 "Agent turn indicator". */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.chat-composer {
+  position: fixed; bottom: 62px; left: 0; right: 0;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: var(--paper-2);
+  border-top: 1px solid var(--line);
+  display: flex; align-items: flex-end; gap: 8px;
+  z-index: 15;
+}
+.chat-composer__icon {
+  flex: 0 0 auto;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.chat-composer__icon:hover {
+  background: var(--paper-3);
+  color: var(--ink-2);
+}
+.chat-composer__icon--inline {
+  width: 32px; height: 32px;
+  margin-right: -4px;
+}
+.chat-composer__field {
+  flex: 1; min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 2px 6px 2px 14px;
+  display: flex; align-items: center; gap: 4px;
+  transition: border-color 120ms ease;
+}
+.chat-composer__field:focus-within { border-color: var(--moss); }
+.chat-composer textarea {
+  flex: 1; min-width: 0;
+  border: 0; background: transparent;
+  color: var(--ink);
+  font: inherit; font-family: "Inter Tight", sans-serif;
+  font-size: 15px; line-height: 1.4;
+  padding: 9px 2px;
+  min-height: 24px;
+  max-height: 140px;
+  resize: none;
+  outline: none;
+}
+.chat-composer textarea::placeholder { color: var(--ink-3); }
+.chat-composer__send {
+  flex: 0 0 auto;
+  width: 42px; height: 42px;
+  border-radius: 50%;
+  background: var(--moss); color: #fff;
+  border: 0; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 120ms ease, transform 120ms ease;
+}
+.chat-composer__send:hover { background: var(--moss-2); }
+.chat-composer__send:active { transform: scale(0.95); }
+.chat-composer__send-icon { display: inline-flex; align-items: center; justify-content: center; }
+.chat-composer__send-icon--send { display: none; }
+.chat-composer__send--ready .chat-composer__send-icon--mic { display: none; }
+.chat-composer__send--ready .chat-composer__send-icon--send { display: inline-flex; }
+
+/* Inline variant — used when the composer sits inside a regular page
+   section (e.g. task detail) rather than at the viewport bottom. */
+.chat-composer--inline {
+  position: static;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 0;
+  background: transparent;
+  z-index: auto;
+}
+
+/* Desktop/tablet chat overrides — placed after all .phone--chat /
+   .chat-composer base rules so they beat the mobile defaults. */
+@media (min-width: 720px) {
+  .phone--chat {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: calc(100dvh - var(--banner-h, 40px));
+    padding-bottom: 0;
+  }
+  .phone--chat .phone__body {
+    padding: 0;
+    overflow: hidden;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .phone--chat .chat-screen { margin-bottom: 0; }
+  .phone--chat .chat-composer {
+    position: sticky;
+    bottom: 0;
+    left: auto;
+    right: auto;
+    max-width: none;
+    margin: 0;
+    transform: none;
+    border-left: 0;
+    border-right: 0;
+    padding: 10px 40px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (min-width: 1080px) {
+  .phone--chat .chat-composer {
+    padding: 12px 56px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ── Permissions admin surface (§14) ─────────────────────────────── */
+.permissions__tabs { display: inline-flex; gap: 4px; }
+.permissions__split {
+  display: grid; grid-template-columns: minmax(280px, 1fr) 2fr; gap: 16px;
+  align-items: start;
+}
+.permissions__groups { padding: 0; }
+.permissions__group-list {
+  list-style: none; margin: 0; padding: 0; max-height: 560px; overflow: auto;
+}
+.permissions__group-row {
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+}
+.permissions__group-row:hover { background: var(--ink-hover, rgba(0, 0, 0, 0.03)); }
+.permissions__group-row--active { background: var(--moss-wash); }
+.permissions__group-name { display: flex; gap: 6px; align-items: center; }
+.permissions__group-key { font-size: 11px; }
+.permissions__members { padding: 16px; }
+.panel__footer { padding-top: 12px; border-top: 1px solid var(--line); margin-top: 12px; }
+.permissions__rules td:first-child { max-width: 320px; }
+.permissions__resolver {
+  padding: 12px 16px; border-top: 1px solid var(--line); margin-top: 8px;
+}
+.permissions__resolver h4 { margin: 0 0 8px 0; font-size: 13px; color: var(--ink-2); }
+.permissions__resolver-fields {
+  display: flex; gap: 16px; flex-wrap: wrap;
+}
+.permissions__resolver-fields .field { min-width: 220px; }
+.permissions__resolver-result { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.btn--active { background: var(--moss-wash); border-color: var(--moss); }
+
+/* §11 — Agent approval mode picker (profile / settings). */
+.agent-mode-choices {
+  display: grid; gap: 8px;
+  margin: 12px 0 0;
+  padding: 0; border: 0;
+}
+.agent-mode-choice {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--card);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.agent-mode-choice:hover { background: var(--paper-2); }
+.agent-mode-choice--selected {
+  border-color: var(--moss);
+  background: var(--moss-wash);
+}
+.agent-mode-choice__input { margin-top: 3px; }
+.agent-mode-choice__body { display: grid; gap: 2px; flex: 1; }
+.agent-mode-choice__head {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+}
+.agent-mode-choice__head strong { color: var(--ink); }
+.agent-mode-choice__desc {
+  margin: 0; color: var(--ink-2); font-size: 12.5px; line-height: 1.4;
+}
+
+/* §14 — Appearance picker (light / dark / system) on /me. Shares the
+   visual language of .agent-mode-choice but lays out horizontally at
+   desktop so the three-way choice reads as a segmented control. */
+.theme-choices {
+  display: grid; gap: 8px; margin: 12px 0 0; padding: 0; border: 0;
+  grid-template-columns: repeat(3, 1fr);
+}
+@media (max-width: 520px) { .theme-choices { grid-template-columns: 1fr; } }
+.theme-choice {
+  display: flex; gap: 10px; align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--card);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.theme-choice:hover { background: var(--paper-2); }
+.theme-choice--selected { border-color: var(--moss); background: var(--moss-soft); }
+.theme-choice__input { margin: 0; }
+.theme-choice__icon { flex: 0 0 auto; color: var(--ink-2); }
+.theme-choice__body { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.theme-choice__body strong { color: var(--ink); font-size: 14px; }
+.theme-choice__body .muted { font-size: 12px; }
+
+/* §11 — Agent preferences editor. Reused at workspace / property / user
+   layers; visuals are deliberately plain so it reads like a drafting
+   surface rather than a styled form. */
+.agent-prefs__banner {
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--sand);
+  background: var(--paper-2);
+  font-size: 13px; color: var(--ink-2);
+}
+.agent-prefs__label {
+  display: block; margin: 6px 0 4px;
+  font-size: 12.5px; color: var(--ink-3); letter-spacing: 0.02em;
+}
+/* Inherits the shared form-control look above (card fill, card border,
+   10px radius). Keeps only the mono typography specific to the
+   agent-preferences editor. */
+.agent-prefs__textarea {
+  width: 100%;
+  font-family: var(--mono), ui-monospace, monospace;
+  font-size: 13px; line-height: 1.5;
+}
+.agent-prefs__meta {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; margin: 6px 0 10px;
+}
+.agent-prefs__meta--moss { color: var(--moss); }
+.agent-prefs__meta--sand { color: var(--sand); }
+.agent-prefs__meta--rust { color: var(--rust); font-weight: 500; }
+.agent-prefs__actions {
+  display: grid; gap: 8px;
+}
+.agent-prefs__actions .btn { width: 100%; }
+.agent-prefs__error {
+  margin: 10px 0 0; padding: 8px 10px;
+  background: color-mix(in srgb, var(--rust) 10%, transparent);
+  border-left: 3px solid var(--rust);
+  color: var(--rust); font-size: 13px;
+}
+.agent-prefs__readonly-notice {
+  margin: 6px 0 10px; padding: 12px 14px;
+  background: var(--paper-2); border-left: 3px solid var(--sky); border-radius: 4px;
+}
+.agent-prefs__readonly-notice p { margin: 0 0 6px; font-size: 13.5px; }
+.agent-prefs__readonly-notice p:last-child { margin-bottom: 0; }
+
+/* §23 — Chat gateway surfaces. Shared panel/table styling for the
+   manager /chat-channels page and the /settings Chat gateway block,
+   plus the per-channel badge on the employee chat log and the
+   per-user card on /me. */
+
+.chat-channels-panel {
+  margin-top: 16px;
+}
+.chat-channels-panel__title {
+  margin: 0 0 10px; font-size: 15px; color: var(--ink);
+  font-family: "Fraunces", ui-serif, serif;
+}
+.chat-channels-panel__hint {
+  margin: 0 0 10px; font-size: 13px; color: var(--ink-2);
+}
+.chat-channels-link-form {
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
+}
+.chat-channels-link-form__field {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12.5px; color: var(--ink-3); flex: 1 1 240px;
+}
+.chat-channels-link-form__field input {
+  font-size: 14px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink);
+}
+.chat-channels-link-form__field input:focus {
+  outline: none; border-color: var(--moss);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--moss) 20%, transparent);
+}
+
+/* Per-turn channel badge on the employee Chat surface. Sits next to
+   the bubble body; WA is the only variant we ship today. */
+.chat-msg__channel {
+  display: inline-block; margin-left: 6px;
+  font-size: 10px; letter-spacing: 0.05em;
+  padding: 1px 6px; border-radius: 999px;
+  vertical-align: middle;
+  font-family: "JetBrains Mono", monospace;
+}
+.chat-msg__channel--wa {
+  background: color-mix(in srgb, #25D366 14%, transparent);
+  color: #0d7a3e;
+}
+
+/* §23 — /settings "Chat gateway" panel. Compact provider table, a
+   webhook-URL copy row, and a link out to /chat-channels. */
+.chat-gateway-panel__link {
+  font-size: 13px;
+}
+.chat-gateway-panel__table {
+  margin: 6px 0 12px;
+}
+.chat-gateway-panel__footer {
+  display: flex; flex-direction: column; gap: 8px;
+  padding-top: 6px; border-top: 1px solid var(--line);
+}
+.chat-gateway-panel__webhook {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 13px;
+}
+.chat-gateway-panel__url {
+  flex: 1 1 320px; overflow-x: auto; white-space: nowrap;
+  padding: 4px 8px;
+}
+.chat-gateway-panel__hint {
+  margin: 0; font-size: 12.5px;
+}
+
+/* §23 — /me inline Chat channels card. Phone-scale variant of the
+   manager table: one binding per row, stacked fields, phone-friendly
+   buttons. Reuses the generic .chip + .btn tokens. */
+.me-chat-channels__intro {
+  margin: 0 0 10px; font-size: 13.5px; color: var(--ink-2);
+}
+.me-chat-channels__empty {
+  margin: 0 0 10px;
+}
+.me-chat-channels__list {
+  list-style: none; margin: 0 0 12px; padding: 0;
+  display: grid; gap: 8px;
+}
+.me-chat-channels__binding {
+  padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--paper-2);
+  display: grid; gap: 4px;
+}
+.me-chat-channels__binding-head {
+  display: flex; gap: 10px; align-items: center;
+}
+.me-chat-channels__binding-meta {
+  font-size: 13px; color: var(--ink-2);
+}
+.me-chat-channels__link,
+.me-chat-channels__prefs {
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.me-chat-channels__subtitle {
+  margin: 0 0 6px; font-size: 13.5px; color: var(--ink);
+}
+.me-chat-channels__form {
+  display: grid; gap: 8px;
+}
+.me-chat-channels__field {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12.5px; color: var(--ink-3);
+}
+/* Inputs here share the card-look form-control rules above. Font size
+   bumps to 15px for touch comfort; everything else is inherited. */
+.me-chat-channels__field input {
+  font-size: 15px;
+  min-height: 44px; /* §14 accessibility — 44×44 tap target */
+}
+.me-chat-channels__actions {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.me-chat-channels__hint {
+  margin: 6px 0 0; font-size: 12.5px; color: var(--ink-3);
+}
+.me-chat-channels__error {
+  margin: 6px 0 0; padding: 6px 10px;
+  background: var(--rust-soft); color: var(--rust);
+  border-left: 3px solid var(--rust); border-radius: 4px;
+  font-size: 13px;
+}
+.me-chat-channels__radio-row {
+  display: grid; gap: 6px;
+}
+.me-chat-channels__radio {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 4px; font-size: 14px; min-height: 44px;
+}
+.me-chat-channels__times {
+  display: flex; gap: 12px;
+}
+.me-chat-channels__times .me-chat-channels__field { flex: 1 1 0; }
+
+/* ==========================================================
+   §03 API tokens — manager /tokens page + /me personal panel.
+
+   Design direction: "editorial field-guide". Each token is a
+   credential tile whose monospace prefix anchors the row; scopes
+   render as selectable pills (not checkboxes); the reveal-once
+   state feels like a safe-deposit ceremony, not an error banner.
+
+   Every non-panel surface here uses semantic names prefixed
+   `tokens-…` so future resource pages can fork the aesthetic
+   without colliding.
+   ========================================================== */
+
+/* Header meta strip — sits in .panel__head next to the title.
+   Replaces trailing .muted text with a structured rhythm of
+   counters + a quiet pointer to the /me surface. */
+.tokens-meta {
+  display: flex; align-items: center; gap: 14px;
+  font-size: 12px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.tokens-meta__stat {
+  display: inline-flex; align-items: baseline; gap: 4px;
+}
+.tokens-meta__stat-value {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 15px; color: var(--ink);
+  font-variation-settings: "opsz" 16;
+}
+.tokens-meta__stat-label {
+  text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 10.5px;
+}
+.tokens-meta__divider {
+  width: 1px; height: 14px; background: var(--line-strong);
+}
+.tokens-meta__hint {
+  color: var(--ink-3);
+}
+.tokens-meta__hint a {
+  color: var(--moss); font-weight: 500; text-decoration: none;
+  border-bottom: 1px dashed var(--moss-soft);
+  padding-bottom: 1px;
+}
+.tokens-meta__hint a:hover {
+  border-bottom-color: var(--moss);
+}
+
+/* Main list — a table with more typographic care than `.table`
+   provides. Name column is the "anchor"; prefix is pinned beneath
+   as the mono identifier. Rows show a left tick of colour that
+   encodes status (active/expiring/revoked) without needing a chip. */
+.tokens-table {
+  width: 100%; border-collapse: separate; border-spacing: 0;
+}
+.tokens-table thead th {
+  font-size: 10.5px; font-weight: 600; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: 0.1em;
+  padding: 12px 14px 10px; text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+.tokens-table tbody td {
+  padding: 18px 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.tokens-table tbody tr:last-child td { border-bottom: 0; }
+.tokens-table tbody tr {
+  position: relative;
+}
+.tokens-table tbody tr.tokens-row--active td:first-child   { box-shadow: inset 3px 0 0 var(--moss); }
+.tokens-table tbody tr.tokens-row--expiring td:first-child { box-shadow: inset 3px 0 0 var(--sand); }
+.tokens-table tbody tr.tokens-row--expired  td:first-child { box-shadow: inset 3px 0 0 var(--rust); }
+.tokens-table tbody tr.tokens-row--revoked  td:first-child { box-shadow: inset 3px 0 0 var(--ink-4); }
+.tokens-table tbody tr.tokens-row--revoked  td { opacity: 0.72; }
+
+.tokens-table td:first-child { padding-left: 18px; }
+.tokens-table th:first-child { padding-left: 18px; }
+
+/* Name cell — title + mono prefix + optional note. The prefix is
+   the visual identifier; monospace, faint, but with a preceding
+   bullet so it reads as one-glance metadata. */
+.tokens-name {
+  display: flex; flex-direction: column; gap: 3px;
+}
+.tokens-name__title {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 16px; color: var(--ink); line-height: 1.2;
+  font-variation-settings: "opsz" 24;
+}
+.tokens-name__id {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px; color: var(--ink-3);
+  letter-spacing: 0.01em;
+}
+.tokens-name__id::before {
+  content: "◆"; color: var(--moss-2); margin-right: 6px;
+  font-size: 9px; vertical-align: 1.5px;
+}
+[data-theme="dark"] .tokens-name__id::before { color: var(--moss); }
+.tokens-name__note {
+  font-size: 12.5px; color: var(--ink-3); font-style: italic;
+  max-width: 28ch; line-height: 1.4;
+}
+
+/* Kind badge — slightly more presence than .chip (serif-matched,
+   outlined, per-kind tone). */
+.tokens-kind {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px 3px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.tokens-kind::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  display: inline-block;
+}
+.tokens-kind--scoped {
+  background: var(--moss-softer); color: var(--moss);
+  border-color: var(--moss-soft);
+}
+.tokens-kind--scoped::before   { background: var(--moss); }
+.tokens-kind--delegated {
+  background: var(--sky-soft); color: var(--sky);
+  border-color: var(--sky-soft);
+}
+.tokens-kind--delegated::before { background: var(--sky); }
+.tokens-kind--personal {
+  background: var(--sand-soft); color: #8A6A22;
+  border-color: var(--sand-soft);
+}
+[data-theme="dark"] .tokens-kind--personal { color: var(--sand); }
+.tokens-kind--personal::before { background: var(--sand); }
+
+/* Scope list in a table cell — pills aligned tightly, wrapping. */
+.tokens-scopes {
+  display: flex; flex-wrap: wrap; gap: 4px; max-width: 22ch;
+}
+.tokens-scopes__pill {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px; padding: 2px 8px; border-radius: 4px;
+  background: var(--paper-2); color: var(--ink-2);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.tokens-scopes__pill--me {
+  background: var(--sand-soft); color: #8A6A22;
+  border-color: transparent;
+}
+[data-theme="dark"] .tokens-scopes__pill--me { color: var(--sand); }
+.tokens-scopes__inherit {
+  font-size: 12px; color: var(--ink-3); font-style: italic;
+  line-height: 1.35; max-width: 22ch;
+}
+
+/* Stacked time cell — primary timestamp + quieter secondary */
+.tokens-time {
+  display: flex; flex-direction: column; gap: 2px;
+  font-size: 12.5px; color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.tokens-time__sub {
+  font-size: 11.5px; color: var(--ink-3);
+}
+.tokens-time__ip {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px; color: var(--ink-3);
+  letter-spacing: 0.01em; margin-top: 1px;
+}
+.tokens-time--absent { color: var(--ink-4); font-style: italic; font-size: 12px; }
+
+/* Status dot — carries the same tone as the row tick, but as an
+   explicit pill so the column header has a target. */
+.tokens-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500;
+}
+.tokens-status::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%;
+}
+.tokens-status--active   { color: var(--moss); }
+.tokens-status--active::before   { background: var(--moss); box-shadow: 0 0 0 3px var(--moss-softer); }
+.tokens-status--expiring { color: #8A6A22; }
+[data-theme="dark"] .tokens-status--expiring { color: var(--sand); }
+.tokens-status--expiring::before { background: var(--sand); box-shadow: 0 0 0 3px var(--sand-soft); }
+.tokens-status--expired  { color: var(--rust); }
+.tokens-status--expired::before  { background: var(--rust); box-shadow: 0 0 0 3px var(--rust-soft); }
+.tokens-status--revoked  { color: var(--ink-3); }
+.tokens-status--revoked::before  { background: var(--ink-4); }
+
+.tokens-row-actions {
+  display: flex; flex-direction: column; gap: 4px;
+  align-items: flex-end; white-space: nowrap;
+}
+.tokens-row-actions__primary { display: flex; gap: 4px; }
+
+/* Per-token audit log — distinctly quieter than the main list.
+   Inset on the warm paper-2, smaller type, left-gutter timestamp. */
+.tokens-audit {
+  margin-top: 14px; padding: 16px 18px;
+  background: var(--paper-2);
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+}
+.tokens-audit__head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.tokens-audit__title {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 14px; color: var(--ink);
+  font-variation-settings: "opsz" 14;
+}
+.tokens-audit__title-tag {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px; color: var(--ink-3); margin-left: 8px;
+}
+.tokens-audit__empty {
+  color: var(--ink-3); font-size: 12.5px; font-style: italic;
+}
+.tokens-audit__table {
+  width: 100%; border-collapse: collapse; font-size: 12.5px;
+}
+.tokens-audit__table th {
+  text-align: left; padding: 6px 8px;
+  font-size: 10px; font-weight: 600; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--line);
+}
+.tokens-audit__table td {
+  padding: 8px; border-bottom: 1px solid var(--line);
+  color: var(--ink-2); vertical-align: top;
+}
+.tokens-audit__table tr:last-child td { border-bottom: 0; }
+.tokens-audit__when {
+  font-variant-numeric: tabular-nums; color: var(--ink-3);
+  font-size: 11.5px; white-space: nowrap;
+}
+.tokens-audit__method {
+  display: inline-block; min-width: 44px; text-align: center;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+  padding: 2px 6px; border-radius: 4px;
+  background: var(--paper-3); color: var(--ink-2);
+}
+.tokens-audit__path {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+.tokens-audit__status {
+  display: inline-block; font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px; font-weight: 600;
+  padding: 1px 7px; border-radius: 4px;
+}
+.tokens-audit__status--ok {
+  background: var(--moss-soft); color: var(--moss);
+}
+.tokens-audit__status--fail {
+  background: var(--rust-soft); color: var(--rust);
+}
+.tokens-audit__ip,
+.tokens-audit__cid {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px; color: var(--ink-3);
+}
+
+/* ---- Create form: structured, pill scope picker ---- */
+.tokens-form {
+  display: flex; flex-direction: column; gap: 18px;
+}
+.tokens-form__section {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.tokens-form__legend {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.tokens-form__legend-hint {
+  font-size: 12px; color: var(--ink-3); font-weight: 400;
+  text-transform: none; letter-spacing: 0; margin-left: 8px;
+}
+.tokens-form__row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+}
+@media (max-width: 640px) { .tokens-form__row { grid-template-columns: 1fr; } }
+
+/* Kind selector — two cards, same idiom as /me Appearance. */
+.tokens-kind-picker {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+@media (max-width: 640px) { .tokens-kind-picker { grid-template-columns: 1fr; } }
+.tokens-kind-picker__opt {
+  position: relative; cursor: pointer;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 16px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.tokens-kind-picker__opt:hover { border-color: var(--line-strong); }
+.tokens-kind-picker__opt input {
+  position: absolute; opacity: 0; pointer-events: none;
+}
+.tokens-kind-picker__opt--active {
+  border-color: var(--moss);
+  background: var(--moss-softer);
+  box-shadow: 0 0 0 1px var(--moss);
+}
+.tokens-kind-picker__title {
+  display: flex; align-items: center; gap: 8px;
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 14.5px; color: var(--ink);
+}
+.tokens-kind-picker__title::before {
+  content: ""; width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--line-strong); flex-shrink: 0;
+  background: var(--card);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.tokens-kind-picker__opt--active .tokens-kind-picker__title::before {
+  border-color: var(--moss); background: var(--moss);
+  box-shadow: inset 0 0 0 3px var(--card);
+}
+.tokens-kind-picker__sub {
+  font-size: 12.5px; color: var(--ink-3); line-height: 1.45;
+  padding-left: 22px;
+}
+
+/* Scope picker — pill toggles. Monospace scope keys on a sand-
+   tinted background when selected; ghost-neutral when not. */
+.tokens-scope-picker {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.tokens-scope-picker__pill {
+  cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--line-strong);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px; color: var(--ink-2);
+  transition: background 120ms ease, color 120ms ease,
+              border-color 120ms ease, transform 120ms ease;
+}
+.tokens-scope-picker__pill:hover {
+  border-color: var(--moss); color: var(--ink);
+}
+.tokens-scope-picker__pill input {
+  position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none;
+}
+.tokens-scope-picker__pill--on {
+  background: var(--moss); color: var(--card);
+  border-color: var(--moss);
+}
+.tokens-scope-picker__pill--on:hover { color: var(--card); }
+.tokens-scope-picker__pill--on::before {
+  content: "✓"; font-size: 10px; font-weight: 700;
+}
+.tokens-scope-picker--personal .tokens-scope-picker__pill--on {
+  background: var(--sand); color: var(--ink); border-color: var(--sand);
+}
+[data-theme="dark"] .tokens-scope-picker--personal .tokens-scope-picker__pill--on {
+  color: var(--paper);
+}
+
+/* Hint list paired with scope picker on /me. Each scope key gets a
+   plain-language description; clicking anywhere on the row toggles. */
+.tokens-scope-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.tokens-scope-list__item {
+  cursor: pointer; user-select: none;
+  display: grid; grid-template-columns: auto 1fr auto; gap: 12px;
+  align-items: center; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.tokens-scope-list__item:hover { border-color: var(--line-strong); }
+.tokens-scope-list__item input {
+  position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none;
+}
+.tokens-scope-list__check {
+  width: 18px; height: 18px; border-radius: 5px;
+  border: 1.5px solid var(--line-strong); background: var(--card);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; color: transparent;
+  transition: background 120ms ease, border-color 120ms ease,
+              color 120ms ease, transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  flex-shrink: 0;
+}
+.tokens-scope-list__item--on {
+  background: var(--moss-softer); border-color: var(--moss);
+}
+.tokens-scope-list__item--on .tokens-scope-list__check {
+  background: var(--moss); border-color: var(--moss); color: var(--card);
+  transform: scale(1.04);
+}
+.tokens-scope-list__key {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px; color: var(--ink);
+}
+.tokens-scope-list__hint {
+  font-size: 12px; color: var(--ink-3); line-height: 1.4;
+  grid-column: 2; padding-top: 2px;
+}
+.tokens-scope-list__badge {
+  font-size: 10.5px; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.tokens-scope-list__item--on .tokens-scope-list__badge { color: var(--moss); }
+
+/* Submit bar — split pattern: hint on the left, actions on right */
+.tokens-form__actions {
+  display: flex; align-items: center; gap: 12px;
+  justify-content: space-between;
+  padding-top: 12px; margin-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.tokens-form__actions-hint {
+  font-size: 12px; color: var(--ink-3);
+  line-height: 1.45; max-width: 54ch;
+}
+.tokens-form__actions-buttons { display: flex; gap: 8px; }
+
+.tokens-form__error {
+  margin: 0; padding: 10px 14px;
+  background: var(--rust-soft); color: var(--rust);
+  border-left: 3px solid var(--rust); border-radius: 6px;
+  font-size: 13px;
+}
+
+/* ---- Reveal-once panel. The ceremony state.
+   Two-column stripe of type and a code deck; a locking-wax
+   callout bar ties it to the one-time warning. */
+.tokens-reveal {
+  position: relative;
+  padding: 0; overflow: hidden;
+  border: 1px solid var(--sand);
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--sand-soft) 0%, var(--card) 60%);
+  box-shadow: var(--shadow-raised);
+}
+.tokens-reveal__ribbon {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 22px;
+  background: var(--card);
+  border-bottom: 1px dashed var(--sand);
+  font-size: 12px; color: var(--ink-2);
+}
+.tokens-reveal__ribbon-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--sand-soft); color: #8A6A22;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .tokens-reveal__ribbon-mark { color: var(--sand); }
+.tokens-reveal__ribbon-title {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 15px; color: var(--ink);
+  font-variation-settings: "opsz" 18;
+  letter-spacing: -0.01em;
+}
+.tokens-reveal__ribbon-sub {
+  color: var(--ink-3); font-size: 12px; margin-top: 1px;
+}
+.tokens-reveal__dismiss {
+  margin-left: auto;
+}
+.tokens-reveal__body { padding: 20px 22px; }
+.tokens-reveal__label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-3);
+  margin: 0 0 8px;
+}
+.tokens-reveal__secret-row {
+  display: flex; align-items: stretch; gap: 10px;
+}
+.tokens-reveal__secret {
+  flex: 1; min-width: 0;
+  padding: 14px 16px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px; line-height: 1.5; color: var(--ink);
+  letter-spacing: 0.02em;
+  word-break: break-all;
+  overflow-x: auto;
+}
+.tokens-reveal__copy {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 14px;
+  background: var(--moss); color: var(--card);
+  border: 1px solid var(--moss); border-radius: 10px;
+  font-weight: 600; font-size: 13px; cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms ease, transform 120ms ease;
+}
+.tokens-reveal__copy:hover { background: var(--moss-2); }
+.tokens-reveal__copy:active { transform: scale(0.97); }
+.tokens-reveal__copy--done { background: var(--moss-3); }
+
+.tokens-reveal__divider {
+  display: flex; align-items: center; gap: 10px;
+  margin: 20px 0 8px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.tokens-reveal__divider::before,
+.tokens-reveal__divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--line);
+}
+.tokens-reveal__code {
+  margin: 0; padding: 14px 16px;
+  background: var(--ink); color: var(--paper);
+  border-radius: 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px; line-height: 1.55; letter-spacing: 0.01em;
+  overflow-x: auto; white-space: pre;
+}
+[data-theme="dark"] .tokens-reveal__code {
+  background: var(--paper-3); color: var(--ink);
+}
+
+/* ---- Reusable callout. Generalised from the /me PAT intro.
+   Moss-tinted by default; --sand and --rust modifiers cover
+   informational and destructive variants for future use. Use as
+   an inline hint card (not a blocking dialog). ---- */
+.callout {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--moss-softer);
+  border: 1px solid var(--moss-soft);
+}
+.callout--sand {
+  background: var(--sand-soft);
+  border-color: var(--sand-soft);
+}
+.callout--rust {
+  background: var(--rust-soft);
+  border-color: var(--rust-soft);
+}
+.callout__mark {
+  flex-shrink: 0; width: 32px; height: 32px;
+  border-radius: 50%; background: var(--card);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--moss); border: 1px solid var(--moss-soft);
+}
+.callout--sand .callout__mark { color: #8A6A22; border-color: var(--sand-soft); }
+[data-theme="dark"] .callout--sand .callout__mark { color: var(--sand); }
+.callout--rust .callout__mark { color: var(--rust); border-color: var(--rust-soft); }
+.callout__body { flex: 1; min-width: 0; }
+.callout__title {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 14.5px; color: var(--ink); margin: 0 0 3px;
+  font-variation-settings: "opsz" 16;
+}
+.callout__copy {
+  font-size: 12.5px; color: var(--ink-2); line-height: 1.5; margin: 0;
+}
+
+/* Inline counter (e.g. "2/5 active") pinned in .panel__head next
+   to a primary action button. Moss numeral reads as an attention-
+   light status indicator without needing a chip. */
+.tokens-meter {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  margin-right: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.tokens-meter__value {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 15px; color: var(--moss);
+  font-variation-settings: "opsz" 16;
+}
+.tokens-meter__label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.tokens-meter--warn .tokens-meter__value { color: var(--rust); }
+
+/* Vertical rhythm inside a single .panel (when multiple optional
+   blocks — intro, create form, reveal, list — share one panel).
+   On its own panel, siblings get their spacing from .desk__content. */
+.panel-stack {
+  display: flex; flex-direction: column;
+  gap: 14px; margin-top: 14px;
+}
+
+/* ---- Generalised "entry card": a tile-within-a-panel for any
+   record that has a name, an optional identifier, metadata, and a
+   primary action. Reused by personal access tokens, chat-channel
+   bindings, and passkeys. The action sits on the first line
+   (flex-right) so the card reads with one scan.
+   ---- */
+.entry-cards {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 10px;
+}
+.entry-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px 18px 14px 22px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  transition: border-color 140ms ease;
+}
+.entry-card:hover { border-color: var(--line-strong); }
+.entry-card::before {
+  content: "";
+  position: absolute; left: 0; top: 12px; bottom: 12px;
+  width: 3px; border-radius: 0 3px 3px 0;
+  background: var(--moss);
+}
+.entry-card--revoked,
+.entry-card--inactive { opacity: 0.7; }
+.entry-card--revoked::before,
+.entry-card--inactive::before { background: var(--ink-4); }
+.entry-card--sand::before { background: var(--sand); }
+.entry-card--sky::before { background: var(--sky); }
+
+.entry-card__head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  row-gap: 6px;
+}
+.entry-card__name {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 17px; color: var(--ink); line-height: 1.1;
+  font-variation-settings: "opsz" 24;
+  letter-spacing: -0.01em;
+  flex-shrink: 0;
+}
+.entry-card__action {
+  margin-left: auto; flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+
+.entry-card__prefix {
+  display: flex; align-items: baseline; gap: 8px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px; color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+.entry-card__prefix-label {
+  font-family: "Inter Tight", sans-serif;
+  font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-4);
+}
+.entry-card__meta {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  font-size: 11.5px; color: var(--ink-3);
+  padding-top: 8px; margin-top: 2px;
+  border-top: 1px dashed var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.entry-card__meta-label {
+  font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-4); margin-right: 4px;
+}
+
+.tokens-empty {
+  padding: 32px 20px; text-align: center;
+  border: 1px dashed var(--line-strong); border-radius: 12px;
+  background: var(--paper);
+}
+.tokens-empty__glyph {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--moss-softer); color: var(--moss);
+  margin-bottom: 10px;
+}
+.tokens-empty__title {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 15px; color: var(--ink);
+  font-variation-settings: "opsz" 18;
+  margin: 0 0 4px;
+}
+.tokens-empty__sub {
+  font-size: 12.5px; color: var(--ink-3); margin: 0;
+}
+
+/* Inline name field — same breath as .field but typographically
+   louder so it feels like a headline rather than a form input. */
+.tokens-name-input {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 22px; line-height: 1.1;
+  color: var(--ink);
+  background: transparent;
+  border: 0; border-bottom: 2px solid var(--line-strong);
+  padding: 4px 2px;
+  transition: border-color 140ms ease;
+  font-variation-settings: "opsz" 36;
+}
+.tokens-name-input:focus {
+  outline: none; border-bottom-color: var(--moss);
+}
+.tokens-name-input::placeholder { color: var(--ink-4); font-style: italic; }
+
+.tokens-note-input {
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font: inherit; font-size: 13px; color: var(--ink);
+  transition: border-color 140ms ease;
+  width: 100%;
+}
+.tokens-note-input:focus {
+  outline: none; border-color: var(--moss);
+}
+
+.tokens-select {
+  padding: 8px 12px; padding-right: 28px;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font: inherit; font-size: 13px; color: var(--ink);
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'><path d='M1 1l4 4 4-4' stroke='%238C8274' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: border-color 140ms ease;
+}
+.tokens-select:focus { outline: none; border-color: var(--moss); }
+
+/* Expiry preset row — small chip buttons */
+.tokens-expiry {
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+.tokens-expiry__preset {
+  cursor: pointer;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--line-strong);
+  color: var(--ink-2); font-size: 12.5px;
+  font-family: inherit;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.tokens-expiry__preset:hover { border-color: var(--moss); }
+.tokens-expiry__preset--on {
+  background: var(--moss); color: var(--card); border-color: var(--moss);
+}
+
+/* Motion rules — honour reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .tokens-scope-picker__pill,
+  .tokens-scope-list__item,
+  .tokens-scope-list__check,
+  .tokens-kind-picker__opt,
+  .tokens-reveal__copy,
+  .tokens-expiry__preset,
+  .entry-card,
+  .tokens-name-input,
+  .tokens-note-input,
+  .tokens-select { transition: none; }
+}
+
+/* Retain legacy helpers used elsewhere on /me. */
+.inline-code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.9em; padding: 1px 5px; border-radius: 4px;
+  background: var(--paper-2); color: var(--ink);
+}
+
+/* §14 "Admin shell" — tokens are shared with the manager `.desk`;
+   these classes cover the bits ManagerLayout didn't already provide. */
+.desk--admin .desk__brand .desk__wordmark { color: var(--moss); }
+/* §14: no workspace switcher on /admin (deployment-wide surface). */
+.desk--admin .ws-switcher { display: none; }
+
+.admin-denied {
+  max-width: 480px;
+  margin: 10vh auto;
+  text-align: center;
+  padding: 24px;
+}
+.admin-denied h1 { font-family: "Fraunces", serif; margin-bottom: 12px; }
+.admin-denied p { color: var(--ink-2); margin-bottom: 20px; line-height: 1.5; }
+
+.admin-backlink { width: 100%; text-align: left; }
+
+.form-grid {
+  display: grid;
+  gap: 14px 24px;
+  padding: 16px;
+}
+.form-grid--two { grid-template-columns: 1fr 1fr; }
+@media (max-width: 720px) { .form-grid--two { grid-template-columns: 1fr; } }
+
+.form-row {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.form-label {
+  font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--ink-3);
+}
+.toggle { display: flex; align-items: center; gap: 10px; }
+
+/* ══════════════════════════════════════════════════════════════
+   CHECKBOX — "field-guide tick".
+
+   A reusable, stylised checkbox that matches crewday's warm-paper
+   editorial tone. The box reads as a shallow depression pressed
+   into card stock; on check the moss fill washes in and the tick
+   draws with a hand-made micro-tilt and a spring settle.
+
+   Structure (BEM; use <Checkbox> from common.tsx for parity):
+
+     <label class="checkbox">
+       <input class="checkbox__input" type="checkbox" />
+       <span class="checkbox__box" aria-hidden="true">
+         <svg class="checkbox__tick" viewBox="0 0 18 18">
+           <path d="M3.8 9.6 L7.4 13 L14.2 5.4" />
+         </svg>
+         <span class="checkbox__dash" aria-hidden="true"></span>
+       </span>
+       <span class="checkbox__label">…</span>
+     </label>
+
+   Modifiers:
+     .checkbox--sm / --lg           size (14 / 18 / 22 px)
+     .checkbox--rust / --sky        alternate tones
+     .checkbox--block               wraps as a bordered card row
+     .checkbox--standalone          no label text (just the box)
+
+   The native input is visually hidden but remains keyboard / a11y
+   authoritative. `:has()` lets the sibling box react to state
+   without JS; we still ship `.is-*` fallback classes for safety
+   when the component needs explicit control (indeterminate).
+   ══════════════════════════════════════════════════════════════ */
+.checkbox {
+  display: inline-flex; align-items: flex-start; gap: 10px;
+  cursor: pointer; user-select: none;
+  font: inherit; color: var(--ink);
+  line-height: 1.4;
+  -webkit-tap-highlight-color: transparent;
+}
+.checkbox--block {
+  display: flex; width: 100%;
+  align-items: flex-start; gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.checkbox--block:hover { border-color: var(--line-strong); }
+.checkbox--block:has(.checkbox__input:checked) {
+  background: var(--moss-softer);
+  border-color: var(--moss);
+}
+
+/* Visually hide the real input but keep it in the tab order +
+   accessible to screen readers. No `display:none` — that removes
+   it from the accessibility tree. */
+.checkbox__input {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.checkbox__box {
+  position: relative; flex-shrink: 0;
+  width: 18px; height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid var(--line-strong);
+  background: var(--card);
+  display: inline-flex; align-items: center; justify-content: center;
+  /* Subtle inset: feels pressed into paper. */
+  box-shadow:
+    inset 0 1px 0 rgba(31, 26, 20, 0.04),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.4);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 160ms ease;
+  /* Alignment nudge so the box optically centres with the first
+     line of label text at 15px body size. */
+  margin-top: 1px;
+}
+[data-theme="dark"] .checkbox__box {
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.3),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* Hover: darken the border on the unchecked state to invite the click. */
+.checkbox:hover .checkbox__input:not(:checked):not(:disabled) ~ .checkbox__box {
+  border-color: var(--ink-3);
+}
+
+/* Focus ring. Matches the global :focus-visible moss outline but
+   offset on the box itself so the label text isn't ringed. */
+.checkbox__input:focus-visible ~ .checkbox__box {
+  outline: 2px solid var(--moss);
+  outline-offset: 3px;
+  border-radius: 5px;
+}
+
+/* ── Tick ───────────────────────────────────────────────────── */
+.checkbox__tick {
+  width: 100%; height: 100%;
+  stroke: var(--card);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  /* Draw-in: dasharray is longer than the path so the tick can
+     retract when unchecked. 24 > path length (~17). */
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  /* Micro-tilt — the naturalist's jaunty pen. */
+  transform: rotate(-4deg);
+  transform-origin: 50% 50%;
+  transition: stroke-dashoffset 260ms cubic-bezier(0.65, 0, 0.35, 1);
+  opacity: 0;
+}
+.checkbox__dash {
+  position: absolute; inset: auto;
+  width: 9px; height: 2px;
+  background: var(--card); border-radius: 2px;
+  transform: scaleX(0);
+  transform-origin: 50% 50%;
+  transition: transform 200ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* ── Checked state ──────────────────────────────────────────── */
+.checkbox__input:checked ~ .checkbox__box {
+  background: var(--moss);
+  border-color: var(--moss);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 1px 0 rgba(31, 26, 20, 0.06);
+  animation: checkbox-pop 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.checkbox__input:checked ~ .checkbox__box .checkbox__tick {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}
+
+@keyframes checkbox-pop {
+  0%   { transform: scale(1); }
+  55%  { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+/* ── Indeterminate (explicit `.is-indeterminate` on the input) ── */
+.checkbox__input.is-indeterminate ~ .checkbox__box {
+  background: var(--moss);
+  border-color: var(--moss);
+}
+.checkbox__input.is-indeterminate ~ .checkbox__box .checkbox__tick {
+  opacity: 0;
+}
+.checkbox__input.is-indeterminate ~ .checkbox__box .checkbox__dash {
+  transform: scaleX(1);
+}
+
+/* ── Disabled ───────────────────────────────────────────────── */
+.checkbox:has(.checkbox__input:disabled) {
+  cursor: not-allowed;
+  color: var(--ink-3);
+}
+.checkbox__input:disabled ~ .checkbox__box {
+  opacity: 0.55;
+  background: var(--paper-2);
+  border-color: var(--line);
+  box-shadow: none;
+}
+.checkbox__input:disabled:checked ~ .checkbox__box {
+  background: var(--ink-4);
+  border-color: var(--ink-4);
+}
+
+/* ── Label ──────────────────────────────────────────────────── */
+.checkbox__label {
+  font-size: 14px; color: var(--ink);
+}
+.checkbox__label--hint {
+  display: block;
+  font-size: 12px; color: var(--ink-3);
+  margin-top: 2px;
+  font-weight: 400;
+}
+
+/* ── Size modifiers ─────────────────────────────────────────── */
+.checkbox--sm .checkbox__box { width: 14px; height: 14px; border-radius: 4px; }
+.checkbox--sm .checkbox__dash { width: 7px; }
+.checkbox--sm .checkbox__label { font-size: 13px; }
+
+.checkbox--lg .checkbox__box { width: 22px; height: 22px; border-radius: 6px; }
+.checkbox--lg .checkbox__dash { width: 11px; height: 2.5px; }
+.checkbox--lg .checkbox__label { font-size: 15px; }
+
+/* ── Tonal modifiers ────────────────────────────────────────── */
+.checkbox--rust .checkbox__input:checked ~ .checkbox__box,
+.checkbox--rust .checkbox__input.is-indeterminate ~ .checkbox__box {
+  background: var(--rust); border-color: var(--rust);
+}
+.checkbox--rust .checkbox__input:focus-visible ~ .checkbox__box {
+  outline-color: var(--rust);
+}
+.checkbox--rust.checkbox--block:has(.checkbox__input:checked) {
+  background: var(--rust-soft); border-color: var(--rust);
+}
+
+.checkbox--sky .checkbox__input:checked ~ .checkbox__box,
+.checkbox--sky .checkbox__input.is-indeterminate ~ .checkbox__box {
+  background: var(--sky); border-color: var(--sky);
+}
+.checkbox--sky .checkbox__input:focus-visible ~ .checkbox__box {
+  outline-color: var(--sky);
+}
+.checkbox--sky.checkbox--block:has(.checkbox__input:checked) {
+  background: var(--sky-soft); border-color: var(--sky);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .checkbox__input:checked ~ .checkbox__box { animation: none; }
+  .checkbox__tick { transform: none; }
+}
+
+.panel__foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-top: 1px solid var(--line);
+  gap: 12px; flex-wrap: wrap;
+}
+
+.inline-actions { display: inline-flex; gap: 6px; align-items: center; }
+
+.input--inline {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  font: inherit;
+  min-width: 120px;
+}
+.input--inline:focus {
+  outline: 2px solid var(--moss);
+  outline-offset: 1px;
+}
+
+.table__link {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--line);
+}
+.table__link:hover { color: var(--moss); border-bottom-color: var(--moss); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * §11 — Admin LLM graph page (providers → models → assignments).
+ * Three-column board with cross-column hover highlighting and a
+ * prompt-library slide-over.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+.llm-graph-alert {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.llm-graph-alert code { font-size: 12.5px; margin: 0 4px; }
+.llm-graph-alert__sub { margin-top: 4px; color: var(--ink-3); font-size: 12.5px; }
+.llm-graph-alert--warn { border-color: var(--sand, #c89a4a); background: var(--sand-soft, #faf2e4); }
+.llm-graph-alert--error { border-color: var(--rust); background: var(--rust-soft); }
+.llm-graph-alert--info { border-color: var(--sky, #9bb8d9); background: var(--sky-soft, #eaf2fb); }
+
+.llm-graph {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 56px;
+  row-gap: 10px;
+  margin: 16px 0 24px;
+}
+.llm-graph__col-header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 0 4px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.llm-graph__col-title { font-size: 12.5px; }
+.llm-graph__col-count {
+  font-size: 12px; font-weight: 500; color: var(--ink-3);
+  padding: 1px 8px; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
+}
+.llm-graph__col {
+  display: flex; flex-direction: column; gap: 10px;
+  min-height: 140px;
+}
+
+.llm-graph-node {
+  position: relative;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  cursor: pointer;
+  transition: opacity 120ms ease, border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+.llm-graph-node:hover {
+  border-color: var(--moss);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02), 0 0 0 1px var(--moss-soft) inset;
+}
+.llm-graph-node.is-linked {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+}
+.llm-graph-node.is-active {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+  box-shadow: 0 0 0 2px var(--moss) inset;
+}
+.llm-graph-node.is-dim { opacity: 0.35; }
+
+.llm-graph-node__head {
+  display: flex; align-items: center; gap: 8px; justify-content: space-between;
+  margin-bottom: 4px;
+}
+.llm-graph-node__name {
+  font-weight: 600; color: var(--ink-1); font-size: 14.5px;
+  word-break: break-word;
+}
+.llm-graph-node__vendor {
+  font-size: 11.5px; color: var(--ink-3);
+  padding: 1px 7px; border-radius: 999px; background: var(--card); border: 1px solid var(--line);
+}
+.llm-graph-node__type {
+  font-size: 12px; color: var(--ink-2);
+  padding: 1px 8px; border-radius: 4px; background: var(--card); border: 1px solid var(--line);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.llm-graph-node__meta {
+  font-size: 12.5px; color: var(--ink-2);
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-top: 2px;
+}
+.llm-graph-node__endpoint { font-size: 12px; color: var(--ink-3); }
+.llm-graph-node__tags {
+  margin-top: 8px;
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.llm-graph-node__foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 10px;
+  font-size: 12px; color: var(--ink-2);
+}
+.llm-graph-node__inherits {
+  margin-top: 6px; font-size: 12px; color: var(--ink-2);
+}
+
+/* Assignment chain nested inside a capability node. */
+.llm-graph-chain {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.llm-graph-chain__rung {
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  font-size: 12.5px;
+  transition: opacity 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.llm-graph-chain__rung:hover {
+  border-color: var(--moss);
+  border-style: solid;
+}
+.llm-graph-chain__rung.is-primary {
+  border-style: solid;
+}
+.llm-graph-chain__rung.is-dim { opacity: 0.4; }
+.llm-graph-chain__rung.is-error {
+  border-color: var(--rust);
+  background: var(--rust-soft);
+}
+.llm-graph-chain__prio {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--ink-2);
+  text-align: center;
+  padding: 1px 4px; border-radius: 4px;
+  background: var(--paper); border: 1px solid var(--line);
+}
+.llm-graph-chain__rung.is-primary .llm-graph-chain__prio {
+  color: #fff; background: var(--moss); border-color: var(--moss);
+}
+.llm-graph-chain__model { word-break: break-all; }
+.llm-graph-chain__provider { font-size: 11.5px; white-space: nowrap; }
+.llm-graph-chain__spend { font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+
+/* Prompt-library slide-over. */
+.llm-prompt-drawer-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(24, 28, 32, 0.38);
+  display: flex; justify-content: flex-end;
+  z-index: 60;
+}
+.llm-prompt-drawer {
+  width: min(560px, 100%);
+  height: 100%;
+  background: var(--paper);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  box-shadow: -8px 0 30px rgba(0, 0, 0, 0.08);
+}
+.llm-prompt-drawer__head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--line);
+}
+.llm-prompt-drawer__hint {
+  padding: 12px 18px 0;
+  font-size: 13px;
+}
+.llm-prompt-list {
+  list-style: none; margin: 0; padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+  overflow-y: auto;
+}
+.llm-prompt-list__item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--card);
+}
+.llm-prompt-list__head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.llm-prompt-list__name { font-weight: 600; color: var(--ink-1); font-size: 13.5px; }
+.llm-prompt-list__ver { font-size: 11.5px; }
+.llm-prompt-list__preview {
+  margin: 0;
+  font-size: 12.5px; color: var(--ink-2);
+  line-height: 1.45;
+}
+.llm-prompt-list__foot {
+  margin-top: 8px;
+  display: flex; gap: 12px; font-size: 11.5px;
+}
+
+@media (max-width: 960px) {
+  .llm-graph {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+  .llm-graph__col-header { padding-top: 12px; }
+}
+
+/* SVG edge layer that connects providers → models → assignment rungs.
+ * The `.llm-graph` becomes the positioning context; the SVG overlays
+ * the whole grid and ignores pointer events. */
+.llm-graph { position: relative; }
+.llm-graph__edges {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+}
+.llm-graph__col-header,
+.llm-graph__col {
+  position: relative; z-index: 1;
+}
+
+.llm-graph__edge {
+  fill: none;
+  stroke: var(--ink-3, #8a8679);
+  stroke-width: 1.5;
+  stroke-opacity: 0.55;
+  transition: stroke 120ms ease, stroke-width 120ms ease, stroke-opacity 120ms ease;
+}
+.llm-graph__edge.is-linked {
+  stroke: var(--moss);
+  stroke-width: 2.25;
+  stroke-opacity: 1;
+}
+.llm-graph__edge.is-dim { stroke-opacity: 0.1; }
+.llm-graph__edge.is-error {
+  stroke: var(--rust);
+  stroke-dasharray: 4 3;
+  stroke-opacity: 0.85;
+}
+
+/* ── Scheduler (§14 "Scheduler", §06 "Schedule ruleset") ──────────── */
+
+/* Pending-attention banner above the weeknav on /schedule. Appears
+   only when the window holds any pending_approval or pending-amend
+   bookings — so it is never ambient noise, only a one-line "you have
+   something open" flag. */
+.schedule-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  border: 1px solid var(--sand);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: var(--sand-soft);
+  color: var(--ink);
+  font-size: 14px;
+}
+.schedule-banner__text { flex: 1; min-width: 0; }
+.schedule-banner__detail { color: var(--ink-2); }
+.schedule-banner--pending strong { color: #8A6A22; }
+[data-theme="dark"] .schedule-banner--pending strong { color: var(--sand); }
+
+.scheduler-weeknav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.scheduler-weeknav__label {
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 160px;
+}
+.scheduler-grid-panel {
+  padding: 18px;
+}
+.scheduler-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) repeat(7, minmax(110px, 1.2fr));
+  border: 1px solid var(--paper-3);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--paper);
+}
+.scheduler-grid__header {
+  padding: 10px 12px;
+  background: var(--paper-2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--paper-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scheduler-grid__header--user {
+  text-align: left;
+}
+.scheduler-grid__date {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ink-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.scheduler-row {
+  display: contents;
+}
+.scheduler-row__user {
+  padding: 10px 12px;
+  border-top: 1px solid var(--paper-3);
+  background: var(--paper-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scheduler-row__sub {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.scheduler-cell {
+  padding: 6px;
+  border-top: 1px solid var(--paper-3);
+  border-left: 1px solid var(--paper-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 56px;
+}
+.scheduler-cell--empty {
+  color: var(--ink-4);
+  font-size: 12px;
+  text-align: center;
+  justify-content: center;
+}
+.rota-slot {
+  background: var(--rota-tint, var(--moss-soft));
+  border-left: 3px solid var(--moss);
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--ink);
+}
+.rota-slot__time {
+  font-weight: 600;
+}
+.rota-slot__warning {
+  font-size: 10px;
+  color: var(--rust);
+  padding: 1px 5px;
+  border: 1px dashed var(--rust);
+  border-radius: 3px;
+  align-self: flex-start;
+}
+.rota-task {
+  background: var(--paper);
+  border-left: 3px solid var(--sand);
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--ink);
+  display: flex;
+  gap: 6px;
+  box-shadow: inset 0 0 0 1px var(--paper-3);
+}
+.rota-task__time {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.rota-task--completed {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.rota-task--cancelled,
+.rota-task--skipped {
+  opacity: 0.4;
+}
+.rota-task--overdue {
+  border-left-color: var(--rust);
+}
+.scheduler-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+.scheduler-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  padding: 3px 8px;
+  border: 1px solid var(--paper-3);
+  border-radius: 999px;
+}
+.scheduler-legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--rota-tint, var(--moss-soft));
+  border: 1px solid var(--paper-3);
+}
+
+/* ── /schedule — self-only schedule view (§14 "Schedule view") ─────── */
+
+.schedule {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+
+/* Phone-only: gutter the whole agenda column so cells, monthbar, and
+   sentinels all share a consistent inset against the viewport edge.
+   `.page-stack` and `.phone__body { display: contents }` give us no
+   horizontal padding by default, so without this rule every row sits
+   flush at x=0. 12px (half of `.phone__section`'s 20px) because
+   `.schedule-day` already pads its content 12px internally — stacking
+   a 20px outer with a 12px inner would waste thumb real-estate on a
+   dense calendar surface. */
+.schedule.schedule--phone {
+  padding: 0 12px;
+}
+
+/* Agenda column: vertical stack shared by both variants. Phone lays
+   out one day card per row; desktop lays out one 7-column week grid
+   per row. Gap differs: phone's 10px matches card spacing, desktop's
+   18px leaves air between week blocks. */
+.schedule__agenda {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.schedule--desktop .schedule__agenda {
+  gap: 18px;
+}
+
+/* Desktop intro: legend + help line rendered once above the agenda,
+   below the sticky monthbar. Scrolls away as the worker thumbs
+   deeper into weeks — the monthbar still pins orientation. */
+.schedule__intro {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+.schedule__intro-help { margin: 0; font-size: 12px; }
+.schedule__intro .schedule__legend { border-top: none; padding-top: 0; }
+
+/* Sticky header stack: pending-booking banner (when present) sits on
+   top of the month/year ribbon. Both pin together as the worker
+   thumbs through weeks, so the actionable alert stays reachable even
+   after the infinite agenda auto-scrolls to today.
+   Sticky offset depends on the scroll container rather than the
+   breakpoint. Phone's shell is document-scrolled so the preview banner
+   consumes 40px of viewport and sticky must clear it; desktop variants
+   both scroll inside an own-overflow pane (`.phone__body` for worker,
+   `.desk__main` for manager) that already sits below the banner, so
+   sticky pins flush at top:0. */
+.schedule__sticky-top {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: color-mix(in oklab, var(--paper) 88%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+/* Desktop variants get an intrinsic top inset so the banner has
+   breathing room above it — both on first paint and after the
+   sticky pins to the scroll root. The inset lives inside the
+   sticky wrapper, so its frosted backdrop masks content scrolling
+   behind, no bare gap. Phone already uses page chrome as the
+   sticky reference and doesn't need this. */
+.schedule--desktop .schedule__sticky-top {
+  padding-top: 12px;
+}
+/* Phone worker: the document is the scroll container and the page
+   topbar is itself sticky at `var(--banner-h, 0px)` with a 52px
+   min-height and a 12px bottom margin (see `.page-topbar` in the
+   <720px block). Park our header just past its bottom margin so the
+   sticky offset matches its natural layout position — no 12px jump
+   when the user begins to scroll. */
+.schedule--phone .schedule__sticky-top {
+  top: calc(var(--banner-h, 40px) + 52px + 12px);
+}
+
+/* The month/year ribbon drives orientation: the topmost-visible day's
+   month is mirrored here, plus an inline "Today" jump when today has
+   scrolled out of view. Not independently sticky and has no own
+   background — the wrapper above carries the frosted backdrop so the
+   banner + monthbar pin together as one opaque strip. */
+.schedule__monthbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: "Fraunces", ui-serif, serif;
+  font-size: 1.05rem;
+  letter-spacing: 0.005em;
+  color: var(--ink);
+}
+.schedule__monthbar-label { font-weight: 600; }
+.schedule__monthbar-jump {
+  font: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--moss-soft);
+  color: var(--moss);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.schedule__monthbar-jump:hover { border-color: var(--moss); }
+
+/* Each day cell needs to clear the sticky monthbar when scrolled
+   into view by the JS scroll-to-today pass. `data-schedule-iso`
+   lives on the `.schedule-day` element itself — scroll-margin only
+   applies to the element actually being scrolled into view, so we
+   set it there. Desktop scrolls inside a pane that already sits
+   below the banner (88px = monthbar + intro border); phone scrolls
+   the document and needs an extra banner-h to clear the preview
+   strip above the monthbar. The pending-banner above the monthbar
+   adds ~48px when present, so bump the offset with :has(). */
+.schedule [data-schedule-iso] { scroll-margin-top: 88px; }
+.schedule:has(.schedule-banner) [data-schedule-iso] { scroll-margin-top: 136px; }
+.schedule--phone [data-schedule-iso] {
+  scroll-margin-top: calc(var(--banner-h, 40px) + 72px);
+}
+.schedule--phone:has(.schedule-banner) [data-schedule-iso] {
+  scroll-margin-top: calc(var(--banner-h, 40px) + 72px + 12px + 56px);
+}
+
+/* Top/bottom sentinels watched by IntersectionObserver. The hint text
+   doubles as scaffolding so the row has enough height to be reliably
+   intersected (a 0px node can be skipped on Safari). The spinner copy
+   appears while the matching `fetchPreviousPage` / `fetchNextPage` is
+   in flight. */
+.schedule__sentinel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 12px 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.schedule__sentinel--top { padding-top: 4px; }
+.schedule__sentinel--bot { padding-bottom: 80px; }
+.schedule__sentinel-spinner {
+  position: relative;
+  padding-left: 22px;
+}
+.schedule__sentinel-spinner::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 50%;
+  width: 14px; height: 14px;
+  margin-top: -7px;
+  border-radius: 50%;
+  border: 2px solid var(--paper-3);
+  border-top-color: var(--moss);
+  animation: schedule-spin 0.8s linear infinite;
+}
+@keyframes schedule-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Quiet separator between consecutive ISO weeks. Anchors the reader
+   when the agenda spans 3+ weeks; without it the week boundary blurs
+   into "another Monday somewhere". */
+.schedule__weekgap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px 2px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.schedule__weekgap::before,
+.schedule__weekgap::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+/* Floating "Today" pill. Only mounted while today is off-screen
+   (workers spend most of their schedule glances on today; if they
+   scroll away by accident, this brings them back in one tap).
+   Phone: sits above `.phone__dock` and `BottomTabs`. Desktop: sits
+   above the document edge (no dock on desktop). */
+.schedule__today-fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(108px + env(safe-area-inset-bottom, 0px));
+  z-index: 18;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--paper);
+  background: var(--moss);
+  border: 1px solid var(--moss);
+  box-shadow: 0 8px 22px rgba(22, 34, 22, 0.22);
+  cursor: pointer;
+  animation: schedule-fab-in 220ms ease-out;
+}
+/* Desktop has no bottom dock, but the right column is the agent rail
+   (`.desk__agent`, 340px wide on worker + manager shells). Pinning
+   the FAB at `right: 28px` would float it over the chat composer.
+   Offset past the rail's max width so the FAB stays inside the
+   schedule column. When the rail is collapsed (52px) the extra gap
+   is harmless; overlapping chat is not. */
+.schedule--desktop .schedule__today-fab {
+  right: calc(340px + 28px);
+  bottom: 28px;
+}
+.schedule__today-fab:hover { filter: brightness(1.05); }
+@keyframes schedule-fab-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.schedule-week {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.schedule-week__label {
+  font-family: "Fraunces", ui-serif, serif;
+  font-size: 1.05rem;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 6px;
+}
+.schedule-week__header-row {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+.schedule-week__header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-3);
+}
+.schedule-week__header strong {
+  color: var(--ink-2);
+  font-weight: 700;
+}
+.schedule-week__row {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+/* ── Day card (shared phone + desktop timeline) ─────────────────────── */
+
+.schedule-day {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 8px;
+  text-align: left;
+  padding: 10px 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 160ms ease, transform 140ms ease;
+  font-family: inherit;
+  color: inherit;
+  min-width: 0;
+  overflow: hidden;
+}
+/* Paper grain overlay — reuses the existing --paper aesthetic so the
+   new cells share the planner feel with /me, /today, etc. 2% opacity
+   on light, lifted to 5% in dark mode so it stays perceptible against
+   the warmer card background. */
+.schedule-day::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.55'/></svg>");
+  opacity: 0.04;
+  mix-blend-mode: multiply;
+  z-index: 0;
+}
+[data-theme="dark"] .schedule-day::before {
+  opacity: 0.08;
+  mix-blend-mode: screen;
+}
+.schedule-day:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+.schedule-day:active { transform: translateY(0); }
+.schedule-day:focus-visible {
+  outline: 2px solid var(--moss);
+  outline-offset: 2px;
+}
+.schedule-day--today {
+  border-color: color-mix(in oklab, var(--moss) 40%, var(--line));
+}
+.schedule-day--today::after {
+  /* "Today" is a bookmark tassel, not a heavy border. A 2px moss
+     thread runs the full height along the rail's left edge — it sits
+     outside the rail's own column so "today" reads as a physical
+     ribbon rather than a CSS border. */
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(
+    to bottom,
+    var(--moss) 0%,
+    var(--moss) 60%,
+    color-mix(in oklab, var(--moss) 40%, transparent) 100%
+  );
+  z-index: 2;
+}
+.schedule-day--pending {
+  /* Sand hairline across the top edge signals "this day carries
+     something needing attention" to a worker scrolling past. No
+     inset-shadow tricks — just a 2px bar, same vocabulary as the
+     pending-banner at the top of the agenda. */
+  box-shadow: inset 0 2px 0 var(--sand);
+}
+.schedule-day--empty {
+  background: color-mix(in oklab, var(--paper-2) 50%, var(--card));
+}
+.schedule-day--collapsed {
+  padding-bottom: 14px;
+}
+
+/* ── Header (date row) ─────────────────────────────────────────────── */
+
+.schedule-day__header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+}
+.schedule-day__wd {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+  font-family: "Inter Tight", sans-serif;
+  font-weight: 500;
+}
+.schedule-day__num {
+  font-family: "Fraunces", ui-serif, serif;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink);
+  font-feature-settings: "tnum" 1;
+}
+.schedule-day--today .schedule-day__num { color: var(--moss); }
+.schedule-day__mo {
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-left: auto;
+}
+
+/* ── Timeline canvas (rail · hours · rota · tasks) ─────────────────── */
+
+.schedule-day__timeline {
+  --px-per-hour: 30px;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 28px 18px 1fr;
+  gap: 0;
+  min-height: 220px;
+}
+.schedule-day__rail {
+  position: relative;
+  border-right: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+/* The duration bar — a tinted segment positioned at the shift's
+   time range. It's the ledger tab you glance at to know "this is an
+   eight-hour moss day" vs "a split sand on-call night" without
+   reading the times. Drops below the hour-grid lines by sitting as
+   an absolutely-positioned child of the rail (not the canvas). */
+.schedule-day__rail-bar {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+.schedule-day__rail-bar--moss {
+  background: color-mix(in oklab, var(--moss) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--moss) 30%, transparent);
+}
+.schedule-day__rail-bar--sand {
+  background: color-mix(in oklab, var(--sand) 28%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--sand) 40%, transparent);
+  /* Diagonal hatching on the pending bar so "pending" reads as a
+     pattern before the eye even reaches the text. */
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 4px,
+    color-mix(in oklab, var(--sand) 30%, transparent) 4px 5px
+  );
+}
+.schedule-day__rail-bar--rust {
+  background: color-mix(in oklab, var(--rust) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--rust) 28%, transparent);
+}
+.schedule-day__rail-bar--ghost {
+  background: color-mix(in oklab, var(--paper-2) 70%, transparent);
+}
+
+.schedule-day__rail-text {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  writing-mode: sideways-lr;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+  text-align: center;
+  max-height: calc(100% - 8px);
+  overflow: hidden;
+}
+/* When the rail has NO bar (Off / no shift), the text still needs a
+   sensible anchor — center it vertically on the rail. React passes
+   no `top` in that case, so this fallback applies. */
+.schedule-day__rail:not(:has(.schedule-day__rail-bar)) .schedule-day__rail-text {
+  top: 50%;
+}
+.schedule-day__rail--moss  .schedule-day__rail-text { color: var(--moss); }
+.schedule-day__rail--sand  .schedule-day__rail-text { color: #8A6A22; }
+[data-theme="dark"] .schedule-day__rail--sand .schedule-day__rail-text { color: var(--sand); }
+.schedule-day__rail--rust  .schedule-day__rail-text { color: var(--rust); }
+.schedule-day__rail--ghost .schedule-day__rail-text { color: var(--ink-4); }
+
+/* Ghost hour-grid rendered as ruled paper. A repeating gradient
+   paints one line per hour; --px-per-hour is set inline from the
+   week's computed scale. Half-hour lines are intentionally omitted
+   — the paper-planner density, not a spreadsheet. */
+.schedule-day__rota-col {
+  position: relative;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 55%, transparent) calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 55%, transparent) var(--px-per-hour)
+  );
+  overflow: visible;
+  padding: 0 4px 0 6px;
+}
+.schedule-day--empty .schedule-day__rota-col {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 30%, transparent) calc(var(--px-per-hour) - 1px),
+    color-mix(in oklab, var(--line) 30%, transparent) var(--px-per-hour)
+  );
+}
+
+/* Hour labels in the 18px track between rail and rota column. Only
+   every third hour so the eye gets an anchor at a glance without a
+   spreadsheet of numbers. Absolutely positioned so they line up
+   pixel-exact with the gridlines drawn on the adjacent columns. */
+.schedule-day__hours {
+  position: relative;
+}
+.schedule-day__hour {
+  position: absolute;
+  right: 3px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-4);
+  transform: translateY(-5px);
+  font-feature-settings: "tnum" 1;
+  opacity: 0.55;
+}
+/* Every 3rd hour reads bolder so the eye gets anchor points without
+   losing the minor-hour grid precision. */
+.schedule-day__hour--major {
+  opacity: 1;
+  font-weight: 700;
+  color: var(--ink-3);
+}
+
+/* ── Rota / booking blocks ─────────────────────────────────────────── */
+
+.schedule-day__block {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  padding: 4px 6px 4px 8px;
+  background: color-mix(in oklab, var(--rota-tint, var(--moss-soft)) 32%, var(--card));
+  border-radius: 4px;
+  /* `overflow: visible` lets the property-name label float ABOVE the
+     block (baseline touching the top border), and lets a task chip
+     scheduled at 11:55 inside an 08:00–12:00 booking extend past the
+     block's nominal bottom without being clipped. */
+  overflow: visible;
+  box-shadow:
+    inset 3px 0 0 var(--rota-tint-solid, var(--moss)),
+    inset 0 1px 0 rgba(255, 253, 249, 0.6),
+    0 1px 2px rgba(31, 26, 20, 0.05);
+  cursor: pointer;
+  animation: ink-land 240ms cubic-bezier(.2, .6, .2, 1) both;
+  animation-delay: calc(var(--rota-idx, 0) * 30ms);
+}
+[data-theme="dark"] .schedule-day__block {
+  background: color-mix(in oklab, var(--rota-tint, var(--moss-soft)) 48%, var(--card));
+  box-shadow:
+    inset 3px 0 0 var(--rota-tint-solid, var(--moss)),
+    inset 0 1px 0 rgba(244, 239, 230, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.35);
+}
+/* Derive the solid property colour from the rgba tint variable so the
+   left tick renders at full saturation while the background stays
+   washed. Falls back to moss if the variable is untouched. */
+.schedule-day__block[data-property] {
+  --rota-tint-solid: var(--rota-tint, var(--moss));
+}
+/* Property name floats above the block as an italic-serif tab; its
+   baseline lands right on the block's top border so the label reads
+   as "this file-folder contains…" rather than as a separate row of
+   text. `bottom: 100%` places the text box's bottom edge at the
+   block's top; pulling it down by the font's descender (~0.18em)
+   lands the baseline exactly on the border. */
+.schedule-day__block-prop {
+  position: absolute;
+  left: 8px;
+  right: 6px;
+  bottom: 100%;
+  margin-bottom: -0.18em;
+  font-family: "Fraunces", ui-serif, serif;
+  font-style: italic;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.schedule-day__block-time {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  font-feature-settings: "tnum" 1;
+  display: block;
+  padding: 2px 0 0;
+}
+.schedule-day__block-flag {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #8A6A22;
+  background: var(--sand-soft);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+[data-theme="dark"] .schedule-day__block-flag { color: var(--sand); }
+.schedule-day__block-flag--rust {
+  color: var(--rust);
+  background: var(--rust-soft);
+}
+.schedule-day__block--pending {
+  /* Pending keeps position and size but communicates "awaiting a
+     decision": dashed left tick, background wash halved. */
+  background: color-mix(in oklab, var(--rota-tint, var(--sand-soft)) 18%, var(--card));
+  box-shadow:
+    inset 3px 0 0 var(--sand),
+    inset 0 1px 0 rgba(255, 253, 249, 0.6),
+    0 1px 2px rgba(31, 26, 20, 0.04);
+  background-image:
+    repeating-linear-gradient(
+      135deg,
+      transparent 0 6px,
+      color-mix(in oklab, var(--sand) 20%, transparent) 6px 7px
+    );
+}
+.schedule-day__block--cancelled {
+  opacity: 0.55;
+  background: color-mix(in oklab, var(--paper-2) 70%, var(--card));
+  box-shadow: inset 3px 0 0 var(--rust);
+}
+.schedule-day__block--cancelled .schedule-day__block-prop {
+  text-decoration: line-through;
+  color: var(--ink-3);
+}
+.schedule-day__block--rota {
+  /* Un-materialised rota (no booking yet) — same colour, but a
+     hairline dashed outline hints "forecast, not confirmed". */
+  outline: 1px dashed color-mix(in oklab, var(--rota-tint-solid, var(--moss)) 50%, transparent);
+  outline-offset: -3px;
+}
+
+/* ── Task chips (luggage-tag pills pinned inside their parent block) ── */
+/*
+   Tasks live INSIDE their parent booking/rota block — each chip is a
+   child of the block, absolutely positioned at its scheduled clock
+   time relative to the block's top. Orphan tasks (no parent) render
+   directly in the rota column with a --standalone modifier so they
+   still read as "outside the shift".
+*/
+
+.schedule-day__chip {
+  position: absolute;
+  /* Chips nest inside the block: pad away from the 3px left tick, so
+     the chip's left edge doesn't sit on top of the block's property
+     stripe. Right padding gives the block's right edge a little
+     breathing room so shadows read cleanly. */
+  left: 12px;
+  right: 4px;
+  min-height: 20px;
+  padding: 3px 8px 3px 12px;
+  background: color-mix(in oklab, var(--rota-tint, var(--sand-soft)) 42%, var(--card-raised));
+  border-radius: 999px 4px 4px 999px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
+  align-items: center;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 11.5px;
+  line-height: 1.2;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rota-tint-solid, var(--sand)) 35%, transparent),
+    0 1px 1px rgba(31, 26, 20, 0.04);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+  animation: ink-land 240ms cubic-bezier(.2, .6, .2, 1) both;
+  animation-delay: calc(100ms + var(--rota-idx, 0) * 30ms);
+  overflow: hidden;
+}
+/* Orphan tasks live in the rota column itself, not in a block.
+   Dashed rust outline signals "outside the shift"; span the whole
+   column width and keep a paper-white background so they don't blend
+   into a neighbouring block's tint. */
+.schedule-day__chip--standalone {
+  left: 2px;
+  right: 2px;
+  background: var(--card-raised);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rust) 40%, transparent),
+    0 1px 1px rgba(31, 26, 20, 0.04);
+  border-style: dashed;
+}
+[data-theme="dark"] .schedule-day__chip {
+  background: color-mix(in oklab, var(--rota-tint, var(--sand-soft)) 55%, var(--card-raised));
+}
+.schedule-day__chip[data-property] {
+  --rota-tint-solid: var(--rota-tint, var(--sand));
+}
+.schedule-day__chip::before {
+  /* Punched hole on the left edge — mirrors a paper tag's lace-hole. */
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--card);
+  transform: translateY(-50%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rota-tint-solid, var(--ink-3)) 40%, transparent);
+}
+.schedule-day__chip:hover {
+  transform: translateX(1px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--rota-tint-solid, var(--sand)) 60%, transparent),
+    0 2px 6px rgba(31, 26, 20, 0.08);
+}
+.schedule-day__chip-time {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  font-feature-settings: "tnum" 1;
+}
+.schedule-day__chip-title {
+  font-family: "Inter Tight", sans-serif;
+  font-weight: 500;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-day__chip--completed {
+  opacity: 0.55;
+}
+.schedule-day__chip--completed .schedule-day__chip-title {
+  text-decoration: line-through;
+}
+.schedule-day__chip--cancelled,
+.schedule-day__chip--skipped {
+  opacity: 0.4;
+}
+.schedule-day__chip--overdue {
+  box-shadow: inset 0 0 0 1px var(--rust);
+}
+
+/* ── Empty day states ──────────────────────────────────────────────── */
+
+/* Phone: collapse the card to a short "rest / off / leave" note so
+   the stacked agenda isn't padded with blank timeline skeletons. */
+.schedule-day__empty {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 4px 2px;
+}
+.schedule-day__empty-label {
+  font-family: "Fraunces", ui-serif, serif;
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-4);
+}
+.schedule-day__empty-label--moss { color: var(--moss); }
+.schedule-day__empty-label--sand { color: #8A6A22; }
+[data-theme="dark"] .schedule-day__empty-label--sand { color: var(--sand); }
+.schedule-day__empty-label--rust { color: var(--rust); }
+.schedule-day__empty-hours {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Desktop: the cell keeps its full-height timeline skeleton (hour
+   grid at 35% opacity) so the week row stays uniform. A single
+   Fraunces italic word floats centered over the skeleton — "rest" /
+   "off" / "leave" / "holiday" — as a quiet page anchor. */
+.schedule-day__rest-word {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translate(-50%, -50%);
+  font-family: "Fraunces", ui-serif, serif;
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-4);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  z-index: 1;
+}
+.schedule-day__rest-word--moss { color: color-mix(in oklab, var(--moss) 60%, var(--ink-4)); }
+.schedule-day__rest-word--sand { color: #8A6A22; }
+[data-theme="dark"] .schedule-day__rest-word--sand { color: var(--sand); }
+.schedule-day__rest-word--rust { color: color-mix(in oklab, var(--rust) 65%, var(--ink-4)); }
+
+/* ── Desktop week-grid adjustments ─────────────────────────────────── */
+/*
+   7 columns at typical desktop widths (sidebar + chat open) leave
+   ~80–110px per cell. Tasks live inside their parent block; chips
+   are smaller, single-line, showing time + a truncated title.
+*/
+
+.schedule-week__row .schedule-day {
+  padding: 8px 8px 10px;
+}
+.schedule-week__row .schedule-day__timeline {
+  grid-template-columns: 20px 12px 1fr;
+}
+.schedule-week__row .schedule-day__header {
+  padding-bottom: 4px;
+}
+.schedule-week__row .schedule-day__wd { display: none; }
+.schedule-week__row .schedule-day__num { font-size: 16px; }
+.schedule-week__row .schedule-day__mo { display: none; }
+
+.schedule-week__row .schedule-day__rota-col {
+  padding: 0 2px 0 2px;
+}
+
+.schedule-week__row .schedule-day__block {
+  left: 0;
+  right: 0;
+  padding: 3px 4px 3px 6px;
+}
+.schedule-week__row .schedule-day__block-prop {
+  left: 6px;
+  right: 4px;
+  font-size: 10px;
+  line-height: 1;
+  /* Narrow cells rarely fit a full property name above the block —
+     truncate with ellipsis on a single line. The drawer shows the
+     full name. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: -0.16em;
+}
+/* No in-block time on desktop — the rail already shows the day's
+   hours and the block's vertical position encodes when. */
+.schedule-week__row .schedule-day__block-time { display: none; }
+.schedule-week__row .schedule-day__block-flag {
+  /* Compact pending badge: a 6px sand dot in the top-right corner.
+     Text would wrap per-character in the narrow cell; the shape alone
+     plus the cell's top sand rule carry the signal. */
+  font-size: 0;
+  letter-spacing: 0;
+  text-indent: -9999px;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--sand);
+  box-shadow: 0 0 0 2px var(--card);
+}
+.schedule-week__row .schedule-day__block-flag--rust {
+  background: var(--rust);
+}
+
+/* Chips inside blocks on desktop: smaller, tighter, keep the left
+   tick-inset so the block's property stripe still reads. */
+.schedule-week__row .schedule-day__chip {
+  left: 8px;
+  right: 2px;
+  min-height: 16px;
+  padding: 1px 5px 1px 10px;
+  border-radius: 9px 3px 3px 9px;
+  gap: 4px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.schedule-week__row .schedule-day__chip--standalone {
+  left: 1px;
+  right: 1px;
+}
+.schedule-week__row .schedule-day__chip-time {
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  font-weight: 600;
+}
+.schedule-week__row .schedule-day__chip-title {
+  font-size: 9.5px;
+  line-height: 1.1;
+  color: var(--ink-2);
+}
+.schedule-week__row .schedule-day__chip::before {
+  left: 2px;
+  width: 4px;
+  height: 4px;
+}
+.schedule-week__row .schedule-day__chip:hover {
+  transform: translateX(1px);
+}
+
+/* ── Day drawer hero: reuse the timeline full-width ────────────────── */
+
+.day-drawer__section--hero {
+  padding-top: 0;
+}
+.day-drawer__section--hero .schedule-day__timeline {
+  grid-template-columns: 32px 22px 1fr;
+  min-height: 260px;
+}
+
+/* ── Shared motion ─────────────────────────────────────────────────── */
+
+@keyframes ink-land {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .schedule-day__block,
+  .schedule-day__chip {
+    animation: none;
+  }
+}
+
+.schedule__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.schedule__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.schedule__legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--rota-tint, var(--moss-soft));
+  border: 1px solid var(--paper-3);
+}
+
+/* Day drawer — slide-in from right on desktop, bottom sheet on phone. */
+.day-drawer__scrim {
+  position: fixed;
+  top: var(--banner-h, 40px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(31, 26, 20, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 60;
+  animation: schedule-fade-in 140ms ease-out;
+}
+.day-drawer {
+  position: fixed;
+  z-index: 61;
+  background: var(--card);
+  box-shadow: var(--shadow-raised);
+  display: flex;
+  flex-direction: column;
+  animation: schedule-slide-up 200ms ease-out;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 86vh;
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+  border-top: 1px solid var(--line);
+}
+@media (min-width: 720px) {
+  .day-drawer {
+    animation: schedule-slide-right 220ms ease-out;
+    left: auto;
+    top: var(--banner-h, 40px);
+    right: 0;
+    bottom: 0;
+    max-height: calc(100dvh - var(--banner-h, 40px));
+    width: min(440px, 100vw);
+    border-radius: 0;
+    border-top: none;
+    border-left: 1px solid var(--line);
+  }
+}
+
+.day-drawer__head {
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.day-drawer__eyebrow {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.day-drawer__title {
+  font-family: "Fraunces", ui-serif, serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--ink);
+  margin-top: 2px;
+}
+.day-drawer__close {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.day-drawer__close:hover {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
+.day-drawer__body {
+  padding: 12px 20px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.day-drawer__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.day-drawer__section-title {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 700;
+  margin: 0;
+}
+.day-drawer__hours {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+.day-drawer__hours--moss  { background: var(--moss-soft); color: var(--moss); }
+.day-drawer__hours--sand  { background: var(--sand-soft); color: #8A6A22; }
+[data-theme="dark"] .day-drawer__hours--sand { color: var(--sand); }
+.day-drawer__hours--rust  { background: var(--rust-soft); color: var(--rust); }
+.day-drawer__hours--ghost { background: var(--paper-2);   color: var(--ink-3); }
+.day-drawer__muted { color: var(--ink-3); font-size: 13px; }
+
+.day-drawer__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.day-drawer__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.day-drawer__row strong { font-weight: 600; color: var(--ink); }
+.day-drawer__row .chip--sm {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+.day-drawer__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--rota-tint, var(--moss-soft));
+  border: 1px solid var(--paper-3);
+}
+.day-drawer__tasks {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.day-drawer__task {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--card-raised);
+  border-left: 3px solid var(--sand);
+  border-radius: 6px;
+  color: var(--ink);
+  text-decoration: none;
+  box-shadow: inset 0 0 0 1px var(--paper-3);
+  transition: border-left-color 120ms ease;
+}
+.day-drawer__task:hover { border-left-color: var(--moss); }
+.day-drawer__task-time {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-weight: 700;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.day-drawer__task-title { font-weight: 500; }
+.day-drawer__task-prop {
+  font-size: 11px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.day-drawer__task--completed { opacity: 0.55; text-decoration: line-through; }
+.day-drawer__task--cancelled,
+.day-drawer__task--skipped   { opacity: 0.45; }
+.day-drawer__task--overdue   { border-left-color: var(--rust); }
+
+/* Request Override / Request Leave forms (shared modal body). */
+.avail-note {
+  font-size: 12px;
+  font-style: italic;
+}
+.avail-note--ok   { color: var(--moss); }
+.avail-note--warn { color: var(--rust); }
+
+.avail-toggle {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.avail-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--paper);
+}
+.avail-toggle label:has(input:checked) {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+  color: var(--moss);
+  font-weight: 600;
+}
+
+.avail-hours {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@keyframes schedule-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes schedule-slide-up {
+  from { transform: translateY(12%); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+@keyframes schedule-slide-right {
+  from { transform: translateX(8%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
