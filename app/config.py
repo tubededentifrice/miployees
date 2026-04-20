@@ -92,6 +92,20 @@ class Settings(BaseSettings):
     # --- Signing / tokens ---
     root_key: SecretStr | None = None
 
+    # --- Sessions (§03 "Sessions"; cd-cyq) ---
+    # Session lifetime (days) for users who hold a ``manager`` surface
+    # grant on any scope **or** are members of any ``owners`` permission
+    # group — the "has_owner_grant" population. Everyone else gets the
+    # longer :attr:`session_user_ttl_days` window. Recomputed on login,
+    # not mid-session: a user who gains a manager grant mid-session keeps
+    # their longer lifetime until the next sign-in. Mid-request refreshes
+    # extend the existing value past half-life; see
+    # :mod:`app.auth.session`.
+    session_owner_ttl_days: int = 7
+    # Session lifetime (days) for worker / client / guest users who hold
+    # no manager surface grant and no owners-group membership anywhere.
+    session_user_ttl_days: int = 30
+
     # --- Signup abuse mitigations (§15 "Self-serve abuse mitigations"; cd-055) ---
     # Cloudflare Turnstile server-side secret. ``None`` means "test /
     # offline mode": the CAPTCHA verifier accepts the fixed token
