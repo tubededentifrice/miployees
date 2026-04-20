@@ -1,0 +1,115 @@
+// crewday — JSON API types: §14 /admin shell. Deployment-level
+// rows for workspaces, usage rollups, chat providers, deployment
+// settings, and owner team membership.
+
+export interface AdminMe {
+  user_id: string;
+  display_name: string;
+  email: string;
+  is_owner: boolean;
+  capabilities: Record<string, boolean>;
+}
+
+export interface AdminWorkspaceRow {
+  id: string;
+  slug: string;
+  name: string;
+  plan: "free" | "pro" | "trial";
+  verification_state:
+    | "unverified"
+    | "email_verified"
+    | "human_verified"
+    | "trusted";
+  properties_count: number;
+  members_count: number;
+  cap_usd_30d: number;
+  spent_usd_30d: number;
+  usage_percent: number;
+  paused: boolean;
+  archived_at: string | null;
+  created_at: string;
+}
+
+export interface AdminUsageSummary {
+  window_label: string;
+  deployment_spend_usd_30d: number;
+  deployment_call_count_30d: number;
+  workspace_count: number;
+  paused_workspaces: number;
+  per_capability: { capability: string; spend_usd_30d: number; calls_30d: number }[];
+}
+
+export interface AdminChatProviderCredential {
+  field: string;
+  label: string;
+  display_stub: string;
+  set: boolean;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export interface AdminChatProviderTemplate {
+  name: string;
+  purpose: string;
+  status: "approved" | "pending" | "rejected" | "paused";
+  last_sync_at: string | null;
+  rejection_reason: string | null;
+}
+
+export interface AdminChatProvider {
+  channel_kind: "offapp_whatsapp" | "offapp_telegram";
+  label: string;
+  phone_display: string;
+  status: "connected" | "error" | "not_configured";
+  last_webhook_at: string | null;
+  last_webhook_error: string | null;
+  webhook_url: string;
+  verify_token_stub: string;
+  credentials: AdminChatProviderCredential[];
+  templates: AdminChatProviderTemplate[];
+  per_workspace_soft_cap: number;
+  daily_outbound_cap: number;
+  outbound_24h: number;
+  delivery_error_rate_pct: number;
+}
+
+export interface AdminChatOverrideRow {
+  workspace_id: string;
+  workspace_name: string;
+  channel_kind: "offapp_whatsapp" | "offapp_telegram";
+  phone_display: string;
+  status: "connected" | "error" | "not_configured";
+  created_at: string;
+  reason: string | null;
+}
+
+export interface AdminSignupSettings {
+  enabled: boolean;
+  disposable_domains_count: number;
+  throttle_per_ip_hour: number;
+  throttle_per_email_lifetime: number;
+  pre_verified_upload_mb_cap: number;
+  pre_verified_llm_percent_cap: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface AdminDeploymentSetting {
+  key: string;
+  value: string | number | boolean;
+  kind: "bool" | "int" | "string";
+  description: string;
+  root_only: boolean;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface AdminTeamMember {
+  id: string;
+  user_id: string;
+  display_name: string;
+  email: string;
+  is_owner: boolean;
+  granted_at: string;
+  granted_by: string;
+}
