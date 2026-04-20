@@ -133,6 +133,15 @@ ignore_imports = [
     # cd-duv6 — once ``PermissionGroupRepository`` lands under
     # ``app.adapters.db.authz.repositories`` this exception drops.
     "app.domain.identity.permission_groups -> app.adapters.db.authz.models",
+    # v1 stopgap (cd-79r): ``app.domain.identity.role_grants`` reads
+    # :class:`RoleGrant` / :class:`PermissionGroup` /
+    # :class:`PermissionGroupMember` from ``app.adapters.db.authz.models``
+    # and ``PropertyWorkspace`` from ``app.adapters.db.places.models``
+    # directly. Same Protocol-seam refactor as permission_groups;
+    # tracked by cd-duv6 (extended scope). Once the repositories
+    # land these exceptions drop together.
+    "app.domain.identity.role_grants -> app.adapters.db.authz.models",
+    "app.domain.identity.role_grants -> app.adapters.db.places.models",
     # ``app.audit`` is the canonical write seam for the audit log and
     # is intended to be called from every domain service (see
     # ``docs/specs/01-architecture.md`` §"Shared kernel" —
