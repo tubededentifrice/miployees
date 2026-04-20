@@ -167,7 +167,7 @@ class TestCreateApp:
     ) -> None:
         """Passing ``None`` pulls the default singleton via ``get_settings``."""
         sentinel = _settings()
-        monkeypatch.setattr("app.main.get_settings", lambda: sentinel)
+        monkeypatch.setattr("app.api.factory.get_settings", lambda: sentinel)
         app = create_app(settings=None)
         assert app.state.settings is sentinel
 
@@ -184,7 +184,7 @@ class TestCreateApp:
         def _spy(level: str = "INFO", **_kwargs: object) -> None:
             captured["level"] = level
 
-        monkeypatch.setattr("app.main.setup_logging", _spy)
+        monkeypatch.setattr("app.api.factory.setup_logging", _spy)
         create_app(settings=_settings(log_level="DEBUG"))
         assert captured == {"level": "DEBUG"}
 
@@ -274,7 +274,9 @@ class TestSpaCatchAll:
         self, app_factory: Settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``app/web/dist`` absent → stub HTML banner (no mocks fallback)."""
-        monkeypatch.setattr("app.main._SPA_DIST", Path("/tmp/does-not-exist-xyz"))
+        monkeypatch.setattr(
+            "app.api.factory._SPA_DIST", Path("/tmp/does-not-exist-xyz")
+        )
         client = _client(create_app(settings=app_factory))
         resp = client.get("/")
         assert resp.status_code == 200
@@ -287,8 +289,10 @@ class TestSpaCatchAll:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A missing prod build is logged at WARNING so ops notice."""
-        monkeypatch.setattr("app.main._SPA_DIST", Path("/tmp/does-not-exist-xyz"))
-        with caplog.at_level("WARNING", logger="app.main"):
+        monkeypatch.setattr(
+            "app.api.factory._SPA_DIST", Path("/tmp/does-not-exist-xyz")
+        )
+        with caplog.at_level("WARNING", logger="app.api.factory"):
             create_app(settings=app_factory)
         events = [
             rec
@@ -513,7 +517,9 @@ class TestStaticAssets:
         self, monkeypatch: pytest.MonkeyPatch, app_factory: Settings
     ) -> None:
         """A missing dist must not crash startup — just skip the mount."""
-        monkeypatch.setattr("app.main._SPA_DIST", Path("/tmp/does-not-exist-xyz"))
+        monkeypatch.setattr(
+            "app.api.factory._SPA_DIST", Path("/tmp/does-not-exist-xyz")
+        )
         # Must not raise.
         app = create_app(settings=app_factory)
         assert isinstance(app, FastAPI)

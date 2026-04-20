@@ -9,7 +9,17 @@ bootstrap).
 > been written yet. Priority files to create (tracked by the first agent that
 > writes a substantial new module):
 >
-> - `app-layout.md` — package structure, entry points, import graph
+> - `app-layout.md` — package structure, entry points, import graph.
+>   Key entry points as of cd-ika7:
+>   - `app/api/factory.py` — `create_app(settings) -> FastAPI`; the
+>     composition root that wires middleware, routers, OpenAPI, and SPA.
+>   - `app/main.py` — thin re-export shim; `from app.main import create_app`
+>     still works for backward compat (uvicorn `--factory`, test monkeypatches).
+>   - `app/api/v1/__init__.py` — `CONTEXT_ROUTERS` registry of the 13
+>     bounded-context routers in canonical §01 order; each scaffold is
+>     an `APIRouter(tags=["<context>"])` with no routes yet.
+>   - `app/api/admin/__init__.py` — `admin_router` scaffold mounted at
+>     `/admin/api/v1`; routes land with cd-jlms et al.
 > - `domain.md` — key entities and relationships; at minimum document
 >   `app/adapters/db/tasks/models.py` (TaskTemplate, Schedule, Occurrence,
 >   ChecklistTemplateItem, Evidence, Comment) and

@@ -406,11 +406,14 @@ crewday/
 ├── docs/
 │   └── specs/             <-- this suite
 ├── app/
-│   ├── main.py            # FastAPI factory
+│   ├── main.py            # thin re-export shim (backward compat); factory lives in app/api/factory.py
 │   ├── config.py          # pydantic-settings
 │   ├── api/
+│   │   ├── factory.py     # FastAPI app factory — create_app(settings) -> FastAPI
+│   │   ├── admin/
+│   │   │   └── __init__.py  # admin_router scaffold, mounted at /admin/api/v1
 │   │   └── v1/            # one router per context, thin
-│   │       ├── __init__.py
+│   │       ├── __init__.py  # CONTEXT_ROUTERS registry (13 contexts, canonical order)
 │   │       ├── identity.py
 │   │       ├── places.py
 │   │       ├── tasks.py
@@ -423,9 +426,7 @@ crewday/
 │   │       ├── expenses.py
 │   │       ├── billing.py
 │   │       ├── messaging.py
-│   │       ├── llm.py
-│   │       ├── webhooks.py
-│   │       └── admin.py
+│   │       └── llm.py
 │   ├── web/               # SPA catch-all + SSE handler (no Jinja)
 │   ├── domain/            # bounded contexts; sibling imports
 │   │   ├── identity/      # only via __init__.py public surface
