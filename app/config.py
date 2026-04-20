@@ -122,6 +122,21 @@ class Settings(BaseSettings):
     demo_mode: bool = False
     worker: Literal["internal", "external"] = "internal"
     storage_backend: Literal["localfs", "s3"] = "localfs"
+    # Deployment profile selector for the SPA-serving seam (cd-q1be).
+    # ``prod`` serves the built ``app/web/dist/`` via :class:`StaticFiles`
+    # + SPA catch-all — the shape every self-hosted / SaaS box runs.
+    # ``dev`` forwards non-API GETs to the Vite dev server at
+    # :attr:`vite_dev_url` so HMR keeps working while an engineer edits
+    # the SPA under ``app/web/src/``. The dev path is strictly a local
+    # development affordance — the bind guard + public-interface rule
+    # still apply (§16 "Binding policy"), and the proxy never runs in
+    # prod-shaped deployments.
+    profile: Literal["prod", "dev"] = "prod"
+    # Base URL of the Vite dev server the ``dev`` profile proxies to.
+    # Loopback by default so a misconfigured dev box does not end up
+    # forwarding to an externally reachable process. Changing the port
+    # in ``app/web/vite.config.ts`` requires updating this value too.
+    vite_dev_url: str = "http://127.0.0.1:5173"
     # Root logger level applied by :func:`app.util.logging.setup_logging`
     # at factory boot. Kept as a string literal so ``CREWDAY_LOG_LEVEL``
     # maps one-to-one onto the stdlib names; ``DEBUG`` is deliberately

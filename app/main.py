@@ -15,10 +15,12 @@
   sub-tree (§01 "Workspace addressing", §12 "REST API") are mounted;
 * ``/healthz``, ``/readyz``, ``/version`` are the unconditional ops
   probes (§16 "Healthchecks");
-* the SPA catch-all falls through to ``app/web/dist/index.html`` (or a
-  ``mocks/web/dist/`` / stub fallback when the production build is not
-  yet present) so deep-linking works in production (§14 "SPA
-  fallback", cd-q1be).
+* the SPA seam depends on :attr:`Settings.profile`: the ``prod`` path
+  mounts ``app/web/dist/`` as :class:`StaticFiles` with a catch-all
+  that returns ``index.html`` for any non-API GET (§14 "SPA
+  fallback"); the ``dev`` path installs an HTTP proxy to the Vite
+  dev server at :attr:`Settings.vite_dev_url` so HMR keeps working
+  while an engineer edits ``app/web/src/`` (cd-q1be).
 
 The factory is deliberately the single seam between ``Settings`` and
 every other module. Tests pass a pinned :class:`Settings` via
@@ -80,18 +82,16 @@ _PACKAGE_NAME: Final[str] = "crewday"
 # a crash because ``/version`` is probed in smoke tests.
 _UNKNOWN_VERSION: Final[str] = "0.0.0+unknown"
 
-# SPA build directories, tried in order. The production location is
-# ``app/web/dist``; during the early Phase-0 window the production
-# build hasn't landed yet so we fall through to ``mocks/web/dist``.
-# Both paths are resolved against the repo root (two levels up from
-# this file).
+# Prod-profile SPA build directory. Resolved against the repo root
+# (two levels up from this file). Phase-0 used a ``mocks/web/dist``
+# fallback; cd-q1be retires that now that ``app/web/`` carries the
+# production build verbatim — falling back to the mocks would mask a
+# failed prod build behind a stale demo bundle, which is exactly the
+# failure mode we want to surface loudly.
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
-_SPA_DIST_CANDIDATES: Final[tuple[Path, ...]] = (
-    _REPO_ROOT / "app" / "web" / "dist",
-    _REPO_ROOT / "mocks" / "web" / "dist",
-)
+_SPA_DIST: Final[Path] = _REPO_ROOT / "app" / "web" / "dist"
 
-# Minimal fallback served when neither SPA build exists. 200 OK so
+# Minimal fallback served when the SPA build is missing. 200 OK so
 # health probes + smoke curls succeed; a distinctive body so a human
 # hitting ``/`` understands why they don't see the app.
 _SPA_STUB_HTML: Final[str] = (
@@ -196,17 +196,16 @@ def _enforce_bind_guard(settings: Settings) -> None:
 
 
 def _resolve_spa_dist() -> Path | None:
-    """Return the first SPA dist directory that exists, or ``None``.
+    """Return the prod SPA dist directory if it carries an index, else ``None``.
 
-    Preferring ``app/web/dist`` over ``mocks/web/dist`` keeps the
-    production build authoritative once it lands; the mocks fallback
-    covers the Phase-0 window where tasks reference the bundled mock
-    build. Tests that need to assert the stub path set both
-    candidates aside so this returns ``None``.
+    Only ``app/web/dist`` is considered — the Phase-0 ``mocks/web/dist``
+    fallback was retired in cd-q1be so a missing prod build surfaces as
+    the stub banner instead of silently serving a demo bundle. Tests
+    that need to assert the stub path swap :data:`_SPA_DIST` for a
+    non-existent path.
     """
-    for candidate in _SPA_DIST_CANDIDATES:
-        if (candidate / "index.html").is_file():
-            return candidate
+    if (_SPA_DIST / "index.html").is_file():
+        return _SPA_DIST
     return None
 
 
@@ -364,7 +363,7 @@ def _register_ops_routes(app: FastAPI) -> None:
 
 
 def _register_spa_catch_all(app: FastAPI) -> None:
-    """Mount the SPA static assets + fallback route.
+    """Mount the SPA static assets + fallback route (prod profile).
 
     Assets under ``/assets/*`` are served by
     :class:`~starlette.staticfiles.StaticFiles` when the dist dir
@@ -372,10 +371,26 @@ def _register_spa_catch_all(app: FastAPI) -> None:
     which returns ``index.html`` so client-side routing handles deep
     links; API prefixes are deliberately excluded so a missing
     ``/api/...`` route returns a JSON 404 instead of HTML.
+
+    A missing ``app/web/dist/`` is logged at WARNING so operators
+    notice — the factory still boots and the catch-all serves
+    :data:`_SPA_STUB_HTML` so ``/healthz`` + API routes stay usable
+    during a failed build.
     """
     dist = _resolve_spa_dist()
 
-    if dist is not None:
+    if dist is None:
+        # Use underscore separators in event + path keys: the JSON-log
+        # redaction filter treats any three dot-separated word chunks
+        # as a JWT and masks the value.
+        _log.warning(
+            "SPA build missing; serving stub banner",
+            extra={
+                "event": "spa_dist_missing",
+                "expected_path": str(_SPA_DIST),
+            },
+        )
+    else:
         assets_dir = dist / "assets"
         if assets_dir.is_dir():
             app.mount(
@@ -492,9 +507,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         throttle=throttle,
         capabilities=capabilities,
     )
-    # SPA catch-all MUST register last — its ``/{full_path:path}``
-    # pattern would otherwise swallow every subsequent route.
-    _register_spa_catch_all(app)
+    # SPA seam MUST register last — its ``/{full_path:path}`` pattern
+    # (static catch-all in prod, Vite proxy in dev) would otherwise
+    # swallow every subsequent route. The ``dev`` proxy is imported
+    # lazily so the prod hot path never pays for the ``httpx`` seam.
+    if cfg.profile == "dev":
+        from app.api.proxy import register_vite_proxy
+
+        register_vite_proxy(app, vite_dev_url=cfg.vite_dev_url)
+    else:
+        _register_spa_catch_all(app)
 
     # Worker hook — cd-pnbn / cd-3p3z formalise APScheduler wiring
     # (crons, iCal pollers, digest emails). Until then we only

@@ -26,10 +26,11 @@ See ``docs/specs/01-architecture.md`` §"High-level picture",
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -53,6 +54,8 @@ def _settings(
     smtp_use_tls: bool = True,
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO",
     cors_allow_origins: list[str] | None = None,
+    profile: Literal["prod", "dev"] = "prod",
+    vite_dev_url: str = "http://127.0.0.1:5173",
 ) -> Settings:
     """Return a :class:`Settings` suitable for an in-memory factory build.
 
@@ -77,6 +80,8 @@ def _settings(
         smtp_use_tls=smtp_use_tls,
         log_level=log_level,
         cors_allow_origins=list(cors_allow_origins or []),
+        profile=profile,
+        vite_dev_url=vite_dev_url,
     )
 
 
@@ -268,14 +273,40 @@ class TestSpaCatchAll:
     def test_root_stub_fallback_when_no_dist(
         self, app_factory: Settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Neither ``app/web/dist`` nor ``mocks/web/dist`` present → stub HTML."""
-        monkeypatch.setattr(
-            "app.main._SPA_DIST_CANDIDATES", (Path("/tmp/does-not-exist-xyz"),)
-        )
+        """``app/web/dist`` absent → stub HTML banner (no mocks fallback)."""
+        monkeypatch.setattr("app.main._SPA_DIST", Path("/tmp/does-not-exist-xyz"))
         client = _client(create_app(settings=app_factory))
         resp = client.get("/")
         assert resp.status_code == 200
         assert "SPA not built" in resp.text
+
+    def test_missing_dist_logs_warning(
+        self,
+        app_factory: Settings,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A missing prod build is logged at WARNING so ops notice."""
+        monkeypatch.setattr("app.main._SPA_DIST", Path("/tmp/does-not-exist-xyz"))
+        with caplog.at_level("WARNING", logger="app.main"):
+            create_app(settings=app_factory)
+        events = [
+            rec
+            for rec in caplog.records
+            if getattr(rec, "event", None) == "spa_dist_missing"
+        ]
+        assert len(events) == 1
+
+    def test_no_mocks_fallback(self, app_factory: Settings) -> None:
+        """The Phase-0 ``mocks/web/dist`` fallback was retired (cd-q1be).
+
+        ``app/main._SPA_DIST`` must point at ``app/web/dist`` only;
+        a prior tuple-of-candidates shape would silently pick the
+        mock build up again.
+        """
+        assert main_module._SPA_DIST.parts[-3:] == ("app", "web", "dist")
+        # No legacy tuple survives.
+        assert not hasattr(main_module, "_SPA_DIST_CANDIDATES")
 
     def test_deep_link_returns_spa_index(self, app_factory: Settings) -> None:
         """Deep-link routes (client-side router targets) fall through too."""
@@ -477,9 +508,7 @@ class TestStaticAssets:
         self, monkeypatch: pytest.MonkeyPatch, app_factory: Settings
     ) -> None:
         """A missing dist must not crash startup — just skip the mount."""
-        monkeypatch.setattr(
-            "app.main._SPA_DIST_CANDIDATES", (Path("/tmp/does-not-exist-xyz"),)
-        )
+        monkeypatch.setattr("app.main._SPA_DIST", Path("/tmp/does-not-exist-xyz"))
         # Must not raise.
         app = create_app(settings=app_factory)
         assert isinstance(app, FastAPI)
@@ -521,3 +550,136 @@ class TestIsApiPath:
     )
     def test_non_api_paths_classified_as_spa(self, path: str) -> None:
         assert main_module._is_api_path(path) is False
+
+
+# ---------------------------------------------------------------------------
+# Dev-profile Vite proxy
+# ---------------------------------------------------------------------------
+
+
+class TestDevProfileViteProxy:
+    """``profile=dev`` swaps the static mount for a Vite HTTP proxy.
+
+    We never actually hit the Vite dev server in unit tests — a
+    :class:`httpx.MockTransport`-backed :class:`httpx.AsyncClient` is
+    installed on ``app.state.vite_client`` after construction so the
+    forwarded request lands on an in-test handler. That keeps the
+    suite network-free while still exercising the full proxy path,
+    including header filtering and streaming.
+    """
+
+    def _dev_app_with_mock(
+        self,
+        handler: Callable[[httpx.Request], httpx.Response],
+    ) -> FastAPI:
+        cfg = _settings(profile="dev", vite_dev_url="http://127.0.0.1:5173")
+        app = create_app(settings=cfg)
+        transport = httpx.MockTransport(handler)
+        app.state.vite_client = httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:5173",
+            follow_redirects=False,
+        )
+        return app
+
+    def test_dev_profile_proxies_root_to_vite(self) -> None:
+        """``GET /`` streams the Vite upstream body + status back."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/"
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                content=b"<!doctype html><title>vite dev</title>",
+            )
+
+        client = _client(self._dev_app_with_mock(handler))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+        assert "vite dev" in resp.text
+
+    def test_dev_profile_proxies_deep_path_and_query(self) -> None:
+        """Deep paths + query strings pass through verbatim."""
+        captured: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["query"] = request.url.query.decode()
+            return httpx.Response(200, content=b"ok")
+
+        client = _client(self._dev_app_with_mock(handler))
+        resp = client.get("/src/main.tsx?t=123&v=abc")
+        assert resp.status_code == 200
+        assert captured["path"] == "/src/main.tsx"
+        assert captured["query"] == "t=123&v=abc"
+
+    def test_dev_profile_api_paths_not_proxied(self) -> None:
+        """``/api/*`` must still 404 JSON — not reach Vite."""
+        called = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            called["n"] += 1
+            return httpx.Response(200, content=b"should not be called")
+
+        client = _client(self._dev_app_with_mock(handler))
+        resp = client.get("/api/nonexistent")
+        assert resp.status_code == 404
+        assert resp.headers["content-type"].startswith("application/json")
+        assert called["n"] == 0
+
+    def test_dev_profile_openapi_still_reachable(self) -> None:
+        """The API precedence survives the dev proxy registration."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # OpenAPI lives on a real handler — Vite must never see it.
+            raise AssertionError(f"proxy reached for {request.url}")
+
+        client = _client(self._dev_app_with_mock(handler))
+        resp = client.get("/api/openapi.json")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+
+    def test_dev_profile_upstream_failure_returns_502(self) -> None:
+        """A Vite outage surfaces as 502, not a 500 stack trace."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused", request=request)
+
+        client = _client(self._dev_app_with_mock(handler))
+        resp = client.get("/anything")
+        assert resp.status_code == 502
+        body = resp.json()
+        assert body["error"] == "vite_unreachable"
+
+    def test_dev_profile_strips_host_header(self) -> None:
+        """``Host`` must not bleed from client → Vite — httpx re-sets it."""
+        seen_host: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_host["host"] = request.headers.get("host", "")
+            return httpx.Response(200, content=b"ok")
+
+        client = _client(self._dev_app_with_mock(handler))
+        client.get("/", headers={"Host": "attacker.example"})
+        # httpx derives the forwarded ``Host`` from its ``base_url`` —
+        # never echoes an inbound override.
+        assert seen_host["host"] == "127.0.0.1:5173"
+
+    def test_dev_profile_does_not_mount_static_assets(self) -> None:
+        """No ``/assets`` StaticFiles mount when the dev profile is active.
+
+        The static mount belongs to the prod catch-all; swapping it in
+        during dev would race the Vite upstream for asset URLs.
+        """
+        cfg = _settings(profile="dev")
+        app = create_app(settings=cfg)
+        mount_names = {getattr(r, "name", None) for r in app.routes}
+        assert "assets" not in mount_names
+
+    def test_dev_profile_exposes_vite_client_on_state(self) -> None:
+        """``app.state.vite_client`` is the seam tests rely on."""
+        cfg = _settings(profile="dev")
+        app = create_app(settings=cfg)
+        assert isinstance(app.state.vite_client, httpx.AsyncClient)
+        assert app.state.vite_dev_url == "http://127.0.0.1:5173"

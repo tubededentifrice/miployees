@@ -44,6 +44,8 @@ def pinned_settings(db_url: str) -> Settings:
         bind_port=8000,
         allow_public_bind=False,
         worker="internal",
+        profile="prod",
+        vite_dev_url="http://127.0.0.1:5173",
     )
 
 
@@ -85,3 +87,57 @@ class TestFactoryAgainstRealDb:
         # FastAPI-emitted OpenAPI always carries an ``info.title``;
         # we pinned it to ``crewday`` in the factory.
         assert body["info"]["title"] == "crewday"
+
+
+class TestSpaProdMountAgainstRealDist:
+    """Prod-profile SPA mount delivers the real ``app/web/dist`` bundle.
+
+    cd-q1be cut over from the Phase-0 ``mocks/web/dist`` fallback to
+    the production build at ``app/web/dist``. This suite exercises the
+    full HTTP round-trip so a future regression (wrong path, missing
+    assets mount, shadowed API route) fails here instead of only
+    showing up in dev.
+    """
+
+    def test_root_returns_spa_index(
+        self, pinned_settings: Settings, real_make_uow: None
+    ) -> None:
+        """``GET /`` serves ``index.html`` from ``app/web/dist``."""
+        app = create_app(settings=pinned_settings)
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+        # The real index carries the SPA module script; the stub
+        # banner doesn't — we assert the former so a silent fall-through
+        # to the stub fails here loudly.
+        assert "SPA not built" not in resp.text
+
+    def test_deep_link_returns_spa_index(
+        self, pinned_settings: Settings, real_make_uow: None
+    ) -> None:
+        """Deep-link paths fall through to ``index.html`` (client-side routing).
+
+        A path that does not trigger the tenancy middleware — ``/dashboard``
+        here — exercises the static catch-all cleanly; ``/w/<slug>/...``
+        paths are intercepted by
+        :class:`~app.tenancy.middleware.WorkspaceContextMiddleware` and
+        answered with the canonical 404 envelope when the slug is
+        unknown, so they belong in the tenancy suite, not this one.
+        """
+        app = create_app(settings=pinned_settings)
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/dashboard")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+        assert "SPA not built" not in resp.text
+
+    def test_api_404_stays_json(
+        self, pinned_settings: Settings, real_make_uow: None
+    ) -> None:
+        """``/api/*`` routes are not shadowed by the SPA catch-all."""
+        app = create_app(settings=pinned_settings)
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/api/v1/does-not-exist")
+        assert resp.status_code == 404
+        assert resp.headers["content-type"].startswith("application/json")
