@@ -14,6 +14,7 @@ See ``docs/specs/03-auth-and-tokens.md`` §"WebAuthn specifics",
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -29,7 +30,9 @@ from webauthn import (
 from webauthn.authentication.verify_authentication_response import (
     VerifiedAuthentication,
 )
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 from webauthn.helpers.cose import COSEAlgorithmIdentifier
+from webauthn.helpers.exceptions import InvalidRegistrationResponse
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
     AuthenticatorAttachment,
@@ -43,14 +46,18 @@ from webauthn.registration.verify_registration_response import VerifiedRegistrat
 from app.config import Settings, get_settings
 
 __all__ = [
+    "InvalidRegistrationResponse",
     "RelyingParty",
     "RelyingPartyMisconfigured",
     "VerifiedAuthentication",
     "VerifiedRegistration",
     "WebAuthnPolicy",
+    "base64url_to_bytes",
+    "bytes_to_base64url",
     "generate_authentication_challenge",
     "generate_registration_challenge",
     "make_relying_party",
+    "options_to_dict",
     "policy",
     "verify_authentication",
     "verify_registration",
@@ -303,6 +310,24 @@ def _to_credential_descriptors(
 ) -> list[PublicKeyCredentialDescriptor]:
     """Wrap raw credential-id bytes as py_webauthn descriptors."""
     return [PublicKeyCredentialDescriptor(id=cid) for cid in credential_ids]
+
+
+def options_to_dict(options_json: str) -> dict[str, Any]:
+    """Parse py_webauthn's ``options_to_json`` output into a ``dict``.
+
+    py_webauthn always serialises
+    ``PublicKeyCredentialCreationOptions`` /
+    ``PublicKeyCredentialRequestOptions`` as a JSON string because it
+    knows the options travel the wire; callers that want structured
+    data (to splice in extensions, stash the challenge alongside
+    metadata, etc.) would otherwise re-parse the string locally. We
+    expose the parse once so the single ``json`` dependency stays
+    inside this seam module.
+    """
+    parsed: object = json.loads(options_json)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("webauthn options_to_json returned non-object payload")
+    return {str(k): v for k, v in parsed.items()}
 
 
 def generate_registration_challenge(

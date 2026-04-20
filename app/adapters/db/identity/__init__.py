@@ -29,6 +29,7 @@ from app.adapters.db.identity.models import (
     PasskeyCredential,
     Session,
     User,
+    WebAuthnChallenge,
 )
 
-__all__ = ["ApiToken", "PasskeyCredential", "Session", "User"]
+__all__ = ["ApiToken", "PasskeyCredential", "Session", "User", "WebAuthnChallenge"]

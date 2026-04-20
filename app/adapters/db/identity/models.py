@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -43,7 +44,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.adapters.db.base import Base
 
-__all__ = ["ApiToken", "PasskeyCredential", "Session", "User", "canonicalise_email"]
+__all__ = [
+    "ApiToken",
+    "PasskeyCredential",
+    "Session",
+    "User",
+    "WebAuthnChallenge",
+    "canonicalise_email",
+]
 
 
 def canonicalise_email(email: str) -> str:
@@ -217,6 +225,90 @@ class ApiToken(Base):
     __table_args__ = (
         Index("ix_api_token_user", "user_id"),
         Index("ix_api_token_workspace", "workspace_id"),
+    )
+
+
+class WebAuthnChallenge(Base):
+    """Short-lived registration challenge, persisted for the finish step.
+
+    A WebAuthn ceremony is two round-trips: ``/register/start`` mints
+    the options (carrying a fresh random ``challenge``) and stashes
+    them here; ``/register/finish`` loads the row by ``id`` and hands
+    ``challenge`` to py_webauthn so it can cross-check the value the
+    authenticator echoed in ``clientDataJSON``. The row is
+    single-use: :func:`app.auth.passkey.register_finish` deletes it
+    on success, so a replay of the same ``finish`` request fails the
+    load and the router surfaces 409.
+
+    **Why a column, not an in-memory cache.** The spec pins a 10-min
+    TTL (§03 "WebAuthn specifics" implicitly — the browser timeout is
+    60s, the server gives itself a comfortable grace window) and
+    requires the challenge to survive a process restart between the
+    two round-trips. An in-memory dict would lose every in-flight
+    ceremony on deploy; SQLite / Postgres give us durability + an
+    ``expires_at`` a sweeper can reap.
+
+    **Subject discriminator.** A challenge is always bound to one of
+    two subjects:
+
+    * an authenticated user adding another passkey (``user_id`` set,
+      ``signup_session_id`` null);
+    * a pending signup session with no user row yet
+      (``signup_session_id`` set, ``user_id`` null).
+
+    Exactly one of the two FKs MUST carry a value — enforced by the
+    ``ck_webauthn_challenge_subject`` CHECK constraint. The finish
+    handler reads whichever is set and passes it to the matching
+    service entry point.
+
+    **Why not workspace-scoped.** Registration happens at the bare
+    host (no ``/w/<slug>/`` prefix) during signup, and at the owning
+    user's identity scope during "add another passkey". Neither is
+    workspace-scoped; we follow the surrounding identity tables and
+    stay out of :mod:`app.tenancy.registry`. The domain layer owns
+    the subject-based access check.
+    """
+
+    __tablename__ = "webauthn_challenge"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # ``signup_session_id`` is a soft-typed pointer to the future
+    # ``signup_session`` row (cd-3i5). The row doesn't exist yet, so
+    # we store the id as a bare string without a foreign key until
+    # that table lands. When the signup flow lands it adds the FK
+    # in its own migration.
+    signup_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    challenge: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    # ``exclude_credentials`` is the base64url-encoded list of
+    # credential ids the browser's authenticator MUST refuse to
+    # re-register against (the per-user uniqueness gate, §03
+    # "Additional passkeys"). We snapshot it on start so finish can
+    # re-verify against the same set — a sibling client adding a
+    # passkey mid-ceremony won't retroactively widen the gate.
+    exclude_credentials: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND signup_session_id IS NULL) OR "
+            "(user_id IS NULL AND signup_session_id IS NOT NULL)",
+            name="ck_webauthn_challenge_subject",
+        ),
+        Index("ix_webauthn_challenge_expires", "expires_at"),
+        Index("ix_webauthn_challenge_user", "user_id"),
+        Index("ix_webauthn_challenge_signup", "signup_session_id"),
     )
 
 
