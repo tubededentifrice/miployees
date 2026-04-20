@@ -4,6 +4,7 @@ import {
   __resetApiProvidersForTests,
   fetchJson,
   registerAuthTokenGetter,
+  registerOnUnauthorized,
   registerWorkspaceSlugGetter,
   resolveApiPath,
 } from "@/lib/api";
@@ -399,6 +400,90 @@ describe("fetchJson error mapping", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("fetchJson — 401 onUnauthorized seam", () => {
+  it("invokes the registered handler with the response status and the resolved URL", async () => {
+    registerWorkspaceSlugGetter(() => "acme");
+    const calls: Array<{ status: number; path: string }> = [];
+    registerOnUnauthorized((status, path) => calls.push({ status, path }));
+
+    const { restore } = installFetch([{ status: 401, body: { detail: "session expired" } }]);
+    try {
+      await expect(fetchJson("/api/v1/tasks")).rejects.toBeInstanceOf(ApiError);
+    } finally {
+      restore();
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ status: 401, path: "/w/acme/api/v1/tasks" });
+  });
+
+  it("still throws ApiError after invoking the handler (TanStack Query path stays intact)", async () => {
+    registerOnUnauthorized(() => undefined);
+    const { restore } = installFetch([{ status: 401, body: { detail: "expired" } }]);
+    try {
+      await expect(fetchJson("/api/v1/me")).rejects.toSatisfy((err: unknown) => {
+        expect(err).toBeInstanceOf(ApiError);
+        expect((err as ApiError).status).toBe(401);
+        return true;
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not invoke the handler on non-401 errors", async () => {
+    let count = 0;
+    registerOnUnauthorized(() => { count += 1; });
+    const { restore } = installFetch([
+      { status: 403, body: {} },
+      { status: 422, body: {} },
+      { status: 500, body: {} },
+    ]);
+    try {
+      await expect(fetchJson("/api/v1/me")).rejects.toBeInstanceOf(ApiError);
+      await expect(fetchJson("/api/v1/me", { method: "POST" })).rejects.toBeInstanceOf(ApiError);
+      await expect(fetchJson("/api/v1/me")).rejects.toBeInstanceOf(ApiError);
+    } finally {
+      restore();
+    }
+    expect(count).toBe(0);
+  });
+
+  it("survives a handler that throws — the original ApiError still surfaces", async () => {
+    // A buggy handler must not mask the underlying 401. We log via
+    // console.error and rethrow the ApiError as usual.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    registerOnUnauthorized(() => { throw new Error("handler crashed"); });
+    const { restore } = installFetch([{ status: 401, body: {} }]);
+    try {
+      await expect(fetchJson("/api/v1/me")).rejects.toSatisfy((err: unknown) => {
+        expect(err).toBeInstanceOf(ApiError);
+        expect((err as ApiError).status).toBe(401);
+        return true;
+      });
+      // Assert before mockRestore — `restore()` clears the spy's call
+      // history, so checking it after the cleanup hits a 0-call spy.
+      expect(errSpy).toHaveBeenCalledWith("onUnauthorized handler threw", expect.any(Error));
+    } finally {
+      restore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it("clears the handler when registerOnUnauthorized is called with null", async () => {
+    let count = 0;
+    registerOnUnauthorized(() => { count += 1; });
+    registerOnUnauthorized(null);
+
+    const { restore } = installFetch([{ status: 401, body: {} }]);
+    try {
+      await expect(fetchJson("/api/v1/me")).rejects.toBeInstanceOf(ApiError);
+    } finally {
+      restore();
+    }
+    expect(count).toBe(0);
   });
 });
 

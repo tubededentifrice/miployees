@@ -5361,3 +5361,111 @@
   from { transform: translateX(8%); opacity: 0; }
   to   { transform: translateX(0); opacity: 1; }
 }
+
+/* ── Auth gate (cd-kc7u) ──────────────────────────────────────
+   Shared by `<RequireAuth>`'s loading hold pattern and
+   `<WorkspaceGate>`'s pick-a-workspace surface. The pieces are
+   intentionally restrained: a centred panel on the same paper
+   tone as the rest of the app, a Fraunces title, Inter Tight body,
+   and the same `.btn` family used elsewhere in the chrome — so
+   the gate feels like part of the product, not an interstitial.
+   Both the loading and the picker animate in with a single fade
+   so a fast `/auth/me` resolution doesn't flash the spinner before
+   the protected tree commits. */
+.auth-hold {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 32px;
+  background: var(--paper); color: var(--ink-3);
+  font-family: "Inter Tight", sans-serif; font-size: 13px;
+  letter-spacing: 0.04em;
+  animation: auth-fade-in 240ms ease-out both;
+}
+.auth-hold__label {
+  position: relative; padding-left: 22px;
+}
+.auth-hold__label::before {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--moss-soft); border-top-color: var(--moss);
+  transform: translateY(-50%);
+  animation: auth-hold-spin 700ms linear infinite;
+}
+
+.auth-gate {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: rgba(31, 26, 20, 0.55);
+  backdrop-filter: blur(4px);
+  animation: auth-fade-in 220ms ease-out both;
+}
+.auth-gate__panel {
+  width: min(440px, 96vw);
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  padding: 28px 26px 22px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.auth-gate__title {
+  font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 1.5rem; letter-spacing: -0.01em;
+  font-variation-settings: "opsz" 36;
+  margin: 0;
+}
+.auth-gate__sub {
+  margin: 0; color: var(--ink-3); font-size: 13.5px; line-height: 1.45;
+}
+.auth-gate__list {
+  list-style: none; margin: 6px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.auth-gate__item { margin: 0; }
+.auth-gate__pick {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  background: var(--paper-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px 14px; cursor: pointer;
+  color: var(--ink); text-align: left;
+  font: inherit; font-size: 14px;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.auth-gate__pick:hover {
+  background: var(--paper-3, var(--paper-2));
+  border-color: var(--moss-soft);
+}
+.auth-gate__pick:active { transform: scale(0.99); }
+.auth-gate__pick-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px;
+  background: var(--moss-soft); color: var(--moss);
+  flex-shrink: 0;
+}
+.auth-gate__pick-body {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+}
+.auth-gate__pick-name {
+  font-weight: 600; font-size: 14.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.auth-gate__pick-role {
+  color: var(--ink-3);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em;
+}
+.auth-gate__pick-chev { color: var(--ink-3); flex-shrink: 0; }
+.auth-gate__actions {
+  display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;
+}
+
+@keyframes auth-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes auth-hold-spin {
+  from { transform: translateY(-50%) rotate(0deg); }
+  to   { transform: translateY(-50%) rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-hold,
+  .auth-gate { animation: none; }
+  .auth-hold__label::before { animation: none; }
+}

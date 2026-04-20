@@ -19,9 +19,11 @@ const CSRF_COOKIE = "crewday_csrf";
 // without a React tree.
 
 type Getter<T> = () => T;
+type UnauthorizedHandler = (status: number, path: string) => void;
 
 let workspaceSlugGetter: Getter<string | null> = () => null;
 let authTokenGetter: Getter<string | null> = () => null;
+let onUnauthorizedHandler: UnauthorizedHandler | null = null;
 
 /**
  * Wire the active workspace-slug source. `WorkspaceProvider` calls this
@@ -44,12 +46,28 @@ export function registerAuthTokenGetter(getter: Getter<string | null>): void {
 }
 
 /**
+ * Wire a single 401 callback. The auth module (cd-kc7u) registers this
+ * on mount: any 401 response from `fetchJson` invokes the handler
+ * **and** still throws `ApiError` so TanStack Query / individual call
+ * sites can also react. Centralising the redirect here means a stale
+ * session detected mid-render or mid-mutation leads to one consistent
+ * "kicked back to /login" experience instead of every screen handling
+ * 401 itself.
+ *
+ * Pass `null` to clear the registration (used by tests on teardown).
+ */
+export function registerOnUnauthorized(handler: UnauthorizedHandler | null): void {
+  onUnauthorizedHandler = handler;
+}
+
+/**
  * Test-only reset so unit tests don't leak state through the module-
  * level getters. Never call from product code.
  */
 export function __resetApiProvidersForTests(): void {
   workspaceSlugGetter = () => null;
   authTokenGetter = () => null;
+  onUnauthorizedHandler = null;
 }
 
 // --- URL building ------------------------------------------------------------
@@ -231,6 +249,18 @@ export async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<
   const body: unknown = text ? safeParse(text) : null;
   if (!res.ok) {
     const message = pickMessage(body, res.statusText, res.status);
+    if (res.status === 401 && onUnauthorizedHandler) {
+      // Fire-and-forget: the handler clears the auth store + navigates
+      // to /login. Any throw inside the handler is intentionally
+      // swallowed (logged) because it must not mask the underlying
+      // 401 the caller is about to see.
+      try {
+        onUnauthorizedHandler(res.status, url);
+      } catch (err) {
+        // eslint-disable-next-line no-console -- last-resort visibility for an auth-handler bug.
+        console.error("onUnauthorized handler threw", err);
+      }
+    }
     throw new ApiError(message, res.status, body);
   }
   return body as T;

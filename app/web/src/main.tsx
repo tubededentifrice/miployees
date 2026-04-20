@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { SseProvider } from "@/context/SseContext";
 import { WorkspaceProvider } from "@/context/WorkspaceContext";
 import { NavHistoryProvider } from "@/context/NavHistoryContext";
+import { AuthProvider } from "@/auth";
 
 import "@/styles/tokens.css";
 import "@/styles/reset.css";
@@ -36,17 +37,19 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <NavHistoryProvider>
-          <ThemeProvider>
-            <RoleProvider>
-              <WorkspaceProvider>
-                <SseProvider>
-                  <App />
-                </SseProvider>
-              </WorkspaceProvider>
-            </RoleProvider>
-          </ThemeProvider>
-        </NavHistoryProvider>
+        <AuthProvider>
+          <NavHistoryProvider>
+            <ThemeProvider>
+              <RoleProvider>
+                <WorkspaceProvider>
+                  <SseProvider>
+                    <App />
+                  </SseProvider>
+                </WorkspaceProvider>
+              </RoleProvider>
+            </ThemeProvider>
+          </NavHistoryProvider>
+        </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </React.StrictMode>,

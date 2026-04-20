@@ -1,6 +1,7 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspace } from "@/context/WorkspaceContext";
+import { getAuthState, subscribeAuth } from "@/auth";
 
 // §14 "SSE-driven invalidation" — one `EventSource('/w/${slug}/events')`
 // per active workspace. Re-established on workspace switch (and on
@@ -9,11 +10,17 @@ import { useWorkspace } from "@/context/WorkspaceContext";
 // to `/events` so the server can still push workspace-agnostic
 // events (e.g. onboarding, admin) before the SPA knows its tenant.
 //
+// The transport is only opened while the user is authenticated. A
+// logout flips `useAuth().isAuthenticated` to `false`, which tears
+// down this effect and closes the underlying `EventSource` — keeping
+// the §"Logout clears storage + closes SSE" acceptance criterion
+// honest without `SseContext` knowing about cookies or storage.
+//
 // Message dispatch (query invalidation, setQueryData fan-out) is
 // the responsibility of `lib/sse` and lands with cd-y4g5. This
 // provider only owns the lifecycle of the transport: connect,
 // reconnect with backoff, reset backoff on successful open, and
-// tear down on unmount or slug switch.
+// tear down on unmount, slug switch, or sign-out.
 
 // Backoff: 1s, 2s, 4s, 8s, capped at 30s. The cap keeps a stuck
 // server from hammering the browser while still recovering quickly
@@ -34,9 +41,25 @@ export function SseProvider({ children }: { children: ReactNode }) {
   // the dispatcher lands.
   const qc = useQueryClient();
   const { workspaceId } = useWorkspace();
+  // Read directly from the auth store rather than `useAuth()` so this
+  // provider doesn't drag a `useNavigate()` dependency into trees
+  // that legitimately mount it without a `<Router>` (the unit tests
+  // for the SSE lifecycle, for one).
+  const status = useSyncExternalStore(
+    subscribeAuth,
+    () => getAuthState().status,
+    () => getAuthState().status,
+  );
 
   useEffect(() => {
     if (typeof EventSource === "undefined") return;
+    // Only open the stream once auth is positively resolved. On the
+    // unauthenticated leg the user is bouncing between /login and the
+    // protected tree; opening a stream the server will refuse anyway
+    // is wasted reconnect chatter (and would leak a transport across
+    // a logout). The `'loading'` leg also defers — the bootstrap
+    // probe usually settles in a single tick.
+    if (status !== "authenticated") return;
 
     let es: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -72,7 +95,7 @@ export function SseProvider({ children }: { children: ReactNode }) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (es) es.close();
     };
-  }, [qc, workspaceId]);
+  }, [qc, workspaceId, status]);
 
   return <>{children}</>;
 }

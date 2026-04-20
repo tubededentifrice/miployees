@@ -4,6 +4,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SseProvider } from "@/context/SseContext";
 import { WorkspaceProvider, useWorkspace } from "@/context/WorkspaceContext";
 import { type ReactNode, useEffect, useState } from "react";
+import { __resetAuthStoreForTests, setAuthenticated, setUnauthenticated } from "@/auth";
+import type { AuthMe } from "@/auth";
+
+const TEST_USER: AuthMe = {
+  user_id: "01HZ_TEST",
+  display_name: "Test",
+  email: "test@example.com",
+  available_workspaces: [],
+  current_workspace_id: null,
+};
 
 // Collect every EventSource constructed during a test so we can assert
 // on URLs and tear-down. The shape mimics the NoopEventSource polyfill
@@ -56,11 +66,18 @@ const originalEventSource = (globalThis as { EventSource?: unknown }).EventSourc
 beforeEach(() => {
   created.length = 0;
   (globalThis as { EventSource: unknown }).EventSource = TestEventSource;
+  // SseProvider only opens the transport when the auth store reports
+  // `authenticated` (cd-kc7u § "Logout closes SSE"). Seed the store so
+  // the existing lifecycle tests stay focused on URL / backoff /
+  // teardown rather than auth wiring.
+  __resetAuthStoreForTests();
+  setAuthenticated(TEST_USER);
 });
 
 afterEach(() => {
   cleanup();
   (globalThis as { EventSource?: unknown }).EventSource = originalEventSource as typeof EventSource;
+  __resetAuthStoreForTests();
 });
 
 function Providers({ children }: { children: ReactNode }) {
@@ -211,6 +228,37 @@ describe("<SseProvider>", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("closes the stream when auth flips to `unauthenticated` (logout)", () => {
+    render(
+      <Providers>
+        <div />
+      </Providers>,
+    );
+    expect(created).toHaveLength(1);
+    expect(created[0]!.closed).toBe(false);
+
+    act(() => {
+      setUnauthenticated();
+    });
+
+    // The effect re-runs with `status === 'unauthenticated'`; the
+    // cleanup closes the live stream and the new effect short-circuits
+    // without opening a replacement.
+    expect(created[0]!.closed).toBe(true);
+    expect(created).toHaveLength(1);
+  });
+
+  it("does not open a stream while the auth store is in `loading` (pre-bootstrap)", () => {
+    __resetAuthStoreForTests(); // back to `loading`
+    cleanup();
+    render(
+      <Providers>
+        <div />
+      </Providers>,
+    );
+    expect(created).toHaveLength(0);
   });
 
   it("resets the backoff ladder after a successful open", () => {
