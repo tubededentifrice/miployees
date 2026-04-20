@@ -97,10 +97,12 @@ update in your wrap-up.
   existing helper or pattern before writing. Extract when two copies
   share a reason to change; wait for the third use otherwise. Same
   for prose — docs reference code, they don't restate it.
-- **Correctness and clarity over speed.** Fix root causes, not
-  symptoms. Refactor when it genuinely improves things — but
-  **confirm intent via `AskUserQuestion` before starting**, so scope
-  creep is conscious.
+- **Quality over speed, always.** Do it the *right* way even when
+  slower — fix root causes, refactor the rough edge, write the
+  missing test. Shortcuts rot the codebase; disciplined craft
+  compounds into one that stays easy to change. Refactor when it
+  genuinely improves things — but **confirm intent via
+  `AskUserQuestion` before starting**, so scope creep is conscious.
 - **Fix what you find.** If you hit a broken test, stale type, dead
   import, or bit-rotted helper while working, fix it — don't route
   around it because "I didn't write this". The one exception is a
