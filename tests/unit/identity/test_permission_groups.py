@@ -53,15 +53,19 @@ class TestErrorTypes:
 class TestActionCatalog:
     """Catalog has the expected shape and carries the spec's v1 keys."""
 
-    def test_catalog_is_frozenset(self) -> None:
-        assert isinstance(ACTION_CATALOG, frozenset)
+    def test_catalog_is_mapping(self) -> None:
+        """``ACTION_CATALOG`` is the primary surface — a key→spec mapping."""
+        from collections.abc import Mapping
 
-    def test_action_keys_is_tuple(self) -> None:
-        assert isinstance(ACTION_KEYS, tuple)
+        assert isinstance(ACTION_CATALOG, Mapping)
+
+    def test_action_keys_is_frozenset(self) -> None:
+        """``ACTION_KEYS`` is the membership-only view callers reach for."""
+        assert isinstance(ACTION_KEYS, frozenset)
 
     def test_catalog_matches_action_keys(self) -> None:
-        """``ACTION_CATALOG`` is derived from ``ACTION_KEYS``."""
-        assert frozenset(ACTION_KEYS) == ACTION_CATALOG
+        """``ACTION_KEYS`` is derived from ``ACTION_CATALOG``."""
+        assert frozenset(ACTION_CATALOG.keys()) == ACTION_KEYS
 
     def test_catalog_is_non_empty(self) -> None:
         """v1 ships a non-trivial number of actions — guard against a regression
