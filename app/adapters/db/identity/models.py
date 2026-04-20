@@ -148,6 +148,25 @@ class Session(Base):
     it in. See ``docs/specs/03-auth-and-tokens.md`` §"Sessions".
     ``ua_hash`` / ``ip_hash`` are the hashed device fingerprints the
     security page shows — never the raw values (§15 PII minimisation).
+
+    **Hardening fields (cd-geqp, §15 "Cookies" / "Passkey specifics"):**
+
+    * ``absolute_expires_at`` — the 90-day hard cutoff. Even a session
+      that keeps sliding-refreshing stops being honoured past this
+      instant; it exists so a stolen cookie cannot stay alive forever
+      just by bouncing a long-lived tab off the server. Nullable for
+      pre-hardening rows backfilled by the migration.
+    * ``fingerprint_hash`` — SHA-256 of ``User-Agent + "\n" +
+      Accept-Language`` under an HKDF-peppered key. A mismatch on
+      :func:`app.auth.session.validate` forces re-auth (audit +
+      :class:`SessionInvalid`). Nullable for pre-hardening rows.
+    * ``invalidated_at`` / ``invalidation_cause`` — set when the
+      session is invalidated mid-flight (passkey registered, recovery
+      consumed, sign-count rollback detected) without deleting the
+      row, so the forensic trail survives. ``None`` on a live session;
+      non-null on an invalidated one. The row is still deleted on an
+      **explicit** :func:`app.auth.session.revoke` (user-driven sign
+      out) — invalidation and revocation are distinct.
     """
 
     __tablename__ = "session"
@@ -166,14 +185,33 @@ class Session(Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # Hard 90-day cap — see class docstring. Nullable so the initial
+    # migration can land without a blanket backfill from the config's
+    # cap (reading Settings from Alembic is awkward); new rows ALWAYS
+    # carry a value, enforced by :func:`app.auth.session.issue`.
+    absolute_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
     ua_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     ip_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # SHA-256(ua + "\n" + accept_language + hkdf_subkey). Nullable so
+    # the migration lands without backfilling (a backfill would need
+    # the raw UA + Accept-Language which we never stored). Pre-
+    # hardening rows validate without the fingerprint gate.
+    fingerprint_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    invalidated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Free-text slug (``"passkey_registered"``, ``"recovery_consumed"``,
+    # ``"clone_detected"``, ``"fingerprint_mismatch"``). NULL when the
+    # row is live.
+    invalidation_cause: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (Index("ix_session_user_expires", "user_id", "expires_at"),)
 

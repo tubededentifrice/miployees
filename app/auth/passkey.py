@@ -747,6 +747,23 @@ def register_finish(
     )
 
     _delete_challenge(session, row=row)
+
+    # §15 "Passkey specifics" / cd-geqp: adding a passkey is a
+    # credential-population change. Invalidate every **other** active
+    # session for this user so a lurking stolen cookie can't outlive
+    # the user's security-relevant action. The caller's own session
+    # is unknown at this seam (the router passes ``ctx.actor_id`` but
+    # not the session PK), so we invalidate all of them — the user's
+    # browser rides on CSRF + an imminent re-auth prompt, and
+    # re-signing after enrolling a new passkey is the expected UX.
+    session_module.invalidate_for_user(
+        session,
+        user_id=user_id,
+        cause="passkey_registered",
+        now=resolved_now,
+        clock=clock,
+    )
+
     return credential_ref
 
 
@@ -1087,6 +1104,7 @@ def login_finish(
     ua: str,
     ip_hash_pepper: bytes,
     throttle: Throttle,
+    accept_language: str = "",
     clock: Clock | None = None,
     rp: RelyingParty | None = None,
     now: datetime | None = None,
@@ -1219,6 +1237,7 @@ def login_finish(
         has_owner_grant=has_owner_grant,
         ua=ua,
         ip=ip,
+        accept_language=accept_language,
         now=resolved_now,
         clock=clock,
     )

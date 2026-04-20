@@ -906,13 +906,17 @@ class TestCompleteRecoveryHappyPath:
         assert len(remaining) == 1  # only the new one
         assert remaining[0].id == verified.credential_id
 
-        # Every prior web session gone.
-        assert (
-            session.scalars(
-                select(AuthSession).where(AuthSession.user_id == user.id)
-            ).all()
-            == []
-        )
+        # Every prior web session INVALIDATED (cd-geqp) — rows survive
+        # for forensics but carry ``invalidated_at`` / ``invalidation_
+        # cause = "recovery_consumed"`` so :func:`validate` refuses
+        # them.
+        prior_rows = session.scalars(
+            select(AuthSession).where(AuthSession.user_id == user.id)
+        ).all()
+        assert len(prior_rows) == 2
+        for row in prior_rows:
+            assert row.invalidated_at is not None
+            assert row.invalidation_cause == "recovery_consumed"
 
         # Recovery session consumed.
         assert recovery_id not in recovery_module._RECOVERY_SESSIONS

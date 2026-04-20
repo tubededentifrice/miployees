@@ -154,12 +154,16 @@ class TestSessionEndToEnd:
             email="owner-int-session@example.com",
         )
         with session_factory() as s:
+            # Match the TestClient's default ``User-Agent: testclient``
+            # header so cd-geqp's fingerprint gate (now wired through
+            # the middleware) accepts the cookie on the inbound request.
             issued = issue_session(
                 s,
                 user_id=user_id,
                 has_owner_grant=True,
-                ua="curl",
+                ua="testclient",
                 ip="127.0.0.1",
+                accept_language="",
                 now=_PINNED,
                 settings=settings,
             )

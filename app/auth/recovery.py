@@ -102,12 +102,10 @@ from app.adapters.db.identity.models import (
     User,
     canonicalise_email,
 )
-from app.adapters.db.identity.models import (
-    Session as AuthSession,
-)
 from app.adapters.mail.ports import Mailer
 from app.audit import write_audit
 from app.auth import magic_link, passkey
+from app.auth import session as session_module
 from app.auth._hashing import hash_with_pepper
 from app.auth._throttle import RecoveryRateLimited, Throttle
 from app.auth.keys import derive_subkey
@@ -463,31 +461,32 @@ def _revoke_passkeys(session: SqlaSession, *, user_id: str) -> int:
     return int(count)
 
 
-def _revoke_sessions(session: SqlaSession, *, user_id: str) -> int:
-    """Delete every :class:`AuthSession` row for ``user_id``.
+def _invalidate_sessions(
+    session: SqlaSession,
+    *,
+    user_id: str,
+    now: datetime,
+    clock: Clock | None,
+) -> int:
+    """Invalidate every active session row for ``user_id``.
 
     Recovery has no "current session" to preserve — the caller is
     completing the ceremony on a device that did not have a passkey
     (by construction), so no prior session row belongs to them.
+    Uses :func:`app.auth.session.invalidate_for_user` (cause
+    ``"recovery_consumed"``) rather than the destructive
+    :func:`revoke_all_for_user` so the forensic rows survive: a
+    recovery is one of the rare surgical events where post-hoc
+    operators want "every session the attacker rode in on" preserved.
     Returns the count for the completion payload.
     """
-    # justification: session is user-scoped; no workspace predicate applies.
-    with tenant_agnostic():
-        count = (
-            session.scalar(
-                select(func.count())
-                .select_from(AuthSession)
-                .where(AuthSession.user_id == user_id)
-            )
-            or 0
-        )
-        session.execute(
-            delete(AuthSession)
-            .where(AuthSession.user_id == user_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.flush()
-    return int(count)
+    return session_module.invalidate_for_user(
+        session,
+        user_id=user_id,
+        cause="recovery_consumed",
+        now=now,
+        clock=clock,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +761,8 @@ def verify_recovery(
     handle. The handle permits **only** the passkey-finish step;
     it is not a web session and cannot be used to authenticate
     any other API route. That guarantee is structural: the store
-    is a separate dict from :class:`AuthSession`, and no other
+    is a separate dict from
+    :class:`~app.adapters.db.identity.models.Session`, and no other
     code path reads it.
 
     Writes one ``audit.recovery.verified`` row under the caller's
@@ -858,9 +858,13 @@ def complete_recovery(
     2. Revoke **every** :class:`PasskeyCredential` row for the
        user. Not "every except the one being registered" — recovery
        is the "start from scratch" door.
-    3. Revoke **every** :class:`AuthSession` row for the user. No
+    3. Invalidate **every** :class:`~app.adapters.db.identity.models.Session`
+       row for the user with cause ``"recovery_consumed"``. No
        "current session" exists (the recovery session is a separate
-       dict, not an AuthSession).
+       dict, not a session row). Invalidation (cd-geqp) is
+       non-destructive — the rows stay in the table with
+       ``invalidated_at`` / ``invalidation_cause`` set so the
+       forensic trail survives.
     4. Register the new passkey via
        :func:`passkey.register_finish`. The service inserts one
        credential row + audit, deletes the one-shot WebAuthn
@@ -897,7 +901,17 @@ def complete_recovery(
     # that limits the total passkey count (cap + 1?) doesn't cause
     # the register_finish call below to trip :class:`TooManyPasskeys`.
     revoked_credential_count = _revoke_passkeys(session, user_id=row.user_id)
-    revoked_session_count = _revoke_sessions(session, user_id=row.user_id)
+    # Sessions get **invalidated** (non-destructive) rather than
+    # hard-deleted — cd-geqp / §15 wants the forensic trail preserved
+    # on a security-sensitive event like "recovery redeemed". The
+    # user is about to get a fresh session via the new passkey; any
+    # prior session is refused by :func:`app.auth.session.validate`.
+    revoked_session_count = _invalidate_sessions(
+        session,
+        user_id=row.user_id,
+        now=resolved_now,
+        clock=clock,
+    )
 
     # Build an agnostic ctx for the passkey-register audit row — the
     # user may belong to any number of workspaces and we do not pick

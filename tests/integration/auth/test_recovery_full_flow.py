@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -250,12 +251,18 @@ def _seed_user_with_state(
                 )
             )
         for _ in range(session_count):
+            # Live sessions — expires in the future so the cd-geqp
+            # "active only" filter in :func:`invalidate_for_user`
+            # picks them up. An already-expired row is filtered out
+            # (no point re-flagging a dead session); using
+            # ``created_at`` as the expiry would produce a fake "zero
+            # sessions to invalidate" result on a real recovery.
             s.add(
                 AuthSession(
                     id=new_ulid(),
                     user_id=user.id,
                     workspace_id=workspace_id,
-                    expires_at=user.created_at,
+                    expires_at=user.created_at + timedelta(days=30),
                     last_seen_at=user.created_at,
                     created_at=user.created_at,
                 )
@@ -347,13 +354,16 @@ class TestRecoveryFullFlow:
             assert len(creds) == 1
             assert creds[0].id == cred_id
 
-            # No web sessions left.
-            assert (
-                s.scalars(
-                    select(AuthSession).where(AuthSession.user_id == user_id)
-                ).all()
-                == []
-            )
+            # Every prior web session INVALIDATED (cd-geqp) — rows
+            # survive for forensics but carry ``invalidated_at`` and
+            # ``invalidation_cause = "recovery_consumed"``.
+            prior_sessions = s.scalars(
+                select(AuthSession).where(AuthSession.user_id == user_id)
+            ).all()
+            assert len(prior_sessions) == 3
+            for row in prior_sessions:
+                assert row.invalidated_at is not None
+                assert row.invalidation_cause == "recovery_consumed"
 
             # Audit trail: requested + verified + completed + passkey.registered.
             actions = {

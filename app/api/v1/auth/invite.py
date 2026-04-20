@@ -214,17 +214,31 @@ def _resolve_active_user_id(
     session: Session,
     *,
     cookie_value: str | None,
+    ua: str = "",
+    accept_language: str = "",
 ) -> str | None:
     """Validate the session cookie and return the user id.
 
     Returns ``None`` if the cookie is absent, invalid, or expired —
     the accept handler treats that as "no active session" and
     renders the ``needs_sign_in`` hint on the existing-user branch.
+
+    ``ua`` / ``accept_language`` are forwarded to
+    :func:`app.auth.session.validate` so the §15 fingerprint gate
+    fires; defaulting to ``""`` keeps older call sites and tests
+    that don't have a :class:`Request` handy working (the gate
+    self-skips when the caller supplies neither header, matching the
+    pre-hardening rollout-safety shape).
     """
     if not cookie_value:
         return None
     try:
-        return auth_session.validate(session, cookie_value=cookie_value)
+        return auth_session.validate(
+            session,
+            cookie_value=cookie_value,
+            ua=ua,
+            accept_language=accept_language,
+        )
     except (auth_session.SessionInvalid, auth_session.SessionExpired):
         return None
 
@@ -256,7 +270,12 @@ def build_invite_router(
         ] = None,
     ) -> AcceptResponse:
         """First leg of accept; branches on new-user vs existing-user."""
-        active_user_id = _resolve_active_user_id(session, cookie_value=crewday_session)
+        active_user_id = _resolve_active_user_id(
+            session,
+            cookie_value=crewday_session,
+            ua=request.headers.get("user-agent", ""),
+            accept_language=request.headers.get("accept-language", ""),
+        )
         try:
             outcome = membership.consume_invite_token(
                 session,
@@ -310,13 +329,19 @@ def build_invite_router(
     )
     def post_confirm(
         invite_id: str,
+        request: Request,
         session: _Db,
         crewday_session: Annotated[
             str | None, Cookie(alias=auth_session.SESSION_COOKIE_NAME)
         ] = None,
     ) -> ConfirmResponse:
         """Activate the pending invite for an existing user."""
-        active_user_id = _resolve_active_user_id(session, cookie_value=crewday_session)
+        active_user_id = _resolve_active_user_id(
+            session,
+            cookie_value=crewday_session,
+            ua=request.headers.get("user-agent", ""),
+            accept_language=request.headers.get("accept-language", ""),
+        )
         if active_user_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

@@ -468,6 +468,293 @@ class TestValidate:
 
 
 # ---------------------------------------------------------------------------
+# Absolute expiry (§15 "Cookies") — hard 90-day cap
+# ---------------------------------------------------------------------------
+
+
+class TestAbsoluteExpiry:
+    """``issue`` stamps a 90-day absolute cap; ``validate`` enforces it."""
+
+    def test_absolute_expires_at_is_ninety_days(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        user = bootstrap_user(db_session, email="abs@example.com", display_name="Abs")
+        issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="ua",
+            ip="ip",
+            now=_PINNED,
+            settings=settings,
+        )
+        row = db_session.scalars(select(SessionRow)).one()
+        assert row.absolute_expires_at is not None
+        assert _as_utc(row.absolute_expires_at) == _PINNED + timedelta(days=90)
+
+    def test_validate_raises_expired_past_absolute_cap(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        """Past 90d cap, validate raises SessionExpired regardless of idle TTL."""
+        user = bootstrap_user(db_session, email="cap@example.com", display_name="Cap")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="ua",
+            ip="ip",
+            now=_PINNED,
+            settings=settings,
+        )
+        # 91 days in — past the 90d absolute cap. The idle TTL is only
+        # 30d, so idle would ALSO have fired; we force-update
+        # expires_at forward to isolate the absolute gate.
+        row = db_session.scalars(select(SessionRow)).one()
+        row.expires_at = _PINNED + timedelta(days=200)
+        db_session.flush()
+        with pytest.raises(SessionExpired, match="absolute cap"):
+            validate(
+                db_session,
+                cookie_value=result.cookie_value,
+                now=_PINNED + timedelta(days=91),
+                settings=settings,
+            )
+
+    def test_sliding_refresh_clipped_to_absolute_cap(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        """Refresh cannot push ``expires_at`` past the absolute cap.
+
+        The natural idle TTLs (7d / 30d) never push past the 90d cap
+        on a single refresh, so we simulate a long-lived session by
+        manually extending ``expires_at`` to day 88 and calling
+        ``validate`` at day 85 — refresh would want day 85 + 7 = day 92
+        but must clip to day 90.
+        """
+        user = bootstrap_user(db_session, email="cl@example.com", display_name="Cl")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=True,  # 7-day idle TTL
+            ua="ua",
+            ip="ip",
+            now=_PINNED,
+            settings=settings,
+        )
+        row = db_session.scalars(select(SessionRow)).one()
+        # Simulate a session that has been rolling-refreshed up to day 88
+        # (still within the 90-day absolute cap).
+        row.expires_at = _PINNED + timedelta(days=88)
+        db_session.flush()
+
+        # At day 85, past the half-life of the 7-day idle window,
+        # refresh wants expires_at = day 85 + 7 = day 92 > cap.
+        later = _PINNED + timedelta(days=85)
+        validate(
+            db_session,
+            cookie_value=result.cookie_value,
+            now=later,
+            settings=settings,
+        )
+        row = db_session.scalars(select(SessionRow)).one()
+        assert _as_utc(row.expires_at) == _PINNED + timedelta(days=90)
+        # Absolute cap didn't move.
+        assert row.absolute_expires_at is not None
+        assert _as_utc(row.absolute_expires_at) == _PINNED + timedelta(days=90)
+
+    def test_pre_hardening_row_without_cap_still_validates(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        """A row with ``absolute_expires_at = NULL`` skips the cap gate."""
+        user = bootstrap_user(db_session, email="pre@example.com", display_name="Pre")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="ua",
+            ip="ip",
+            now=_PINNED,
+            settings=settings,
+        )
+        # Simulate a pre-hardening row by nulling the column.
+        row = db_session.scalars(select(SessionRow)).one()
+        row.absolute_expires_at = None
+        db_session.flush()
+        # Should still succeed on the idle gate.
+        resolved = validate(
+            db_session,
+            cookie_value=result.cookie_value,
+            now=_PINNED + timedelta(hours=1),
+            settings=settings,
+        )
+        assert resolved == user.id
+
+
+# ---------------------------------------------------------------------------
+# Fingerprint (§15 "Shared-origin XSS containment")
+# ---------------------------------------------------------------------------
+
+
+class TestFingerprint:
+    """``issue`` stamps a fingerprint; ``validate`` audits + raises on mismatch."""
+
+    def test_fingerprint_stamped_on_issue(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        user = bootstrap_user(db_session, email="fp@example.com", display_name="FP")
+        issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="Mozilla/5.0",
+            ip="1.2.3.4",
+            accept_language="en-US,en;q=0.9",
+            now=_PINNED,
+            settings=settings,
+        )
+        row = db_session.scalars(select(SessionRow)).one()
+        assert row.fingerprint_hash is not None
+        assert len(row.fingerprint_hash) == 64  # sha256 hex
+        # Plaintext never appears.
+        assert "Mozilla" not in row.fingerprint_hash
+        assert "en-US" not in row.fingerprint_hash
+
+    def test_fingerprint_mismatch_raises_invalid(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        user = bootstrap_user(db_session, email="fm@example.com", display_name="FM")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="Mozilla/5.0",
+            ip="1.2.3.4",
+            accept_language="en-US",
+            now=_PINNED,
+            settings=settings,
+        )
+        with pytest.raises(SessionInvalid, match="fingerprint"):
+            validate(
+                db_session,
+                cookie_value=result.cookie_value,
+                ua="Chrome/100",  # different UA
+                accept_language="en-US",
+                now=_PINNED + timedelta(hours=1),
+                settings=settings,
+            )
+
+    def test_fingerprint_match_validates(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        user = bootstrap_user(db_session, email="fh@example.com", display_name="FH")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="Firefox/120",
+            ip="1.2.3.4",
+            accept_language="fr-FR",
+            now=_PINNED,
+            settings=settings,
+        )
+        resolved = validate(
+            db_session,
+            cookie_value=result.cookie_value,
+            ua="Firefox/120",
+            accept_language="fr-FR",
+            now=_PINNED + timedelta(hours=1),
+            settings=settings,
+        )
+        assert resolved == user.id
+
+    def test_fingerprint_mismatch_writes_audit(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        user = bootstrap_user(db_session, email="fa@example.com", display_name="FA")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="Safari/17",
+            ip="1.2.3.4",
+            accept_language="en-GB",
+            now=_PINNED,
+            settings=settings,
+        )
+        with pytest.raises(SessionInvalid):
+            validate(
+                db_session,
+                cookie_value=result.cookie_value,
+                ua="Edge/120",
+                accept_language="en-GB",
+                now=_PINNED + timedelta(hours=1),
+                settings=settings,
+            )
+        audits = db_session.scalars(
+            select(AuditLog).where(AuditLog.action == "session.fingerprint_mismatch")
+        ).all()
+        assert len(audits) == 1
+        assert audits[0].entity_id == result.session_id
+
+    def test_legacy_validate_without_headers_skips_fingerprint_gate(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        """Caller that doesn't pass ``ua`` / ``accept_language`` skips the gate.
+
+        Rollout-safety escape: the tenancy middleware currently calls
+        ``validate(cookie_value=...)`` without forwarding headers.
+        Until cd-geqp's follow-up wires the headers through, that path
+        must keep working — the gate is additive for opt-in callers.
+        """
+        user = bootstrap_user(db_session, email="lg@example.com", display_name="LG")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="Mozilla/5.0",
+            ip="1.2.3.4",
+            accept_language="en-US",
+            now=_PINNED,
+            settings=settings,
+        )
+        resolved = validate(
+            db_session,
+            cookie_value=result.cookie_value,
+            now=_PINNED + timedelta(hours=1),
+            settings=settings,
+        )
+        assert resolved == user.id
+
+    def test_pre_hardening_row_with_null_fingerprint_validates(
+        self, db_session: Session, settings: Settings
+    ) -> None:
+        """A row with ``fingerprint_hash = NULL`` skips the gate."""
+        user = bootstrap_user(db_session, email="ph@example.com", display_name="PH")
+        result = issue(
+            db_session,
+            user_id=user.id,
+            has_owner_grant=False,
+            ua="ua",
+            ip="ip",
+            now=_PINNED,
+            settings=settings,
+        )
+        row = db_session.scalars(select(SessionRow)).one()
+        row.fingerprint_hash = None
+        db_session.flush()
+        # Caller now passes headers; gate still skips because row is null.
+        resolved = validate(
+            db_session,
+            cookie_value=result.cookie_value,
+            ua="different",
+            accept_language="zz-ZZ",
+            now=_PINNED + timedelta(hours=1),
+            settings=settings,
+        )
+        assert resolved == user.id
+
+
+# ---------------------------------------------------------------------------
 # ``revoke``
 # ---------------------------------------------------------------------------
 
@@ -702,11 +989,34 @@ class TestBuildSessionCookie:
         assert "Domain=" not in header
         assert "domain=" not in header
 
-    def test_secure_false_rejected_for_host_prefix(self) -> None:
-        """``__Host-`` without Secure is invalid; refuse rather than emit it."""
+    def test_secure_false_falls_back_to_dev_cookie(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``secure=False`` drops the ``__Host-`` prefix + Secure attr."""
+        from app.auth.session_cookie import DEV_SESSION_COOKIE_NAME
+
         expires = _PINNED + timedelta(days=7)
-        with pytest.raises(ValueError, match="__Host-"):
-            build_session_cookie("t", expires, secure=False)
+        with caplog.at_level("WARNING", logger="app.auth.session_cookie"):
+            header = build_session_cookie("t", expires, secure=False)
+        # No __Host- prefix in dev fallback.
+        assert header.startswith(f"{DEV_SESSION_COOKIE_NAME}=t")
+        assert SESSION_COOKIE_NAME not in header
+        # No Secure attribute in dev fallback.
+        assert "Secure" not in header.split("; ")
+        # Warning must fire so the operator can't miss the plaintext-wire shape.
+        assert any("secure=False" in r.message for r in caplog.records)
+
+    def test_domain_attribute_always_rejected(self) -> None:
+        """Supplying ``domain=...`` is forbidden under both prefix shapes."""
+        expires = _PINNED + timedelta(days=7)
+        with pytest.raises(ValueError, match="Domain"):
+            build_session_cookie("t", expires, domain="example.com")
+
+    def test_non_root_path_rejected_under_host_prefix(self) -> None:
+        """``__Host-`` requires ``Path=/``; a non-default path is refused."""
+        expires = _PINNED + timedelta(days=7)
+        with pytest.raises(ValueError, match="Path=/"):
+            build_session_cookie("t", expires, path="/admin")
 
     def test_naive_datetime_rejected(self) -> None:
         expires_naive = datetime(2026, 5, 1, 0, 0, 0)

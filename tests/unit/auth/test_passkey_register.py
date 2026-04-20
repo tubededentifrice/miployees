@@ -1025,3 +1025,134 @@ class TestErrorAliases:
         assert ChallengeAlreadyConsumed.__qualname__ != ChallengeNotFound.__qualname__
         assert issubclass(ChallengeAlreadyConsumed, LookupError)
         assert issubclass(ChallengeNotFound, LookupError)
+
+
+# ---------------------------------------------------------------------------
+# cd-geqp wiring — register_finish invalidates user sessions
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterFinishInvalidatesSessions:
+    """A successful passkey registration invalidates the user's
+    existing sessions (§15 "Cookies" / cd-geqp).
+
+    The rows are preserved with ``invalidated_at`` /
+    ``invalidation_cause = "passkey_registered"`` so forensic joins
+    survive, and :func:`app.auth.session.validate` refuses them.
+    """
+
+    def test_invalidates_existing_sessions_with_cause(
+        self,
+        session: Session,
+        user_ctx: WorkspaceContext,
+        rp: RelyingParty,
+        clock: FrozenClock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pydantic import SecretStr
+
+        from app.adapters.db.identity.models import Session as SessionRow
+        from app.auth.session import issue as session_issue
+        from app.config import Settings
+
+        settings = Settings.model_construct(
+            database_url="sqlite:///:memory:",
+            root_key=SecretStr("unit-test-passkey-register-root-key"),
+            session_owner_ttl_days=7,
+            session_user_ttl_days=30,
+        )
+        # Seed two sessions for the user.
+        for _ in range(2):
+            session_issue(
+                session,
+                user_id=user_ctx.actor_id,
+                has_owner_grant=True,
+                ua="ua",
+                ip="ip",
+                now=_PINNED,
+                settings=settings,
+            )
+
+        opts = register_start(
+            user_ctx,
+            session,
+            user_id=user_ctx.actor_id,
+            clock=clock,
+            rp=rp,
+        )
+        verified = _verified_response()
+        _stub_verify(monkeypatch, verified=verified)
+        register_finish(
+            user_ctx,
+            session,
+            user_id=user_ctx.actor_id,
+            challenge_id=opts.challenge_id,
+            credential=_raw_credential(),
+            clock=clock,
+            rp=rp,
+        )
+
+        # Both pre-registration sessions invalidated.
+        rows = session.scalars(
+            select(SessionRow).where(SessionRow.user_id == user_ctx.actor_id)
+        ).all()
+        assert len(rows) == 2
+        for row in rows:
+            assert row.invalidated_at is not None
+            assert row.invalidation_cause == "passkey_registered"
+
+    def test_invalidate_audit_row_lands(
+        self,
+        session: Session,
+        user_ctx: WorkspaceContext,
+        rp: RelyingParty,
+        clock: FrozenClock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pydantic import SecretStr
+
+        from app.auth.session import issue as session_issue
+        from app.config import Settings
+
+        settings = Settings.model_construct(
+            database_url="sqlite:///:memory:",
+            root_key=SecretStr("unit-test-passkey-register-root-key"),
+            session_owner_ttl_days=7,
+            session_user_ttl_days=30,
+        )
+        session_issue(
+            session,
+            user_id=user_ctx.actor_id,
+            has_owner_grant=True,
+            ua="ua",
+            ip="ip",
+            now=_PINNED,
+            settings=settings,
+        )
+
+        opts = register_start(
+            user_ctx,
+            session,
+            user_id=user_ctx.actor_id,
+            clock=clock,
+            rp=rp,
+        )
+        verified = _verified_response()
+        _stub_verify(monkeypatch, verified=verified)
+        register_finish(
+            user_ctx,
+            session,
+            user_id=user_ctx.actor_id,
+            challenge_id=opts.challenge_id,
+            credential=_raw_credential(),
+            clock=clock,
+            rp=rp,
+        )
+
+        audits = session.scalars(
+            select(AuditLog).where(AuditLog.action == "session.invalidated")
+        ).all()
+        assert len(audits) == 1
+        assert isinstance(audits[0].diff, dict)
+        assert audits[0].diff["cause"] == "passkey_registered"
+        assert audits[0].diff["count"] == 1

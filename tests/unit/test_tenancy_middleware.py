@@ -849,12 +849,18 @@ class TestRealResolverHTTP:
             ws, user_id = _seed_workspace_and_member(
                 db, slug="session-path", owner_email="alice@example.com"
             )
+            # Stamp the session with the same UA + Accept-Language the
+            # TestClient will echo below — cd-geqp's fingerprint gate
+            # now fires in the middleware, so the issue-time pair has to
+            # match the inbound headers or ``validate`` raises
+            # :class:`SessionInvalid`.
             issued = issue_session(
                 db,
                 user_id=user_id,
                 has_owner_grant=True,
-                ua="test-ua",
+                ua="testclient",
                 ip="127.0.0.1",
+                accept_language="",
                 now=_PINNED,
                 settings=real_settings,
             )

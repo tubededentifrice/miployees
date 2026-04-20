@@ -341,10 +341,21 @@ def resolve_actor(
 
     cookie_value = request.cookies.get(SESSION_COOKIE_NAME)
     if cookie_value:
+        # Forward the request's ``User-Agent`` + ``Accept-Language``
+        # headers so the cd-geqp fingerprint gate actually fires on
+        # production traffic. ``validate_session`` stays tolerant of
+        # empty strings (see its docstring — pre-hardening rows and
+        # legacy callers still round-trip), so a browser that omits
+        # one of the two headers degrades to the idle-cap + absolute-
+        # cap gates without raising on a spurious fingerprint miss.
+        ua = request.headers.get("user-agent", "")
+        accept_language = request.headers.get("accept-language", "")
         try:
             user_id = validate_session(
                 db_session,
                 cookie_value=cookie_value,
+                ua=ua,
+                accept_language=accept_language,
                 settings=settings,
             )
         except (SessionInvalid, SessionExpired):

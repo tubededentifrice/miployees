@@ -73,6 +73,10 @@ from app.auth.passkey import (
     register_start_signup,
 )
 from app.auth.session import build_session_cookie
+from app.auth.session import (
+    invalidate_for_credential as session_invalidate_for_credential,
+)
+from app.auth.webauthn import base64url_to_bytes
 from app.config import Settings, get_settings
 from app.tenancy import WorkspaceContext
 from app.util.clock import SystemClock
@@ -426,6 +430,41 @@ def _login_audit_ctx() -> WorkspaceContext:
     )
 
 
+def _invalidate_for_credential_fresh_uow(
+    *,
+    credential_id_b64: str,
+    cause: str,
+) -> None:
+    """Invalidate every session for the clone-detected credential's owner.
+
+    Runs on a **fresh** UoW for the same reason the failure audits do:
+    the primary UoW rolls back on :class:`CloneDetected`, and an
+    invalidate inside it would disappear with the rollback. Opening a
+    fresh UoW via :func:`make_uow` matches the audit-rescue pattern.
+
+    Failures are logged and swallowed so an audit / DB hiccup doesn't
+    shadow the intended 401 response. Catch is broad (``Exception``) —
+    never ``BaseException``, so operator aborts still propagate.
+    """
+    try:
+        credential_id = base64url_to_bytes(credential_id_b64)
+    except (ValueError, TypeError):
+        _log.exception(
+            "clone invalidate: credential id %r not base64url", credential_id_b64
+        )
+        return
+    try:
+        with make_uow() as uow_session:
+            assert isinstance(uow_session, Session)
+            session_invalidate_for_credential(
+                uow_session,
+                credential_id=credential_id,
+                cause=cause,
+            )
+    except Exception:
+        _log.exception("clone-detected session invalidate failed on fresh UoW")
+
+
 def _write_login_audit_fresh_uow(
     *,
     action: str,
@@ -560,6 +599,7 @@ def build_login_router(
         """
         ip = _client_ip(request)
         ua = request.headers.get("user-agent", "")
+        accept_language = request.headers.get("accept-language", "")
         credential_id_b64 = _extract_credential_id_b64(body.credential)
         ip_hash = hash_with_pepper(ip, login_pepper)
 
@@ -572,6 +612,7 @@ def build_login_router(
                 ua=ua,
                 ip_hash_pepper=login_pepper,
                 throttle=throttle,
+                accept_language=accept_language,
             )
         except PasskeyLoginLockout as exc:
             # Throttle already raised — no throttle advancement here,
@@ -593,10 +634,14 @@ def build_login_router(
             ) from exc
         except CloneDetected as exc:
             # Clone detection is the rare case that warrants two
-            # audit rows: the operator-facing ``cloned_detected`` (so
-            # §15's "auto-revoke on rollback" follow-up has a record
-            # to work from) and the uniform ``login_rejected`` so the
-            # refusal trail matches every other 401 shape.
+            # audit rows plus a session invalidation: the operator-
+            # facing ``cloned_detected`` (so §15's "auto-revoke on
+            # rollback" has a record) and the uniform
+            # ``login_rejected`` so the refusal trail matches every
+            # other 401 shape. The invalidate runs on a fresh UoW
+            # because the primary UoW rolls back on the raise —
+            # leaving the suspected-stolen sessions live would be the
+            # worst-of-both-worlds posture §15 forbids.
             if credential_id_b64 is not None:
                 credential_id_hash = hash_with_pepper(credential_id_b64, login_pepper)
                 throttle.record_passkey_login_failure(
@@ -604,6 +649,10 @@ def build_login_router(
                     ip_hash=ip_hash,
                     now=SystemClock().now(),
                 )
+            _invalidate_for_credential_fresh_uow(
+                credential_id_b64=exc.credential_id_b64,
+                cause="clone_detected",
+            )
             _write_login_audit_fresh_uow(
                 action="passkey.cloned_detected",
                 credential_id_b64=exc.credential_id_b64,
