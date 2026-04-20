@@ -101,6 +101,20 @@ update in your wrap-up.
   symptoms. Refactor when it genuinely improves things — but
   **confirm intent via `AskUserQuestion` before starting**, so scope
   creep is conscious.
+- **Fix what you find.** If you hit a broken test, stale type, dead
+  import, or bit-rotted helper while working, fix it — don't route
+  around it because "I didn't write this". The one exception is a
+  dirty file you didn't touch: another agent may own it, so leave
+  it alone and flag it. Everything else is yours now.
+- **Don't fear refactoring.** The codebase should get better with
+  each pass, not rot. If a module is fighting you, clean it up in
+  the same turn (or file a Beads task if it's out of scope). Small
+  improvements compound; silent avoidance guarantees decay.
+- **Test suite is a first-class asset.** Brittle, flaky, or slow
+  tests are bugs — fix them, don't work around them. Target: full
+  unit suite under a few minutes. If you add tests that push past
+  that, refactor (parallelise, split integration from unit, trim
+  fixtures) rather than accepting the slowdown.
 - Follow existing conventions. If you must diverge, say why in the
   PR.
 - Preserve behavior unless the task is explicitly about changing it.
