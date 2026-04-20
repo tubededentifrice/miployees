@@ -123,6 +123,17 @@ class Settings(BaseSettings):
     worker: Literal["internal", "external"] = "internal"
     storage_backend: Literal["localfs", "s3"] = "localfs"
 
+    # --- Tenancy (cd-iwsv, cd-9il) ---
+    # Gates the Phase-0 ``X-Test-Workspace-Id`` header path inside
+    # :mod:`app.tenancy.middleware`. Default **off** in every
+    # production deployment — a client that supplies the header on a
+    # binary with the flag on can mint any :class:`WorkspaceContext`,
+    # so the flag exists purely for the unit-test seam while the real
+    # resolver lands (cd-9il keeps the header path for the rare test
+    # that needs to bypass DB lookups). Set to ``True`` only in a
+    # sandbox where every caller is trusted.
+    phase0_stub_enabled: bool = False
+
     @field_validator("trusted_interfaces", mode="before")
     @classmethod
     def _split_trusted_interfaces(cls, value: object) -> object:
