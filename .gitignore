@@ -42,3 +42,6 @@ coverage.xml
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Local runtime data (SQLite DBs, etc.)
+/data/
