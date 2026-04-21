@@ -101,6 +101,7 @@ __all__ = [
     "SlugTaken",
     "complete_signup",
     "consume_verify",
+    "provision_workspace_and_owner_seat",
     "prune_stale_signups",
     "start_signup",
 ]
@@ -814,6 +815,139 @@ def consume_verify(
 
 
 # ---------------------------------------------------------------------------
+# Shared provisioning helper — workspace + first user + owners seat
+# ---------------------------------------------------------------------------
+
+
+def provision_workspace_and_owner_seat(
+    session: Session,
+    *,
+    workspace_id: str,
+    user_id: str,
+    slug: str,
+    email_lower: str,
+    display_name: str,
+    timezone: str,
+    now: datetime,
+    clock: Clock | None = None,
+    workspace_name: str | None = None,
+) -> WorkspaceContext:
+    """Create the workspace, first user, membership, four system groups.
+
+    Inserts — inside a single :func:`tenant_agnostic` scope (the
+    tenancy anchor does not exist yet) — the rows every fresh-
+    workspace path shares:
+
+    1. :class:`Workspace` (plan=``free``, quota=``seed_free_tier_10pct()``).
+    2. :class:`User` (email case-folded already — callers MUST pass
+       ``email_lower``; seeded straight onto ``User.email`` so
+       ``canonicalise_email`` is a fixed-point).
+    3. :class:`UserWorkspace` (source=``workspace_grant``).
+    4. :func:`seed_owners_system_group` — creates the ``owners`` group,
+       places ``user_id`` in it, emits the ``manager`` :class:`RoleGrant`
+       on the workspace, and writes the ``audit.workspace.
+       owners_bootstrapped`` row attributed to the freshly-minted
+       :class:`WorkspaceContext`.
+    5. :func:`seed_system_permission_groups` — the three empty-membership
+       scaffolding groups (``managers``, ``all_workers``,
+       ``all_clients``).
+
+    Returns the :class:`WorkspaceContext` built for the owners-
+    bootstrap audit row so callers can reuse its ``audit_correlation_id``
+    on follow-up audits in the same transaction (e.g.
+    ``signup.completed`` or ``dev.force_login``).
+
+    ``workspace_name`` defaults to ``slug`` — matches signup's current
+    behaviour (the UI's workspace picker needs *something* readable on
+    day 1). Callers that want a distinct display name override.
+
+    Shared between :func:`complete_signup` and
+    :mod:`scripts.dev_login` (cd-w1ia) so both pipe their greenfield
+    writes through exactly the same rows + audit shape; diverging code
+    paths would silently skew the governance-anchor invariant between
+    the production passkey flow and the dev-only escape hatch.
+
+    Transaction-neutral: the caller's UoW owns the commit boundary;
+    this helper only ``session.flush()``es so subsequent reads inside
+    the transaction see the new rows.
+    """
+    # justification: the workspace table is workspace-scoped but we
+    # are CREATING the tenancy anchor — no WorkspaceContext exists yet
+    # to filter against. User / UserWorkspace / seed_* likewise sit
+    # before the context is resolved, then seed_owners_system_group
+    # emits its audit row under the freshly-built real_ctx.
+    with tenant_agnostic():
+        workspace = Workspace(
+            id=workspace_id,
+            slug=slug,
+            # display name defaults to slug; operators rename via
+            # ``crewday admin workspace set-name`` in §04. Keeping
+            # name=slug here means the UI's workspace picker has
+            # something readable on day 1 without a schema bump to
+            # make ``name`` nullable.
+            name=workspace_name if workspace_name is not None else slug,
+            plan="free",
+            quota_json=seed_free_tier_10pct(),
+            created_at=now,
+        )
+        session.add(workspace)
+        session.flush()
+
+        user = User(
+            id=user_id,
+            email=email_lower,
+            email_lower=email_lower,
+            display_name=display_name,
+            timezone=timezone,
+            created_at=now,
+        )
+        session.add(user)
+        session.flush()
+
+        session.add(
+            UserWorkspace(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                source="workspace_grant",
+                added_at=now,
+            )
+        )
+        session.flush()
+
+        # Build the real workspace context eagerly so the owners-
+        # bootstrap audit row (cd-ckr) is attributed to the freshly-
+        # minted tenancy from the very first audit emission. Returned
+        # so callers can reuse the same ``audit_correlation_id`` on
+        # follow-up audits in the same transaction.
+        real_ctx = WorkspaceContext(
+            workspace_id=workspace_id,
+            workspace_slug=slug,
+            actor_id=user_id,
+            actor_kind="user",
+            actor_grant_role="manager",
+            actor_was_owner_member=True,
+            audit_correlation_id=new_ulid(),
+        )
+        # Seed the four system groups. The owners seed also emits the
+        # member + role-grant rows + the ``owners_bootstrapped`` audit
+        # row — the other three are empty scaffolding today (capability
+        # payloads land with cd-zkr).
+        seed_owners_system_group(
+            session,
+            real_ctx,
+            workspace_id=workspace_id,
+            owner_user_id=user_id,
+            clock=clock,
+        )
+        seed_system_permission_groups(
+            session,
+            workspace_id=workspace_id,
+            clock=clock,
+        )
+    return real_ctx
+
+
+# ---------------------------------------------------------------------------
 # complete_signup
 # ---------------------------------------------------------------------------
 
@@ -880,77 +1014,22 @@ def complete_signup(
     workspace_id = new_ulid(clock=clock)
     user_id = new_ulid(clock=clock)
 
-    # justification: Workspace is workspace-scoped but we are CREATING
-    # the tenancy anchor — no WorkspaceContext exists yet to filter
-    # against. User / UserWorkspace likewise sit before the context
-    # is resolved.
-    with tenant_agnostic():
-        workspace = Workspace(
-            id=workspace_id,
-            slug=attempt.desired_slug,
-            name=attempt.desired_slug,  # display name defaults to slug;
-            # operators rename via ``crewday admin workspace set-name``
-            # in §04. Keeping name=slug here means the UI's workspace
-            # picker has something readable on day 1 without a schema
-            # bump to make ``name`` nullable.
-            plan="free",
-            quota_json=seed_free_tier_10pct(),
-            created_at=resolved_now,
-        )
-        session.add(workspace)
-        session.flush()
-
-        user = User(
-            id=user_id,
-            email=attempt.email_lower,
-            email_lower=attempt.email_lower,
-            display_name=display_name,
-            timezone=timezone,
-            created_at=resolved_now,
-        )
-        session.add(user)
-        session.flush()
-
-        session.add(
-            UserWorkspace(
-                user_id=user_id,
-                workspace_id=workspace_id,
-                source="workspace_grant",
-                added_at=resolved_now,
-            )
-        )
-        session.flush()
-
-        # Build the real workspace context eagerly so the owners-
-        # bootstrap audit row (cd-ckr) is attributed to the freshly-
-        # minted tenancy from the very first audit emission. Reused
-        # below for the ``signup.completed`` row — a single
-        # correlation id links the two together.
-        real_ctx = WorkspaceContext(
-            workspace_id=workspace_id,
-            workspace_slug=attempt.desired_slug,
-            actor_id=user_id,
-            actor_kind="user",
-            actor_grant_role="manager",
-            actor_was_owner_member=True,
-            audit_correlation_id=new_ulid(),
-        )
-        # Seed the four system groups. The owners seed also emits the
-        # member + role-grant rows + the ``owners_bootstrapped``
-        # audit row — the other three are empty scaffolding today
-        # (capability payloads land with cd-zkr).
-        seed_owners_system_group(
-            session,
-            real_ctx,
-            workspace_id=workspace_id,
-            owner_user_id=user_id,
-            clock=clock,
-        )
-        seed_system_permission_groups(
-            session,
-            workspace_id=workspace_id,
-            clock=clock,
-        )
+    # Shared provisioning path — see :func:`provision_workspace_and_owner_seat`
+    # for the inserted rows + audit shape. The helper returns the
+    # :class:`WorkspaceContext` it built for the owners-bootstrap audit
+    # row; we reuse the same ``audit_correlation_id`` below on
+    # ``signup.completed`` so the forensic trail joins on one id.
+    real_ctx = provision_workspace_and_owner_seat(
+        session,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        slug=attempt.desired_slug,
+        email_lower=attempt.email_lower,
+        display_name=display_name,
+        timezone=timezone,
+        now=resolved_now,
+        clock=clock,
+    )
 
     # Passkey finish — verifies the attestation, inserts the credential
     # row, deletes the one-shot challenge. Raising propagates out of

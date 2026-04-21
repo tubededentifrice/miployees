@@ -46,6 +46,23 @@ OpenClaw, etc.) operating on this repository.
 3. If `bd` is on `PATH`, skim `bd ready` and claim
    (`bd update <id> --claim`) any task that covers what you're about
    to do. If not, skip — don't block on Beads availability.
+4. **Dev login** (smoke-test the real app at `127.0.0.1:8100` without
+   a passkey). Run inside the dev stack — the compose file pre-sets
+   `CREWDAY_DEV_AUTH=1` and `CREWDAY_PROFILE=dev` so the gates are
+   green by construction:
+   ```
+   docker compose -f mocks/docker-compose.yml exec app-api \
+     python -m scripts.dev_login --email me@dev.local --workspace smoke
+   ```
+   Stdout is `__Host-crewday_session=<value>`. Feed it to
+   `curl -b "$cookie" http://127.0.0.1:8100/w/smoke/api/v1/...` or
+   Playwright `context.addCookies([...])`. Creates user / workspace
+   /  role_grant on first call, mints a fresh session row every call.
+   Flags: `--role {owner,manager,worker}` (default owner),
+   `--output {cookie,json,curl,header}`. Host-side variant with the
+   same gates: `CREWDAY_DEV_AUTH=1 ./scripts/dev-login.sh <email> <slug>`
+   (needs `uv sync` / `pip install -e .` first). See
+   `scripts/dev_login.py` for the full contract.
 
 ## Autonomy and persistence
 

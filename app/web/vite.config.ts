@@ -56,9 +56,21 @@ const MOCKS_BACKEND = process.env.VITE_MOCKS_BACKEND_URL ?? null;
 // `/admin/api` prefix covers /admin/api/v1/* deployment-admin routes
 // (§12 "Admin surface"); /admin itself (without /api) is a SPA route
 // and stays local.
+//
+// ``/w`` covers every workspace-scoped API path — per spec §12 "Base
+// URL", workspace REST lives under ``/w/<slug>/api/v1/...`` and SSE
+// under ``/w/<slug>/events``. ``src/lib/api.ts`` rewrites bare
+// ``/api/v1/...`` calls into ``/w/<slug>/api/v1/...`` in the browser;
+// without this proxy entry the rewritten path falls through to Vite's
+// SPA catch-all and returns ``index.html`` instead of JSON.
+// NOTE: `/w` is NOT a SPA route in dev — the SPA mounts workspace
+// pages under other prefixes (e.g. ``/today``, ``/admin``). If a
+// future SPA route needs the ``/w/`` prefix, narrow this to
+// ``/w/:slug/api`` + ``/w/:slug/events`` and co-exist.
 const API_PATHS = [
   "/api",
   "/admin/api",
+  "/w",
   "/events",
   "/switch",
   "/theme",
@@ -84,7 +96,13 @@ export default defineConfig({
       strategies: "generateSW",
       workbox: {
         navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api/, /^\/admin\/api/, /^\/events/],
+        navigateFallbackDenylist: [
+          /^\/api/,
+          /^\/admin\/api/,
+          /^\/w\/[^/]+\/api/,
+          /^\/w\/[^/]+\/events/,
+          /^\/events/,
+        ],
         runtimeCaching: [
           {
             urlPattern: /\/api\/v1\/tasks.*$/,

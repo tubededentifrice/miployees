@@ -58,6 +58,11 @@ services:
       - ../migrations:/app/migrations:ro
       - ../alembic.ini:/app/alembic.ini:ro
       - ../pyproject.toml:/app/pyproject.toml:ro
+      # Dev-only mount so ``docker compose exec app-api python -m
+      # scripts.dev_login …`` works out of the box (cd-w1ia). The
+      # production image does not ship scripts/; it's strictly a
+      # dev affordance.
+      - ../scripts:/app/scripts:ro
       - crewday-app-data:/data
     environment:
       CREWDAY_DATABASE_URL: "sqlite+aiosqlite:////data/crewday.db"
@@ -90,6 +95,8 @@ services:
       CREWDAY_SMTP_PORT: "1025"
       CREWDAY_SMTP_FROM: "crew.day dev <no-reply@dev.crew.day>"
       CREWDAY_SMTP_USE_TLS: "0"
+      # Dev-stack only; see scripts/dev-login.sh (cd-w1ia).
+      CREWDAY_DEV_AUTH: "1"
     expose:
       - "8000"
     healthcheck:

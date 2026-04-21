@@ -46,9 +46,15 @@ const BACKEND =
 // `/admin/api` prefix covers /admin/api/v1/* deployment-admin routes
 // (§12 "Admin surface"); /admin itself (without /api) is a SPA route
 // and stays local.
+//
+// ``/w`` covers every workspace-scoped API path (spec §12 "Base URL"
+// — ``/w/<slug>/api/v1/...``). Mirrors ``app/web/vite.config.ts``;
+// kept in sync so a future mocks page that hits workspace-scoped
+// endpoints works identically.
 const API_PATHS = [
   "/api",
   "/admin/api",
+  "/w",
   "/events",
   "/switch",
   "/theme",
@@ -73,7 +79,13 @@ export default defineConfig({
       strategies: "generateSW",
       workbox: {
         navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api/, /^\/admin\/api/, /^\/events/],
+        navigateFallbackDenylist: [
+          /^\/api/,
+          /^\/admin\/api/,
+          /^\/w\/[^/]+\/api/,
+          /^\/w\/[^/]+\/events/,
+          /^\/events/,
+        ],
         runtimeCaching: [
           {
             urlPattern: /\/api\/v1\/tasks.*$/,
