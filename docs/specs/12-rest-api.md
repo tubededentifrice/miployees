@@ -24,7 +24,7 @@ the workspace's URL slug (§01 "Workspace addressing", §02
 - `https://<host>/api/v1/...` — **only** endpoints that cannot be
   scoped to a workspace. The exhaustive list of bare-host routes is:
   `/api/openapi.json`, `/api/v1/signup/{start,verify}`,
-  `/api/v1/auth/{login,logout,magic-link/redeem,webauthn/*}`,
+  `/api/v1/auth/{login,logout,magic-link/redeem,passkey/*}`,
   `/api/v1/me/workspaces` (returns the caller's accessible
   workspaces for the switcher), `/api/v1/healthz`,
   `/api/v1/readyz`, `/api/v1/version`. Anything else 404s at the
@@ -348,10 +348,10 @@ workspace-scoped; §01, §03):
 ```
 POST   /api/v1/signup/start                      # SaaS self-serve
 POST   /api/v1/signup/verify                     # magic link redeem + WS provisioning
-POST   /api/v1/auth/webauthn/begin_registration
-POST   /api/v1/auth/webauthn/finish_registration
-POST   /api/v1/auth/webauthn/begin_login
-POST   /api/v1/auth/webauthn/finish_login
+POST   /api/v1/auth/passkey/signup/register/start  # self-serve signup step 3 (§03 "Self-serve signup"); mints the registration challenge bound to the signup_session_id returned by /signup/verify (no user row exists yet); no session cookie yet
+POST   /api/v1/auth/passkey/signup/register/finish # verifies the attestation and persists the first passkey row for the user_id the signup service reserved; no session is minted here
+POST   /api/v1/auth/passkey/login/start            # conditional-UI login ceremony (§03 "Login"); anonymous, rate-limited 10/min per IP (§15)
+POST   /api/v1/auth/passkey/login/finish           # verifies the assertion; on success sets `__Host-crewday_session` via Set-Cookie. 401 invalid_credential collapses every failure shape (no fingerprinting); 429 rate_limited on sustained pressure
 POST   /api/v1/auth/magic/send                   # owner or manager only (manual re-issue)
 POST   /api/v1/auth/magic/consume                # consume a break-glass code → magic link
 POST   /api/v1/auth/recover/start                # self-service lost-device; body: {email, break_glass_code?}. Always 200 {status:"sent_if_exists"}.

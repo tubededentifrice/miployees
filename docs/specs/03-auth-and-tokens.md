@@ -236,7 +236,7 @@ they take effect; grants never attach silently.
   cases:
   - **New user**: the redemption is followed inline by the
     passkey enrollment ceremony (display name confirmation,
-    timezone, `webauthn/finish_registration`). On success the
+    timezone, `passkey/register/finish`). On success the
     pending grants are activated, and — for invitees into a
     `manager` surface grant or any `owners` permission group —
     a set of break-glass codes is generated (same ritual as the
@@ -295,7 +295,7 @@ through a magic link of purpose `recover` — whether the magic
 link was minted by a manager via `users.reissue_magic_link`, by
 a self-service recovery request (§"Self-service lost-device
 recovery" below), or by consuming a break-glass code. The
-ceremony's final `webauthn/finish_registration` call, in a
+ceremony's final `passkey/register/finish` call, in a
 single transaction:
 
 1. Revokes **all existing passkeys** for that user (the new one is

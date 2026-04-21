@@ -116,8 +116,8 @@ sees them as covered.
 Endpoints intentionally omitted from CLI generation, each with a
 mandatory reason. Canonical list:
 
-- `auth.webauthn.begin_registration`, `auth.webauthn.finish_registration`,
-  `auth.webauthn.begin_login`, `auth.webauthn.finish_login` — browser-only
+- `auth.passkey.signup_register_start`, `auth.passkey.signup_register_finish`,
+  `auth.passkey.login_start`, `auth.passkey.login_finish` — browser-only
   passkey ceremony.
 - `files.blob` — returns a 302 redirect or binary stream, not JSON;
   file metadata is available via the generated `files show` command.
