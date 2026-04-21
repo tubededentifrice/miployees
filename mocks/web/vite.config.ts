@@ -107,19 +107,58 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     strictPort: true,
-    allowedHosts: ["dev.crew.day", "localhost", "127.0.0.1"],
-    proxy: Object.fromEntries(
-      API_PATHS.map((p) => [p, { target: BACKEND, changeOrigin: true, ws: true }]),
-    ),
+    // ``mocks-web-dev`` is the compose service name reached by the
+    // sibling ``web-dev`` Vite container when it forwards ``/mocks/*``
+    // — ``changeOrigin: true`` on that proxy rewrites the Host header
+    // to the target, which Vite's host-check rejects unless whitelisted
+    // here. Accept the bare service name alongside the public host.
+    allowedHosts: ["dev.crew.day", "localhost", "127.0.0.1", "mocks-web-dev"],
+    // Two proxy entry sets:
+    //
+    // * ``/api`` / ``/events`` / … — hit directly by the mocks SPA
+    //   when it's served standalone (``localhost:5173``). Unchanged.
+    // * ``/mocks/api`` / ``/mocks/events`` / … — hit when the mocks
+    //   SPA is mounted under the ``/mocks/`` base (compose path
+    //   ``dev.crew.day/mocks/...``); each entry strips the ``/mocks``
+    //   prefix before forwarding so the mocks-api FastAPI container
+    //   sees the canonical ``/api/...`` paths.
+    proxy: {
+      ...Object.fromEntries(
+        API_PATHS.map((p) => [p, { target: BACKEND, changeOrigin: true, ws: true }]),
+      ),
+      ...Object.fromEntries(
+        API_PATHS.map((p) => [
+          `/mocks${p}`,
+          {
+            target: BACKEND,
+            changeOrigin: true,
+            ws: true,
+            rewrite: (path: string) => path.replace(/^\/mocks/, ""),
+          },
+        ]),
+      ),
+    },
   },
   build: {
     outDir: "dist",
     sourcemap: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ["react", "react-dom", "react-router-dom"],
-          query: ["@tanstack/react-query"],
+        // Function form — Rollup 4 (bundled inside Vite 8) rejects the
+        // object-literal shape at the TypeScript level. Mirrors the
+        // production SPA at ``app/web/vite.config.ts``.
+        manualChunks(id: string): string | undefined {
+          if (
+            id.includes("node_modules/react-router-dom/") ||
+            id.includes("node_modules/react-dom/") ||
+            id.includes("node_modules/react/")
+          ) {
+            return "vendor";
+          }
+          if (id.includes("node_modules/@tanstack/react-query/")) {
+            return "query";
+          }
+          return undefined;
         },
       },
     },

@@ -12,6 +12,7 @@ import type {
   ExpenseStatus,
 } from "@/types/api";
 import { qk } from "./queryKeys";
+import { withBase } from "./api";
 
 type TypedEvent = { type: SseEvent["event"]; data: string };
 
@@ -64,7 +65,7 @@ function clearAllTyping(client: QueryClient): void {
 
 export function startEventStream(client: QueryClient): () => void {
   if (typeof EventSource === "undefined") return () => undefined;
-  const es = new EventSource("/events", { withCredentials: true });
+  const es = new EventSource(withBase("/events"), { withCredentials: true });
 
   const handler = (evt: MessageEvent<string>): void => {
     dispatch(client, { type: (evt as unknown as { type: SseEvent["event"] }).type, data: evt.data });

@@ -4,6 +4,21 @@
 
 const CSRF_COOKIE = "crewday_csrf";
 
+// Resolve a backend-bound absolute path against Vite's ``base``. When
+// the SPA is served standalone at the origin root (``/``), the
+// ``BASE_URL`` is ``/`` and paths pass through unchanged. When mounted
+// under ``/mocks/`` in the dev-stack compose topology, every backend
+// path gets the ``/mocks`` prefix so the sibling Vite proxy can route
+// it to ``mocks-api`` (its ``/mocks/api`` entry strips the prefix
+// before forwarding). External URLs (``http*``) and empty paths are
+// returned as-is; non-slash-leading paths also pass through to leave
+// relative URLs (``foo/bar``) alone.
+export function withBase(path: string): string {
+  if (!path || !path.startsWith("/")) return path;
+  const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+  return base ? `${base}${path}` : path;
+}
+
 function readCookie(name: string): string | null {
   const target = name + "=";
   for (const chunk of document.cookie.split(";")) {
@@ -52,7 +67,7 @@ export async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<
     if (csrf) headers["X-CSRF"] = csrf;
   }
 
-  const res = await fetch(path, init);
+  const res = await fetch(withBase(path), init);
   const text = await res.text();
   const body: unknown = text ? safeParse(text) : null;
   if (!res.ok) {

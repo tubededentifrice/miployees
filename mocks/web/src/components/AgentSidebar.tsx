@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
-import { fetchJson } from "@/lib/api";
+import { fetchJson, withBase } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import { initialAgentCollapsed, persistAgentCollapsed } from "@/lib/preferences";
 import { useAgentTyping } from "@/lib/agentTyping";
@@ -93,7 +93,7 @@ export default function AgentSidebar({ role }: AgentSidebarProps) {
         "X-Agent-Page": pageHeader,
       };
       if (csrf) headers["X-CSRF"] = decodeURIComponent(csrf);
-      const res = await fetch(messageUrl, {
+      const res = await fetch(withBase(messageUrl), {
         method: "POST",
         credentials: "same-origin",
         headers,

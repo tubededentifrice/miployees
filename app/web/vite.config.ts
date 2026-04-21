@@ -41,6 +41,16 @@ function cacheBustHtml(): PluginOption {
 const BACKEND =
   process.env.VITE_BACKEND_URL ?? "http://host.docker.internal:8100";
 
+// Mocks SPA — the sibling Vite container serving ``mocks/web/`` at
+// ``/mocks/`` so operators can compare the production app against the
+// disposable mocks page-for-page on the same origin. Production
+// (dev.crew.day) routes this via Traefik with a higher-priority
+// router; the loopback host port (127.0.0.1:8100) reuses the same
+// path by forwarding ``/mocks/*`` over the compose network to the
+// mocks Vite dev server. Unset in non-docker dev → the proxy entry
+// drops out and ``/mocks/`` just 404s locally, which is fine.
+const MOCKS_BACKEND = process.env.VITE_MOCKS_BACKEND_URL ?? null;
+
 // Route prefixes that must pass through to FastAPI in dev; everything
 // else is handled by Vite (and in prod, by the SPA catch-all). The
 // `/admin/api` prefix covers /admin/api/v1/* deployment-admin routes
@@ -56,6 +66,7 @@ const API_PATHS = [
   "/nav/sidebar",
   "/healthz",
   "/readyz",
+  "/version",
   "/metrics",
 ];
 
@@ -108,19 +119,36 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     allowedHosts: ["dev.crew.day", "localhost", "127.0.0.1"],
-    proxy: Object.fromEntries(
-      API_PATHS.map((p) => [p, { target: BACKEND, changeOrigin: true, ws: true }]),
-    ),
+    proxy: {
+      ...Object.fromEntries(
+        API_PATHS.map((p) => [p, { target: BACKEND, changeOrigin: true, ws: true }]),
+      ),
+      // ``/mocks/*`` falls through to the sibling ``mocks-web-dev``
+      // Vite container when ``VITE_MOCKS_BACKEND_URL`` is set (the
+      // compose file wires this). Production routes the same prefix
+      // via a higher-priority Traefik router, so the loopback (127.0.0.1:8100)
+      // and the public host (dev.crew.day) behave the same. Mocks Vite
+      // is configured with ``--base /mocks/`` so it emits asset URLs
+      // carrying that prefix — no StripPrefix needed here either.
+      ...(MOCKS_BACKEND
+        ? {
+            "/mocks": {
+              target: MOCKS_BACKEND,
+              changeOrigin: true,
+              ws: true,
+            },
+          }
+        : {}),
+    },
   },
   build: {
     outDir: "dist",
     sourcemap: true,
     rollupOptions: {
       output: {
-        // Function form is the only shape Rollup 4 (bundled inside
-        // Vite 8) types accept here; the object-literal form that
-        // `mocks/web/vite.config.ts` still uses relies on its older
-        // pinned Rollup and is scheduled to be rewritten to match.
+        // Function form — Rollup 4 (bundled inside Vite 8) rejects
+        // the object-literal shape at the TypeScript level.
+        // ``mocks/web/vite.config.ts`` uses the same shape.
         manualChunks(id: string): string | undefined {
           if (
             id.includes("node_modules/react-router-dom/") ||

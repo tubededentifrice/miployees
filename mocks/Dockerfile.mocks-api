@@ -1,0 +1,49 @@
+# crewday mocks — API-only runtime image (dev-stack ``mocks-api`` service).
+#
+# The main ``mocks/Dockerfile`` is a two-stage build that bakes
+# ``mocks/web/dist`` into the image for prod-style runs. The dev stack
+# under ``mocks/docker-compose.yml`` serves the SPA via a separate
+# ``mocks-web-dev`` Vite container instead, so baking the dist is
+# wasted work AND couples the dev build to every transient mocks/web
+# TypeScript / npm peer-dep hiccup. This slimmer image skips the
+# web-build stage entirely — the runtime Python layer is what
+# ``mocks-api`` actually uses.
+#
+# No Node, no TypeScript, no ``npm install`` — just the minimal FastAPI
+# runtime the bind-mounted ``mocks/app/main.py`` needs.
+
+FROM python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+
+# Non-root user pinned at the image level per docs/specs/16.
+# uid/gid mirror the spec's 10001 convention so this mock matches the
+# real deployment shape.
+RUN groupadd --system --gid 10001 crewday \
+ && useradd  --system --uid 10001 --gid crewday --home-dir /app --shell /usr/sbin/nologin crewday
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115" \
+    "uvicorn[standard]>=0.30" \
+    "python-multipart>=0.0.9"
+
+# The mocks ``app/`` lives at ``./app`` in the build context
+# (``mocks/app/``). Bind-mounted at runtime over this location, but the
+# COPY keeps the image bootable on its own (e.g. for a ``docker run``
+# smoke outside compose).
+COPY --chown=crewday:crewday app /app/app
+
+USER crewday:crewday
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')" || exit 1
+
+# Hot reload of the Python layer:
+#   .py → uvicorn --reload via WatchFiles, scoped to /app/app.
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--reload", "--reload-dir", "/app/app"]

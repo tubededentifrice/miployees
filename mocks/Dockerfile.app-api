@@ -1,0 +1,106 @@
+# syntax=docker/dockerfile:1.7
+
+# crewday dev stack — production-app runtime image.
+#
+# Used by the ``app-api`` service in ``mocks/docker-compose.yml`` to
+# run ``app.main:create_app --factory`` against the repo-root ``app/``
+# package (bind-mounted at runtime) so ``https://dev.crew.day`` serves
+# the real product end-to-end. The mocks backend keeps living in its
+# own ``mocks/Dockerfile`` image (now the ``mocks-api`` service) for
+# visual comparison at ``/mocks/``.
+#
+# Source layout inside the container:
+#   /app/app            (bind-mount of repo ../app    — read-only)
+#   /app/migrations     (bind-mount of repo ../migrations — read-only)
+#   /app/alembic.ini    (bind-mount of repo ../alembic.ini — read-only)
+#   /app/pyproject.toml (bind-mount of repo ../pyproject.toml — read-only)
+#   /data               (named volume — SQLite DB, chown'd at boot)
+#
+# Deliberately NOT shipping ``weasyprint``: it pulls in the full
+# GTK/Pango toolchain (~400 MB of apt packages) and is only needed at
+# PDF-render time — which the current code path doesn't touch on boot.
+# The other prod deps mirror ``pyproject.toml`` ``[project].dependencies``
+# plus ``aiosqlite`` (for completeness — the sync engine's URL
+# normaliser would work without it).
+
+FROM python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# ``curl`` is used by the healthcheck below; every other package comes
+# via pip so the image stays reproducible from the requirements list.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Non-root user pinned at the image level per docs/specs/16.
+# uid/gid 10001 matches the mocks image + the production recipe so a
+# bind-mounted ``/data`` volume lands with the right ownership under
+# compose.
+RUN groupadd --system --gid 10001 crewday \
+ && useradd  --system --uid 10001 --gid crewday --home-dir /app --shell /usr/sbin/nologin crewday
+
+WORKDIR /app
+
+# Prod deps (mirrors ``pyproject.toml`` ``[project].dependencies``
+# minus ``weasyprint``; adds ``aiosqlite`` per cd-sgpl).
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115" \
+    "uvicorn[standard]>=0.30" \
+    "sqlalchemy>=2.0" \
+    "alembic" \
+    "pydantic>=2.6" \
+    "pydantic-settings" \
+    "python-multipart" \
+    "webauthn" \
+    "python-ulid" \
+    "apscheduler" \
+    "httpx" \
+    "icalendar" \
+    "python-dateutil" \
+    "itsdangerous" \
+    "click" \
+    "argon2-cffi>=23" \
+    "aiosqlite"
+
+# The data dir is a named compose volume by default, so the mount
+# point itself needs to exist (Docker creates it) but the volume's
+# contents arrive ``root:root``. ``chown`` at container start so the
+# SQLite file lands as ``crewday:crewday`` regardless of the volume
+# state on first boot.
+RUN mkdir -p /data
+
+COPY --chmod=755 <<'ENTRYPOINT' /usr/local/bin/crewday-app-api-entrypoint
+#!/usr/bin/env sh
+# Dev-only entrypoint for the ``app-api`` service.
+#
+# Runs two boot steps as root so the mount-owned ``/data`` gets the
+# right uid regardless of whether the named volume is fresh or has been
+# carried over from an earlier boot, then drops to the ``crewday`` user
+# before ``exec``'ing uvicorn. The ``alembic upgrade head`` step happens
+# after the chown so migrations can write to the SQLite file.
+set -eu
+
+# ``/data`` is the SQLite home; the named volume comes up root-owned so
+# flip ownership every boot. Cheap when unchanged.
+chown -R 10001:10001 /data
+
+# Alembic reads ``CREWDAY_DATABASE_URL`` via ``app.config.get_settings``
+# (see migrations/env.py) — no extra flags needed.
+su -s /bin/sh crewday -c 'cd /app && alembic upgrade head'
+
+exec su -s /bin/sh crewday -c 'exec uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app'
+ENTRYPOINT
+
+EXPOSE 8000
+
+# ``curl`` was installed above specifically for this probe. A 200 on
+# ``/healthz`` means the ASGI server is accepting requests — enough
+# signal for docker's restart/healthcheck loop.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
+
+# Root entrypoint — the script drops privileges before uvicorn.
+USER root
+ENTRYPOINT ["/usr/local/bin/crewday-app-api-entrypoint"]

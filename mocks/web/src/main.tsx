@@ -14,6 +14,14 @@ import "@/styles/tokens.css";
 import "@/styles/reset.css";
 import "@/styles/globals.css";
 
+// Vite's ``--base`` flag sets ``import.meta.env.BASE_URL`` (default
+// ``/`` in standalone dev, ``/mocks/`` in the dev-stack compose where
+// the mocks SPA is mounted under ``/mocks/`` for side-by-side
+// comparison against the production app). React Router strips a
+// trailing slash from ``basename`` so we normalise here too — an
+// empty string means "no prefix", matching standalone behaviour.
+const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "");
+
 // Dev containers serve via Vite without a service worker, but users
 // who visited earlier container builds (baked prod dist + VitePWA)
 // may still have a SW from that origin cached in their browser.
@@ -35,7 +43,7 @@ const queryClient = makeQueryClient();
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={ROUTER_BASENAME}>
         <NavHistoryProvider>
           <ThemeProvider>
             <RoleProvider>

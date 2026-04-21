@@ -1,69 +1,148 @@
-# crewday — UI preview mocks.
+# crewday — dev stack at https://dev.crew.day (and the loopback
+# equivalent http://127.0.0.1:8100 for local smoke).
 #
-# Exposed at https://dev.crew.day via the shared Pangolin/Traefik
-# stack (same pattern as fj2). Both the public URL and the local
-# 127.0.0.1:8100 forward hit the same `web-dev` (Vite) container, so
-# SPA edits hot-reload everywhere — no rebuild, no baked-dist drift.
-# Vite proxies /api, /events, /switch, /theme, /agent, /healthz,
-# /readyz, /metrics to the `mocks` FastAPI container on :8000, which
-# gets .py HMR via `uvicorn --reload`.
+# Topology (cd-sgpl, broadened):
+#
+#   https://dev.crew.day/              → web-dev        (app/web Vite)
+#                                         └─ proxies /api, /events, …
+#                                            to app-api (production FastAPI)
+#   https://dev.crew.day/mocks/        → mocks-web-dev  (mocks/web Vite)
+#                                         └─ proxies /api, /events, …
+#                                            to mocks-api (disposable stub)
+#
+# Four containers + Mailpit:
+#
+#   app-api        — the real ``app.main:create_app`` factory, SQLite
+#                    under the named volume ``crewday-app-data:/data``.
+#                    Bind-mounts the repo's ``app/`` so ``uvicorn
+#                    --reload`` picks up .py edits; runs ``alembic
+#                    upgrade head`` on boot.
+#   web-dev        — Vite dev server for ``app/web/`` (the production
+#                    SPA). Published on 127.0.0.1:8100 and joined to
+#                    ``traefik-proxy`` for external access.
+#   mocks-api      — the old ``crewday-mocks`` service, renamed for
+#                    clarity. Still runs ``mocks/app/main.py`` as a
+#                    disposable stub backing the mocks SPA.
+#   mocks-web-dev  — Vite dev server for ``mocks/web/``, mounted at
+#                    ``/mocks/`` via a higher-priority Traefik router.
+#                    Not published on the host — Traefik only.
+#   mailpit        — local SMTP sink (unchanged).
 #
 # Pangolin needs a corresponding "resource" entry for dev.crew.day
 # (add via the Pangolin dashboard once) — until that's set, requests
-# hit badger's forward-auth and land on the login flow.
+# hit badger's forward-auth and land on the login flow. The bind
+# guard rule (§15, §16, root AGENTS.md) still applies: no port is
+# published on the public interface 217.182.203.57; Traefik owns
+# 80/443 and terminates externally.
 
 name: "crewday-mocks"
 
 services:
-  mocks:
+  # Production FastAPI application — ``app.main:create_app`` factory
+  # against the real repo-root ``app/`` package. Bind-mounts keep
+  # edits live (``uvicorn --reload``); ``alembic upgrade head`` runs
+  # in the entrypoint so a fresh DB file is always at the current
+  # schema head. Container-only: no published port, Traefik reaches
+  # it indirectly via ``web-dev``'s Vite proxy.
+  app-api:
     build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: crewday-mocks
+      context: ..
+      dockerfile: mocks/Dockerfile.app-api
+    container_name: crewday-app-api
     restart: unless-stopped
-    user: "10001:10001"
+    # Root entrypoint chowns ``/data`` (the named volume arrives
+    # root-owned) and then drops to the ``crewday`` uid before
+    # ``exec``ing uvicorn — see ``mocks/Dockerfile.app-api``.
     volumes:
-      # Bind-mount keeps the Python layer in sync on every save. Paired
-      # with `uvicorn --reload`, every .py change is picked up with
-      # zero `docker compose restart`. The SPA bundle baked into the
-      # image is only used for the Traefik/prod path — local dev is
-      # served by the `web-dev` container on :8100 below.
-      - ./app:/app/app:ro
-    # No host-port publication: local dev goes through the web-dev
-    # container at 127.0.0.1:8100, which proxies /api & /events to
-    # `mocks:8000` over the compose network. Traefik also connects
-    # over the compose network (see labels), so this container does
-    # not need an external port.
+      - ../app:/app/app:ro
+      - ../migrations:/app/migrations:ro
+      - ../alembic.ini:/app/alembic.ini:ro
+      - ../pyproject.toml:/app/pyproject.toml:ro
+      - crewday-app-data:/data
+    environment:
+      CREWDAY_DATABASE_URL: "sqlite+aiosqlite:////data/crewday.db"
+      CREWDAY_DATA_DIR: "/data"
+      # Bind wildcard inside the container only — the process is never
+      # published on the host, Traefik routes to it over the compose
+      # network. ``CREWDAY_ALLOW_PUBLIC_BIND=1`` is required because the
+      # factory's bind guard (§15 "Binding policy") refuses 0.0.0.0
+      # without the explicit opt-in.
+      CREWDAY_BIND_HOST: "0.0.0.0"
+      CREWDAY_BIND_PORT: "8000"
+      CREWDAY_ALLOW_PUBLIC_BIND: "1"
+      CREWDAY_PROFILE: "dev"
+      CREWDAY_VITE_DEV_URL: "http://web-dev:5173"
+      CREWDAY_PUBLIC_URL: "https://dev.crew.day"
+      CREWDAY_WEBAUTHN_RP_ID: "dev.crew.day"
+      # DEV-ONLY signing secret — 64 hex chars (256 bits). NEVER a
+      # production value; the compose file is world-readable in the
+      # repo. Every prod deployment generates its own via the recipe
+      # in ``docs/specs/16-deployment-operations.md``.
+      CREWDAY_ROOT_KEY: "a086980eae3ed92658101eda4cab651ed4b8d4fafed4207f26446d9572b60eeb"
+      CREWDAY_LOG_LEVEL: "INFO"
+      # SMTP wiring points at the in-stack Mailpit sink so the signup /
+      # magic-link / recovery routers mount (the factory skips them when
+      # ``smtp_host`` / ``smtp_from`` are unset — §01 "Capability
+      # registry"). The Mailer doesn't connect at construction; it only
+      # opens a socket on the first outbound send, so a Mailpit that
+      # isn't up (port-conflict etc.) doesn't block the app from booting.
+      CREWDAY_SMTP_HOST: "mailpit"
+      CREWDAY_SMTP_PORT: "1025"
+      CREWDAY_SMTP_FROM: "crew.day dev <no-reply@dev.crew.day>"
+      CREWDAY_SMTP_USE_TLS: "0"
     expose:
       - "8000"
+    healthcheck:
+      test:
+        - "CMD"
+        - "curl"
+        - "-fsS"
+        - "http://127.0.0.1:8000/healthz"
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
     networks:
       - default
 
-  # Front-end HMR for both local and public access. The container
-  # installs dependencies on first boot (slower), then `vite` watches
-  # ./web via the bind-mount and hot-reloads in the browser.
-  #
+  # Front-end HMR for the production SPA under ``app/web/``.
   # Vite's dev server on :5173 is published as 127.0.0.1:8100 for
-  # direct host access, and also joined to the traefik-proxy network
-  # so https://dev.crew.day routes here too (HMR ws upgrade is
-  # handled by Traefik). Vite proxies /api, /events, /switch, /theme,
-  # /agent, /healthz, /readyz, /metrics to the `mocks` service via
-  # VITE_BACKEND_URL. That way code edits appear on both URLs without
-  # rebuilding any image.
+  # direct host access and also joined to the traefik-proxy network
+  # so https://dev.crew.day routes here too (HMR ws upgrade handled
+  # by Traefik). Vite proxies /api, /events, /switch, /theme, /agent,
+  # /healthz, /readyz, /metrics to ``app-api`` via VITE_BACKEND_URL
+  # — the URL flipped from ``mocks:8000`` to ``app-api:8000`` in
+  # cd-sgpl's broadened scope so the smoke surface is the real
+  # production app.
   web-dev:
     image: node:22-alpine
     container_name: crewday-web-dev
     restart: unless-stopped
     working_dir: /web
-    command: sh -lc "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    # ``--no-package-lock`` keeps the host's ``package-lock.json`` from
+    # being rewritten by the container-side install. Without it every
+    # ``docker compose up`` mutates the lockfile (the bind-mount is
+    # read-write) so every restart shows up as uncommitted churn.
+    # ``--legacy-peer-deps`` quiets an upstream peer-dep conflict in
+    # the mocks/web graph; the app/web graph currently has none of
+    # those but the flag is harmless when there's nothing to resolve
+    # optimistically.
+    command: sh -lc "npm install --no-audit --no-fund --no-package-lock --legacy-peer-deps && npm run dev -- --host 0.0.0.0"
     environment:
-      VITE_BACKEND_URL: "http://mocks:8000"
+      VITE_BACKEND_URL: "http://app-api:8000"
+      # Proxy ``/mocks/*`` to the mocks-web-dev Vite container so the
+      # loopback (127.0.0.1:8100) exposes the same path layout that
+      # Traefik routes on the public host (dev.crew.day). The mocks
+      # Vite container runs with ``--base /mocks/`` so its asset URLs
+      # already carry the prefix — no StripPrefix on this side.
+      VITE_MOCKS_BACKEND_URL: "http://mocks-web-dev:5173"
     volumes:
-      - ./web:/web
+      - ../app/web:/web
     ports:
       - "127.0.0.1:8100:5173"
     depends_on:
-      - mocks
+      - app-api
+      - mocks-web-dev
     networks:
       - default
       - traefik-proxy
@@ -80,14 +159,86 @@ services:
       - "traefik.http.services.crewday-dev.loadbalancer.healthcheck.interval=10s"
       - "traefik.http.services.crewday-dev.loadbalancer.healthcheck.hostname=dev.crew.day"
 
+  # Disposable mocks backend — kept for side-by-side visual comparison
+  # at ``/mocks/``. Runs ``mocks/app/main.py`` (which uvicorn boots as
+  # ``app.main:app`` against the bind-mounted mocks app), NOT the
+  # repo-root ``app/`` package. Container-only; the mocks SPA Vite
+  # proxy is the only consumer.
+  mocks-api:
+    build:
+      context: .
+      # ``Dockerfile.mocks-api`` is the slim API-only image — no web
+      # build stage, since the mocks SPA is served by the sibling
+      # ``mocks-web-dev`` Vite container in this stack. The original
+      # two-stage ``mocks/Dockerfile`` is kept for prod-style mocks
+      # runs outside compose.
+      dockerfile: Dockerfile.mocks-api
+    container_name: crewday-mocks-api
+    restart: unless-stopped
+    user: "10001:10001"
+    volumes:
+      # Bind-mount keeps the mocks Python layer in sync on every save
+      # (``uvicorn --reload`` inside the image). This is the mocks'
+      # own ``app/`` at ``mocks/app/`` — resolved relative to this
+      # compose file — distinct from the repo-root ``app/`` the
+      # ``app-api`` service above consumes.
+      - ./app:/app/app:ro
+    expose:
+      - "8000"
+    networks:
+      - default
+
+  # Front-end HMR for the mocks SPA under ``mocks/web/``, served at
+  # ``https://dev.crew.day/mocks/`` so the operator can compare the
+  # production app against the mocks page-for-page. No host port —
+  # Traefik only. ``--base /mocks/`` tells Vite to emit asset URLs
+  # prefixed with the same path so no StripPrefix middleware is
+  # needed (adding one would break asset resolution). If HMR
+  # websockets misbehave under the prefix, set ``server.hmr.path``
+  # in ``mocks/web/vite.config.ts`` to ``'/mocks/@vite/ws'``.
+  mocks-web-dev:
+    image: node:22-alpine
+    container_name: crewday-mocks-web-dev
+    restart: unless-stopped
+    working_dir: /web
+    # ``--no-package-lock`` — see ``web-dev`` above for why. Every
+    # container restart would otherwise rewrite the host's
+    # ``mocks/web/package-lock.json`` because npm resolves with
+    # ``--legacy-peer-deps`` inside the container and without it on
+    # the host.
+    command: sh -lc "npm install --no-audit --no-fund --no-package-lock --legacy-peer-deps && npm run dev -- --host 0.0.0.0 --base /mocks/"
+    environment:
+      VITE_BACKEND_URL: "http://mocks-api:8000"
+    volumes:
+      - ./web:/web
+    depends_on:
+      - mocks-api
+    networks:
+      - default
+      - traefik-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      # Higher priority than ``crewday-dev`` so ``/mocks/...`` wins
+      # when both routers share the same host. Traefik defaults to
+      # longest-rule-wins but two routers on the same host need an
+      # explicit priority to be deterministic.
+      - "traefik.http.routers.crewday-dev-mocks.rule=Host(`dev.crew.day`) && PathPrefix(`/mocks`)"
+      - "traefik.http.routers.crewday-dev-mocks.priority=100"
+      - "traefik.http.routers.crewday-dev-mocks.entrypoints=websecure"
+      - "traefik.http.routers.crewday-dev-mocks.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.crewday-dev-mocks.middlewares=badger@file"
+      - "traefik.http.routers.crewday-dev-mocks.service=crewday-dev-mocks"
+      - "traefik.http.services.crewday-dev-mocks.loadbalancer.server.port=5173"
+
   # Local SMTP sink for dev. Mailpit accepts any SMTP session on :1025
   # (no auth, no TLS) and serves a web UI + JSON API on :8025 so the
   # operator can inspect what crewday would have delivered in prod.
   # Ports are bound to 127.0.0.1 only per the AGENTS.md bind guard —
   # this container never needs to be reachable from outside the host.
   # Point ``CREWDAY_SMTP_HOST=mailpit`` / ``_PORT=1025`` at it from the
-  # mocks app's environment (or export from a local .env) when wiring
-  # up magic-link / digest smoke tests.
+  # app-api (or mocks-api) environment when wiring up magic-link /
+  # digest smoke tests.
   mailpit:
     image: axllent/mailpit:latest
     container_name: crewday-mailpit
@@ -101,3 +252,9 @@ services:
 networks:
   traefik-proxy:
     external: true
+
+volumes:
+  # SQLite file home for ``app-api``. Named volume so the DB survives
+  # ``docker compose down`` but is wiped with ``docker compose down
+  # -v`` when the operator wants a clean slate.
+  crewday-app-data:

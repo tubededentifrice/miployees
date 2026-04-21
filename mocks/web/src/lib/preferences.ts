@@ -4,6 +4,7 @@
 // local mirror optimistically so layout doesn't flash.
 
 import type { Role, Theme } from "@/types/api";
+import { withBase } from "./api";
 
 const ROLE_COOKIE = "crewday_role";
 const THEME_COOKIE = "crewday_theme";
@@ -90,22 +91,22 @@ export function initialNavCollapsed(): boolean {
 // Fire-and-forget writers. The server is authoritative; we optimistic
 // -mirror so the next paint reflects the choice.
 export function persistRole(role: Role): void {
-  fetch("/switch/" + role, { method: "GET", credentials: "same-origin", keepalive: true })
+  fetch(withBase("/switch/" + role), { method: "GET", credentials: "same-origin", keepalive: true })
     .catch(() => { /* preferences are best-effort */ });
 }
 
 export function persistTheme(theme: Theme): void {
-  fetch("/theme/set/" + theme, { method: "POST", credentials: "same-origin", keepalive: true })
+  fetch(withBase("/theme/set/" + theme), { method: "POST", credentials: "same-origin", keepalive: true })
     .catch(() => { /* best-effort */ });
 }
 
 export function persistWorkspace(workspaceId: string): void {
-  fetch("/workspaces/switch/" + workspaceId, { method: "POST", credentials: "same-origin", keepalive: true })
+  fetch(withBase("/workspaces/switch/" + workspaceId), { method: "POST", credentials: "same-origin", keepalive: true })
     .catch(() => { /* best-effort */ });
 }
 
 export function persistAgentCollapsed(state: "open" | "collapsed"): void {
-  const url = "/agent/sidebar/" + state;
+  const url = withBase("/agent/sidebar/" + state);
   let delivered = false;
   if (navigator.sendBeacon) {
     try {
@@ -121,7 +122,7 @@ export function persistAgentCollapsed(state: "open" | "collapsed"): void {
 }
 
 export function persistNavCollapsed(state: "open" | "collapsed"): void {
-  const url = "/nav/sidebar/" + state;
+  const url = withBase("/nav/sidebar/" + state);
   let delivered = false;
   if (navigator.sendBeacon) {
     try {
