@@ -32,7 +32,7 @@ See ``docs/specs/03-auth-and-tokens.md`` §"Login", §"Sessions",
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -1448,6 +1448,7 @@ class TestAutoRevokeCredentialFreshUow:
         redirect_default_engine: None,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
+        allow_propagated_log_capture: Callable[..., None],
     ) -> None:
         """A ``make_uow`` failure inside the helper is logged and
         swallowed — the helper returns without propagating the error.
@@ -1484,6 +1485,11 @@ class TestAutoRevokeCredentialFreshUow:
             raise RuntimeError("simulated DB failure")
 
         monkeypatch.setattr(passkey_api_module, "make_uow", _raiser)
+
+        # alembic's fileConfig in migrations/env.py disables propagation
+        # on every non-listed logger; re-enable via the shared fixture
+        # so caplog actually sees the ERROR record.
+        allow_propagated_log_capture(passkey_api_module.__name__)
 
         # The helper must NOT propagate — any raise would collapse the
         # 401 into a 500 at the router layer.
