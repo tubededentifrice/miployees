@@ -49,7 +49,7 @@ from sqlalchemy.orm import Session
 
 from app.abuse.throttle import ShieldStore
 from app.abuse.throttle import throttle as throttle_decorator
-from app.adapters.db.identity.models import WebAuthnChallenge
+from app.adapters.db.identity.models import PasskeyCredential, WebAuthnChallenge
 from app.adapters.db.session import make_uow
 from app.api.deps import current_workspace_context, db_session
 from app.audit import write_audit
@@ -85,7 +85,7 @@ from app.auth.session import (
 )
 from app.auth.webauthn import base64url_to_bytes
 from app.config import Settings, get_settings
-from app.tenancy import WorkspaceContext
+from app.tenancy import WorkspaceContext, tenant_agnostic
 from app.util.clock import SystemClock
 
 __all__ = ["build_login_router", "router", "signup_router"]
@@ -563,6 +563,104 @@ def _invalidate_for_credential_fresh_uow(
         _log.exception("clone-detected session invalidate failed on fresh UoW")
 
 
+def _auto_revoke_credential_fresh_uow(
+    *,
+    credential_id_b64: str,
+    reason: str = "clone_detected",
+) -> None:
+    """Hard-delete the clone-detected credential on a fresh UoW + audit.
+
+    cd-cx19 / §15 "Passkey specifics": a sign-count rollback event
+    auto-revokes the credential alongside the user-facing 401. The
+    primary UoW rolls back on :class:`CloneDetected`, so this helper
+    opens a fresh :func:`make_uow` to land the delete + audit row
+    even when the caller's UoW is about to disappear.
+
+    Hard-delete (not soft-delete): ``passkey_credential`` has no
+    ``deleted_at`` column, matching the user-initiated
+    :func:`app.auth.passkey.revoke_passkey` path. Forensic trail lives
+    in the audit rows (``passkey.cloned_detected`` +
+    ``passkey.auto_revoked``) — the credential row itself is gone.
+
+    Responsibilities are sharp: this helper **only** revokes the
+    credential + writes the auto-revoke audit. Session invalidation
+    (with cause ``"clone_detected"``) is a separate concern and runs
+    from :func:`_invalidate_for_credential_fresh_uow` earlier in the
+    ``except CloneDetected`` branch — splitting the two means the
+    §15 "Session-invalidation causes" table sees ``clone_detected``
+    exactly once per event and the audit trail reads cleanly:
+
+    1. ``session.invalidated`` (cause ``clone_detected``) —
+       pre-existing sibling helper
+    2. ``passkey.cloned_detected`` — domain detection audit
+    3. ``passkey.auto_revoked`` — THIS helper's audit
+    4. (credential row gone)
+
+    Idempotency: a concurrent auto-revoke (or a subsequent replay)
+    finds the row already gone and the helper returns cleanly — the
+    audit row is NOT emitted for a no-op because the absence of the
+    row means we're not the party revoking.
+
+    Failures are logged and swallowed so a DB / audit hiccup never
+    shadows the 401 response the router is about to return. The
+    catch is deliberately broad (``Exception``) — :class:`BaseException`
+    still propagates so operator aborts aren't swallowed.
+    """
+    try:
+        credential_id = base64url_to_bytes(credential_id_b64)
+    except (ValueError, TypeError):
+        _log.exception(
+            "clone auto-revoke: credential id %r not base64url",
+            credential_id_b64,
+        )
+        return
+    try:
+        with make_uow() as uow_session:
+            assert isinstance(uow_session, Session)
+            # justification: passkey_credential is identity-scoped;
+            # mirrors the tenant_agnostic gate on every other
+            # credential-table read in this module (and in
+            # app.auth.passkey.revoke_passkey).
+            with tenant_agnostic():
+                row = uow_session.get(PasskeyCredential, credential_id)
+            if row is None:
+                # Already revoked by a concurrent caller, or never
+                # existed — either way the row is gone and emitting
+                # an auto-revoke audit would falsely claim this call
+                # did the work.
+                _log.info(
+                    "clone auto-revoke: credential %r already absent; no-op",
+                    credential_id_b64,
+                )
+                return
+            # Audit BEFORE the destructive write so a flush failure on
+            # the audit insert doesn't leave an auto-revoked credential
+            # without a paper trail. Both land under the same fresh
+            # UoW — rollback takes them together. Mirrors the
+            # cause-before-effect ordering of revoke_passkey.
+            write_audit(
+                uow_session,
+                _login_audit_ctx(),
+                entity_kind="passkey_credential",
+                entity_id=credential_id_b64,
+                action="passkey.auto_revoked",
+                diff={
+                    "reason": reason,
+                    "cred_id_b64": credential_id_b64,
+                    "user_id": row.user_id,
+                },
+            )
+            # justification: passkey_credential is identity-scoped.
+            with tenant_agnostic():
+                uow_session.delete(row)
+                uow_session.flush()
+    except Exception:
+        _log.exception(
+            "clone-detected auto-revoke failed on fresh UoW for id=%r",
+            credential_id_b64,
+        )
+
+
 def _delete_challenge_fresh_uow(challenge_id: str) -> None:
     """Idempotently delete ``challenge_id`` on its own Unit-of-Work.
 
@@ -815,15 +913,24 @@ def build_login_router(
                 detail={"error": "rate_limited"},
             ) from exc
         except CloneDetected as exc:
-            # Clone detection is the rare case that warrants two
-            # audit rows plus a session invalidation: the operator-
-            # facing ``cloned_detected`` (so §15's "auto-revoke on
-            # rollback" has a record) and the uniform
-            # ``login_rejected`` so the refusal trail matches every
-            # other 401 shape. The invalidate runs on a fresh UoW
-            # because the primary UoW rolls back on the raise —
-            # leaving the suspected-stolen sessions live would be the
+            # Clone detection is the rare case that warrants a session
+            # invalidation, two audit rows (cloned_detected +
+            # login_rejected), a challenge burn, AND a hard-delete of
+            # the credential itself (cd-cx19). Every step runs on its
+            # own fresh UoW because the primary UoW rolls back on the
+            # raise; an in-primary-UoW write would disappear with it
+            # and leave the suspected-stolen credential live — the
             # worst-of-both-worlds posture §15 forbids.
+            #
+            # Ordering (all fresh-UoW, each independent):
+            #   1. session invalidation (cause clone_detected)
+            #   2. passkey.cloned_detected audit (domain detection)
+            #   3. passkey.login_rejected audit (uniform 401 trail)
+            #   4. challenge row burn (cd-qx1f; single-use on failure)
+            #   5. credential hard-delete + passkey.auto_revoked audit
+            #      (cd-cx19; the "auto-revoke on rollback" half of §15)
+            # Failure of any one is log-and-continue — the 401 must
+            # land regardless.
             if credential_id_b64 is not None:
                 credential_id_hash = hash_with_pepper(credential_id_b64, login_pepper)
                 throttle.record_passkey_login_failure(
@@ -857,6 +964,17 @@ def build_login_router(
             # cd-qx1f: single-use even on failure. Idempotent —
             # zero-rows-affected is fine if another caller beat us.
             _delete_challenge_fresh_uow(body.challenge_id)
+            # cd-cx19: hard-delete the credential + emit
+            # passkey.auto_revoked. Responsibilities are split from
+            # the invalidate above — this helper does NOT touch
+            # sessions. A subsequent login ceremony against the same
+            # credential id will miss the row and hit the
+            # InvalidLoginAttempt branch (unknown credential shape)
+            # rather than CloneDetected again.
+            _auto_revoke_credential_fresh_uow(
+                credential_id_b64=exc.credential_id_b64,
+                reason="clone_detected",
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"error": "invalid_credential"},

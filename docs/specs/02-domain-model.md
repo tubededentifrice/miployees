@@ -1438,7 +1438,7 @@ scope, and the spec that defines the feature:
 | `invoice_reminders.offsets_days` | int[] | `[-3, 1, 7]` | W/P | §22 |
 | `invoice_reminders.stop_after_days` | int | `30` | W/P | §22 |
 | `auth.self_service_recovery_enabled` | bool | `true` | W | §03 |
-| `auth.webauthn_rollback_auto_revoke` | bool | `true` | W | §15 |
+| `auth.passkey_rollback_auto_revoke` | bool | `true` | W | §15 |
 | `ical.allow_self_signed` | bool | `false` | W/P | §04 |
 | `signup.disposable_domains_path` | text? | `null` (deployment-managed) | W | §15 |
 | `signup.ip_cap_multiplier` | int | `3` | W | §15 |

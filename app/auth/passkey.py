@@ -307,23 +307,27 @@ class CloneDetected(ValueError):
     Per §15 "Passkey specifics" — FIDO2's sign-count exists exactly to
     detect cloned authenticators, and ignoring a rollback is the
     worst-of-both-worlds posture. The domain service refuses the
-    login; the HTTP router writes ``audit.passkey.cloned_detected``
-    on its own fresh UoW so the operator trail lands even though the
-    primary UoW rolls back on the raise.
+    login; the HTTP router handles every downstream effect on its
+    own fresh UoWs so the operator trail lands even though the
+    primary UoW rolls back on the raise:
+
+    * ``audit.passkey.cloned_detected`` — the detection event
+    * ``session.invalidated`` with cause ``clone_detected`` — every
+      session for the credential's owner
+    * ``audit.passkey.auto_revoked`` — the revocation event (cd-cx19)
+    * the ``passkey_credential`` row is hard-deleted (no
+      ``deleted_at`` column; the forensic trail lives in audit_log)
 
     ``credential_id_b64``, ``old_sign_count``, ``new_sign_count`` are
-    stashed on the exception so the router's fresh-UoW audit write
-    has the payload without re-reading the DB.
-
-    **v1 scope**: this task ships the *detection* + refusal; the
-    auto-revoke half of §15 (setting ``passkey.deleted_at``) is a
-    distinct task and tracked separately. The detection alone is
-    enough to stop a cloned credential from logging in — a follow-up
-    adds the revocation write + operator notification.
+    stashed on the exception so the router's fresh-UoW audit writes
+    have the payload without re-reading the DB.
 
     Surface-level mapping at the HTTP layer: **401 invalid_credential**,
     identical to :class:`InvalidLoginAttempt`, so the response shape
-    reveals nothing.
+    reveals nothing. A subsequent login against the revoked credential
+    misses the credential lookup and raises :class:`InvalidLoginAttempt`
+    rather than re-hitting this type — there is no row left to
+    compare sign-counts against.
     """
 
     def __init__(

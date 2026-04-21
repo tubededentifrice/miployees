@@ -1186,6 +1186,13 @@ class TestLoginFinishChallengeSingleUse:
         assert resp.status_code == 401
         with factory() as s:
             assert s.get(WebAuthnChallenge, challenge_id) is None
+            # cd-cx19: the clone-detected credential is hard-deleted on
+            # a sibling fresh UoW, and passkey.auto_revoked audit is
+            # written with reason "clone_detected".
+            assert s.get(PasskeyCredential, credential_id) is None
+            actions = {a.action for a in s.scalars(select(AuditLog)).all()}
+            assert "passkey.auto_revoked" in actions
+            assert "passkey.cloned_detected" in actions
 
     def test_challenge_expired_burns_challenge(
         self,
@@ -1356,3 +1363,145 @@ class TestLoginFinishChallengeSingleUse:
         # the purposes of §03 "single-use on failure".
         with factory() as s:
             assert s.get(WebAuthnChallenge, challenge_id) is not None
+
+
+# ---------------------------------------------------------------------------
+# cd-cx19 — clone-detected credential auto-revoke on a fresh UoW
+# ---------------------------------------------------------------------------
+
+
+class TestAutoRevokeCredentialFreshUow:
+    """Exercises the auto-revoke helper's edge cases.
+
+    The happy path is covered by
+    :meth:`TestLoginFinishChallengeSingleUse.test_clone_detected_burns_challenge`
+    (credential hard-deleted, ``passkey.auto_revoked`` audit lands).
+    These cases cover the paths that test doesn't:
+
+    * Concurrent auto-revoke — the credential is already gone when
+      the helper opens its fresh UoW. It must return cleanly and must
+      NOT emit a ``passkey.auto_revoked`` audit row (a no-op writing
+      an audit row would falsely claim this call did the work).
+    * DB failure — the fresh UoW raises. The helper swallows the
+      error via ``except Exception`` so the 401 still lands; the
+      absent audit row is fine (the operator-facing forensic trail
+      still carries ``passkey.cloned_detected``).
+    """
+
+    def test_no_op_when_credential_already_gone_skips_audit(
+        self,
+        factory: sessionmaker[Session],
+        redirect_default_engine: None,
+    ) -> None:
+        """Direct unit test of :func:`_auto_revoke_credential_fresh_uow`
+        when the credential row is already absent.
+
+        The helper opens its own fresh UoW, reads the credential id,
+        finds ``None``, logs at INFO, and returns — crucially WITHOUT
+        emitting a ``passkey.auto_revoked`` audit row. Emitting an
+        audit for a no-op would falsely claim this call did the work
+        that the sibling caller (concurrent auto-revoke, race with
+        :func:`revoke_passkey`, prior revocation) actually did.
+
+        This goes straight at the helper rather than driving a full
+        CloneDetected flow: the integration-level "credential gone"
+        race is hard to trigger deterministically, and the unit-level
+        question the review asks ("no-op does not emit audit") is
+        answered more cleanly by the direct call.
+        """
+        from webauthn.helpers import bytes_to_base64url
+
+        import app.api.v1.auth.passkey as passkey_api_module
+
+        # An id that is well-formed base64url but has no row seeded —
+        # the helper's ``session.get`` must return None and the helper
+        # must short-circuit without an audit write.
+        absent_credential_id = b"\xcc" * 32
+        absent_b64 = bytes_to_base64url(absent_credential_id)
+
+        # Pre-condition: the row really is absent.
+        with factory() as s:
+            assert s.get(PasskeyCredential, absent_credential_id) is None
+
+        # The helper is a module-private function — we call it directly
+        # (underscored-name is an explicit "this is implementation, the
+        # test is intentionally coupled to it").
+        passkey_api_module._auto_revoke_credential_fresh_uow(
+            credential_id_b64=absent_b64,
+            reason="clone_detected",
+        )
+
+        with factory() as s:
+            actions = [a.action for a in s.scalars(select(AuditLog)).all()]
+            # No audit row was written — the helper's no-op path is
+            # correctly silent. Any ``passkey.auto_revoked`` here
+            # would be a false claim that the helper revoked a
+            # credential when the row was never present.
+            assert "passkey.auto_revoked" not in actions
+            # And no other rows landed either — the helper only
+            # writes one kind of audit.
+            assert actions == []
+
+    def test_db_failure_is_swallowed_without_raising(
+        self,
+        factory: sessionmaker[Session],
+        redirect_default_engine: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A ``make_uow`` failure inside the helper is logged and
+        swallowed — the helper returns without propagating the error.
+
+        A raise here would shadow the router's intended 401 with a
+        500, defeating the entire fresh-UoW-rescue pattern §15 asks
+        for. The broad ``except Exception`` is the point; this test
+        pins that it stays broad.
+        """
+        import logging
+
+        from webauthn.helpers import bytes_to_base64url
+
+        import app.api.v1.auth.passkey as passkey_api_module
+
+        with factory() as s:
+            user = bootstrap_user(s, email="boom@example.com", display_name="Boom")
+            credential_id = b"\xee" * 32
+            s.add(
+                PasskeyCredential(
+                    id=credential_id,
+                    user_id=user.id,
+                    public_key=b"\xff" * 64,
+                    sign_count=10,
+                    backup_eligible=False,
+                    created_at=_PINNED,
+                )
+            )
+            s.commit()
+
+        cred_b64 = bytes_to_base64url(credential_id)
+
+        def _raiser() -> Any:
+            raise RuntimeError("simulated DB failure")
+
+        monkeypatch.setattr(passkey_api_module, "make_uow", _raiser)
+
+        # The helper must NOT propagate — any raise would collapse the
+        # 401 into a 500 at the router layer.
+        with caplog.at_level(logging.ERROR, logger=passkey_api_module.__name__):
+            passkey_api_module._auto_revoke_credential_fresh_uow(
+                credential_id_b64=cred_b64,
+                reason="clone_detected",
+            )
+
+        # The failure was logged with the credential id so an operator
+        # investigating a missing ``passkey.auto_revoked`` audit row
+        # can correlate back to the source event.
+        assert any(cred_b64 in rec.getMessage() for rec in caplog.records)
+
+        with factory() as s:
+            # No audit row was written (the fresh UoW never opened),
+            # and the credential row stays put (the helper never got
+            # past the make_uow call).
+            actions = [a.action for a in s.scalars(select(AuditLog)).all()]
+            assert "passkey.auto_revoked" not in actions
+            assert s.get(PasskeyCredential, credential_id) is not None

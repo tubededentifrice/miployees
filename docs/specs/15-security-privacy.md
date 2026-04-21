@@ -327,27 +327,36 @@ See §03 for ceremonies. Additional hardening:
   FIDO2's sign-count exists precisely to detect clones; ignoring
   the signal while logging it is the worst-of-both-worlds posture.
   On the first rollback event for any credential, the server
-  auto-revokes that credential (sets `passkey.deleted_at = now()`
-  in the same transaction that detected the rollback, rejects any
-  subsequent auth ceremony with the credential id), writes
-  `audit.webauthn.rollback_auto_revoke` with the rolled-back
-  counter values, and notifies the credential's owner plus every
-  workspace owner through the shared audit view (§10 messaging).
+  **hard-deletes** the `passkey_credential` row on a fresh
+  Unit-of-Work (the primary UoW rolls back with the raised
+  `CloneDetected`; a fresh UoW keeps the revocation from
+  disappearing with the rollback), rejecting any subsequent auth
+  ceremony with the credential id with the same
+  `401 invalid_credential` envelope as an unknown credential. Two
+  audit rows land: `audit.passkey.cloned_detected` (the detection
+  event, carrying rolled-back counter values) and
+  `audit.passkey.auto_revoked` (the revocation event, carrying
+  `reason: "clone_detected"`). Every session for the credential's
+  owner is invalidated with cause `clone_detected` (§"Session-
+  invalidation causes") and the owner plus every workspace owner
+  is notified through the shared audit view (§10 messaging).
   The user recovers via §03's lost-device flow (magic link → new
   passkey enrolment); if the original credential is still in the
   user's possession, re-enrolling it is a 30-second flow on the
   same device.
 
-  Revocation is irreversible — there is no "false-positive
-  restore" path. Password-manager bugs that cause the sign-count
-  to decrement are vanishingly rare; the cost of a false-positive
-  revocation (30 seconds to re-enrol) is tiny compared to the
-  cost of a false-negative (a cloned credential remains live).
-  Deployments that want to accept that tradeoff for other
-  reasons MAY flip
-  `settings.webauthn_rollback_auto_revoke = false`, which falls
-  back to the v0 behaviour (alert only, no revoke) and carries
-  an operator warning in `/admin/alerts`.
+  Revocation is a hard delete, not a tombstone: `passkey_credential`
+  carries no `deleted_at` column — the forensic trail lives
+  entirely in `audit_log`. Revocation is therefore irreversible —
+  there is no "false-positive restore" path. Password-manager bugs
+  that cause the sign-count to decrement are vanishingly rare; the
+  cost of a false-positive revocation (30 seconds to re-enrol) is
+  tiny compared to the cost of a false-negative (a cloned
+  credential remains live). Deployments that want to accept that
+  tradeoff for other reasons MAY flip
+  `settings.auth.passkey_rollback_auto_revoke = false`, which
+  falls back to the v0 behaviour (alert only, no revoke) and
+  carries an operator warning in `/admin/alerts`.
 
 ## Rate limiting and abuse controls
 
@@ -712,7 +721,7 @@ retain a single lookup table:
 | `passkey_registered` | `register_finish` (app/auth/passkey.py) | per-user | Credential-population change (§03 "Additional passkeys"). The domain function receives `user_id` but not the caller's session PK, so every session for the user is invalidated — including the caller's own; the SPA re-auths after the ceremony. The signup sibling `register_finish_signup` does **not** emit this cause: it creates the user's first credential on a brand-new account with no prior sessions to invalidate. `complete_recovery` also funnels through `register_finish`, so the recovery path emits one `recovery_consumed` audit (non-zero count) followed by a trailing `passkey_registered` audit (zero count — the sessions were already flipped). |
 | `passkey_revoked`    | `revoke_passkey` (app/auth/passkey.py) | per-user | User-initiated revoke via `DELETE /auth/passkey/{credential_id}` (§03 "Additional passkeys", §12). The caller's own session is invalidated with the rest — a credential-revocation needs a clean re-auth. |
 | `recovery_consumed`  | `complete_recovery` (app/auth/recovery.py), via the internal `_invalidate_sessions` helper | per-user | Recovery re-enrolment (§03 "Re-enrollment side-effects" / "Self-service lost-device recovery"). No caller session to preserve — the ceremony runs on a device with no prior session for this user. |
-| `clone_detected`     | `post_login_finish` route handler's `except CloneDetected` branch (app/api/v1/auth/passkey.py), via `_invalidate_for_credential_fresh_uow` → `invalidate_for_credential` | per-credential-owner | §"Passkey specifics" "sign-count rollback auto-revoke". The domain `login_finish` raises `CloneDetected`; the router handler catches it and runs the invalidate on a **fresh** UoW because the primary UoW rolls back on the raise — otherwise the suspected-stolen sessions would stay live. |
+| `clone_detected`     | `post_login_finish` route handler's `except CloneDetected` branch (app/api/v1/auth/passkey.py), via `_invalidate_for_credential_fresh_uow` → `invalidate_for_credential` | per-credential-owner | §"Passkey specifics" "sign-count rollback auto-revoke". The domain `login_finish` raises `CloneDetected`; the router handler catches it and runs the invalidate on a **fresh** UoW because the primary UoW rolls back on the raise — otherwise the suspected-stolen sessions would stay live. The session-invalidation step is emitted once here; a sibling fresh-UoW call (`_auto_revoke_credential_fresh_uow`) then hard-deletes the `passkey_credential` row and writes `audit.passkey.auto_revoked` with `reason: "clone_detected"`. The two steps are intentionally separate so each audit row has exactly one meaning. |
 
 ### Self-serve abuse mitigations
 

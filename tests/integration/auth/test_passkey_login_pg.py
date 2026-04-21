@@ -282,7 +282,7 @@ class TestLoginFullFlowIntegration:
         engine: Engine,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _, credential_id = _seed_credential(engine, sign_count=10)
+        user_id, credential_id = _seed_credential(engine, sign_count=10)
 
         start = client.post("/api/v1/auth/passkey/login/start")
         challenge_id = start.json()["challenge_id"]
@@ -316,6 +316,91 @@ class TestLoginFullFlowIntegration:
             assert "session.created" not in actions
             # cd-qx1f: challenge row burned on failure via fresh UoW.
             assert s.get(WebAuthnChallenge, challenge_id) is None
+            # cd-cx19: credential row hard-deleted via fresh UoW.
+            assert s.get(PasskeyCredential, credential_id) is None
+            # cd-cx19: passkey.auto_revoked audit row written with
+            # reason "clone_detected" alongside cloned_detected.
+            assert "passkey.auto_revoked" in actions
+            # §"Session-invalidation causes": the clone_detected
+            # session-invalidation audit row survives — the
+            # per-credential invalidate is a sibling seam to the
+            # credential revoke and must not regress.
+            assert "session.invalidated" in actions
+            revoked_row = s.scalars(
+                select(AuditLog).where(AuditLog.action == "passkey.auto_revoked")
+            ).one()
+            # diff carries the expected shape.
+            assert revoked_row.diff["reason"] == "clone_detected"
+            assert revoked_row.diff["user_id"] == user_id
+
+    def test_clone_detected_credential_cannot_be_replayed(
+        self,
+        client: TestClient,
+        engine: Engine,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """After auto-revoke, a second login with the same credential
+        returns the unknown-credential 401 shape — not CloneDetected.
+
+        Verifies the §"Passkey specifics" invariant: the revoked row is
+        gone, so the domain's credential lookup misses and
+        :class:`InvalidLoginAttempt` fires (which the router collapses
+        into the same 401 envelope). No second cloned_detected audit
+        row is written — there's no credential left to detect a clone
+        against.
+        """
+        _, credential_id = _seed_credential(engine, sign_count=10)
+
+        # First attempt — clone detected, credential hard-deleted.
+        start1 = client.post("/api/v1/auth/passkey/login/start")
+        monkeypatch.setattr(
+            passkey_module,
+            "verify_authentication",
+            lambda **_: _verified(new_sign_count=3),
+        )
+        first = client.post(
+            "/api/v1/auth/passkey/login/finish",
+            json={
+                "challenge_id": start1.json()["challenge_id"],
+                "credential": _raw_assertion(credential_id),
+            },
+        )
+        assert first.status_code == 401
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        with factory() as s:
+            assert s.get(PasskeyCredential, credential_id) is None
+
+        # Second attempt — credential is gone, so domain raises
+        # InvalidLoginAttempt (unknown credential) rather than
+        # CloneDetected. Same 401 wire shape either way.
+        start2 = client.post("/api/v1/auth/passkey/login/start")
+        monkeypatch.setattr(
+            passkey_module,
+            "verify_authentication",
+            lambda **_: _verified(new_sign_count=99),
+        )
+        second = client.post(
+            "/api/v1/auth/passkey/login/finish",
+            json={
+                "challenge_id": start2.json()["challenge_id"],
+                "credential": _raw_assertion(credential_id),
+            },
+        )
+        assert second.status_code == 401
+        assert second.json()["detail"]["error"] == "invalid_credential"
+
+        with factory() as s:
+            # Exactly one cloned_detected audit row across both attempts
+            # — the second attempt did NOT re-enter the CloneDetected
+            # branch because the credential row was gone.
+            cloned = s.scalars(
+                select(AuditLog).where(AuditLog.action == "passkey.cloned_detected")
+            ).all()
+            assert len(cloned) == 1
+            revoked = s.scalars(
+                select(AuditLog).where(AuditLog.action == "passkey.auto_revoked")
+            ).all()
+            assert len(revoked) == 1
 
     def test_unknown_credential_returns_401_no_session(
         self,
