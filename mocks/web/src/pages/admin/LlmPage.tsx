@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { useCloseOnEscape } from "@/lib/useCloseOnEscape";
 import { formatMoney } from "@/lib/money";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading, StatCard } from "@/components/common";
@@ -61,6 +62,7 @@ export default function AdminLlmPage() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [hover, setHover] = useState<Selection | null>(null);
   const [promptsOpen, setPromptsOpen] = useState(false);
+  useCloseOnEscape(() => setPromptsOpen(false), promptsOpen);
 
   const qc = useQueryClient();
   const syncMut = useMutation({

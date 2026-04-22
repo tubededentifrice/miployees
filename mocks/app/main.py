@@ -1643,11 +1643,31 @@ def api_task(tid: str, request: Request) -> Response:
         return JSONResponse({"detail": "not found"}, status_code=404)
     if not md.visible_to(task, current_user_id(request)):
         return JSONResponse({"detail": "not found"}, status_code=404)
+    # §08 — resolve the template's inventory effects against the
+    # task's property so the worker PWA can render the "Will use /
+    # Will produce" panel with real item names + on_hand warnings.
+    effects_resolved: list[dict[str, Any]] = []
+    tpl_id = getattr(task, "template_id", None)
+    if tpl_id and task.property_id:
+        tpl = next((t for t in md.TEMPLATES if t.id == tpl_id), None)
+        if tpl is not None:
+            for entry in tpl.inventory_effects:
+                item = md.inventory_by_sku(task.property_id, entry["item_ref"])
+                effects_resolved.append({
+                    "item_ref": entry["item_ref"],
+                    "kind": entry["kind"],
+                    "qty": float(entry["qty"]),
+                    "item_id": item.id if item else None,
+                    "item_name": item.name if item else entry["item_ref"],
+                    "unit": item.unit if item else "",
+                    "on_hand": item.on_hand if item else None,
+                })
     return ok({
         "task": task,
         "property": md.property_by_id(task.property_id) if task.property_id else None,
         "instructions": md.instructions_for_task(task),
         "comments": md.comments_for_task(tid),
+        "inventory_effects": effects_resolved,
     })
 
 
@@ -2289,6 +2309,180 @@ def api_instruction(iid: str) -> Response:
 @app.get("/api/v1/inventory")
 def api_inventory() -> Response:
     return ok(md.INVENTORY)
+
+
+@app.get("/api/v1/inventory/{iid}")
+def api_inventory_item(iid: str) -> Response:
+    item = md.inventory_by_id(iid)
+    if item is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    movements = sorted(
+        md.movements_for_item(iid), key=lambda m: m.occurred_at, reverse=True,
+    )
+    return ok({"item": item, "movements": movements})
+
+
+@app.get("/api/v1/inventory/{iid}/movements")
+def api_inventory_movements(
+    iid: str, before: str = "", limit: int = 10,
+) -> Response:
+    """Cursor-paginated per-item ledger (§08 "Per-item movement history").
+
+    * ``before`` — ISO timestamp of the oldest row the caller already has.
+      When set, the server returns rows strictly older than it.
+    * ``limit`` — soft max page size, clamped to [1, 50].
+
+    Response shape: ``{"items": [...], "next_cursor": "<iso>" | null}``.
+    The cursor is the ``occurred_at`` of the last returned row; when
+    absent the caller has reached the end.
+    """
+    item = md.inventory_by_id(iid)
+    if item is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    limit = max(1, min(50, limit))
+    rows = sorted(
+        md.movements_for_item(iid), key=lambda m: m.occurred_at, reverse=True,
+    )
+    if before:
+        try:
+            before_at = datetime.fromisoformat(before)
+        except ValueError:
+            return JSONResponse(
+                {"detail": {"error": "invalid_cursor"}}, status_code=422,
+            )
+            # `before_at` is timezone-naive in the mock (seed uses bare
+            # datetimes); strip tz from inbound for a matching compare.
+        if before_at.tzinfo is not None:
+            before_at = before_at.astimezone(timezone.utc).replace(tzinfo=None)
+        rows = [m for m in rows if m.occurred_at < before_at]
+    page = rows[:limit]
+    next_cursor = (
+        page[-1].occurred_at.isoformat() if len(page) == limit and len(rows) > limit else None
+    )
+    return ok({"items": page, "next_cursor": next_cursor})
+
+
+# §08 Adjust / reconcile — per-item. Body: {observed_on_hand, reason, note?}.
+# In-memory mock: mutates seed lists, emits SSE so the inventory drawer
+# updates everywhere without a round-trip.
+@app.post("/api/v1/inventory/{iid}/adjust")
+async def api_inventory_adjust(iid: str, body: dict[str, Any] = Body(...)) -> Response:
+    item = md.inventory_by_id(iid)
+    if item is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    try:
+        observed = float(body.get("observed_on_hand"))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"detail": {"error": "invalid_observed_on_hand"}}, status_code=422,
+        )
+    reason = body.get("reason") or "audit_correction"
+    valid_reasons = {
+        "restock", "consume", "produce", "waste", "theft", "loss",
+        "found", "returned_to_vendor", "transfer_in", "transfer_out",
+        "audit_correction", "adjust",
+    }
+    if reason not in valid_reasons:
+        return JSONResponse(
+            {"detail": {"error": "invalid_reason"}}, status_code=422,
+        )
+    delta = round(observed - item.on_hand, 4)
+    if delta == 0.0:
+        return JSONResponse(
+            {"detail": {"error": "nothing_to_adjust"}}, status_code=422,
+        )
+    mov = md.InventoryMovement(
+        id=f"im-{len(md.INVENTORY_MOVEMENTS) + 1}",
+        item_id=iid,
+        delta=delta,
+        reason=reason,
+        actor_kind="user",
+        actor_id="u-elodie",
+        occurred_at=datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None),
+        note=body.get("note") or None,
+    )
+    md.INVENTORY_MOVEMENTS.append(mov)
+    item.on_hand = observed
+    hub.publish("inventory.changed", {"item_id": iid})
+    return ok({"movement": mov, "item": item}, status_code=201)
+
+
+# §08 Stocktake (property-wide reconciliation).
+@app.get("/api/v1/properties/{pid}/stocktakes")
+def api_property_stocktakes(pid: str) -> Response:
+    sessions = sorted(
+        md.stocktakes_for_property(pid),
+        key=lambda s: s.started_at, reverse=True,
+    )
+    return ok(sessions)
+
+
+@app.post("/api/v1/properties/{pid}/stocktakes")
+async def api_property_stocktake_open(pid: str, body: dict[str, Any] = Body(default={})) -> Response:
+    prop = md.property_by_id(pid)
+    if prop is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    session = md.InventoryStocktake(
+        id=f"st-{len(md.INVENTORY_STOCKTAKES) + 1}",
+        property_id=pid,
+        started_at=datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None),
+        completed_at=None,
+        actor_kind="user",
+        actor_id="u-elodie",
+        note_md=(body.get("note_md") if isinstance(body, dict) else None) or None,
+    )
+    md.INVENTORY_STOCKTAKES.append(session)
+    hub.publish("inventory.changed", {"stocktake_id": session.id})
+    return ok(session, status_code=201)
+
+
+@app.post("/api/v1/stocktakes/{sid}/commit")
+async def api_stocktake_commit(sid: str, body: dict[str, Any] = Body(...)) -> Response:
+    """Body shape:
+    ``{"lines": [{"item_id": "inv-…", "observed_on_hand": number,
+                  "reason": "audit_correction|theft|loss|found|…",
+                  "note"?: string}, …]}``.
+    Writes one movement per non-zero delta under the session's
+    `source_stocktake_id`; sets `completed_at`.
+    """
+    session = md.stocktake_by_id(sid)
+    if session is None:
+        return JSONResponse({"detail": "not found"}, status_code=404)
+    if session.completed_at is not None:
+        return JSONResponse(
+            {"detail": {"error": "already_committed"}}, status_code=409,
+        )
+    lines = body.get("lines") or []
+    written: list[md.InventoryMovement] = []
+    for line in lines:
+        item = md.inventory_by_id(line.get("item_id"))
+        if item is None or item.property_id != session.property_id:
+            continue
+        try:
+            observed = float(line["observed_on_hand"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        delta = round(observed - item.on_hand, 4)
+        if delta == 0.0:
+            continue
+        reason = line.get("reason") or "audit_correction"
+        mov = md.InventoryMovement(
+            id=f"im-{len(md.INVENTORY_MOVEMENTS) + 1}",
+            item_id=item.id,
+            delta=delta,
+            reason=reason,
+            actor_kind="user",
+            actor_id=session.actor_id,
+            occurred_at=datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None),
+            note=line.get("note") or None,
+            source_stocktake_id=sid,
+        )
+        md.INVENTORY_MOVEMENTS.append(mov)
+        item.on_hand = observed
+        written.append(mov)
+    session.completed_at = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+    hub.publish("inventory.changed", {"stocktake_id": sid})
+    return ok({"session": session, "movements": written})
 
 
 @app.get("/api/v1/payslips")

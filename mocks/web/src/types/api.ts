@@ -210,11 +210,27 @@ export interface PayPeriod {
 
 // ── Inventory movement ────────────────────────────────────────────
 
-export type InventoryMovementReason = "restock" | "consume" | "adjust" | "waste" | "transfer_in" | "transfer_out" | "audit_correction";
+// §08 Reason taxonomy. `produce`, `theft`, `loss`, `found`, and
+// `returned_to_vendor` were added alongside task-driven production
+// and richer reconciliation. `adjust` is retained for back-compat.
+export type InventoryMovementReason =
+  | "restock"
+  | "consume"
+  | "produce"
+  | "waste"
+  | "theft"
+  | "loss"
+  | "found"
+  | "returned_to_vendor"
+  | "transfer_in"
+  | "transfer_out"
+  | "audit_correction"
+  | "adjust";
 
 export interface InventoryMovement {
   id: string;
   item_id: string;
+  // Decimal: a pool service consumes 0.3 bottles of window-washer.
   delta: number;
   reason: InventoryMovementReason;
   // v1 collapses manager|employee|agent|system to user|agent|system (§02).
@@ -222,6 +238,24 @@ export interface InventoryMovement {
   actor_id: string;
   note: string | null;
   occurred_at: string;
+  source_task_id: string | null;
+  source_stocktake_id: string | null;
+}
+
+export interface InventoryEffect {
+  item_ref: string;
+  kind: "consume" | "produce";
+  qty: number;
+}
+
+export interface InventoryStocktake {
+  id: string;
+  property_id: string;
+  started_at: string;
+  completed_at: string | null;
+  actor_kind: "user" | "agent";
+  actor_id: string;
+  note_md: string | null;
 }
 
 // ── Stay lifecycle ────────────────────────────────────────────────
@@ -396,6 +430,8 @@ export interface TaskTemplate {
   photo_evidence: PhotoEvidence;
   priority: TaskPriority;
   checklist: ChecklistItem[];
+  // §08 Inventory effects — list of `{item_ref, kind, qty}`.
+  inventory_effects: InventoryEffect[];
 }
 
 export interface Schedule {
@@ -428,6 +464,7 @@ export interface InventoryItem {
   property_id: string;
   name: string;
   sku: string;
+  // §08 — decimal quantities (0.3 bottles of window-washer are valid).
   on_hand: number;
   par: number;
   unit: string;

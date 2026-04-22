@@ -1427,7 +1427,8 @@ scope, and the spec that defines the feature:
 | `tasks.checklist_required` | bool | `false` | W/P/U/WE/T | §05 |
 | `tasks.allow_complete_backdated` | bool | `false` | W/P/U/WE | §05 |
 | `tasks.allow_skip_with_reason` | bool | `true` | W/P/U/WE | §05 |
-| `inventory.consume_on_task` | bool | `true` | W/P/U/WE/T | §08 |
+| `inventory.apply_on_task` | bool | `true` | W/P/U/WE/T | §08 — gates both consume and produce effects declared on task templates / asset actions. Renamed from `inventory.consume_on_task`; the legacy key resolves to the same value on read until removed. |
+| `inventory.shrinkage_alert_pct` | int | `10` | W/P | §08 — digest highlights any item whose `theft + loss` over 30 days exceeds this percentage of rolling consumption. |
 | `expenses.autofill_receipts` | bool | `true` | W/WE | §09 |
 | `chat.enabled` | bool | `true` | W/WE | §11 |
 | `voice.enabled` | bool | `false` | W/WE | §11 |
@@ -1456,7 +1457,7 @@ catalog) answers *who may do what* on explicit actions
 (`expenses.approve`, `users.invite`, `task_comment.create`, …).
 The settings cascade answers *how a feature behaves once the user is
 allowed to use it* (`bookings.pay_basis`, `evidence.policy`,
-`inventory.consume_on_task`, …).
+`inventory.apply_on_task`, …).
 
 The architectural rule is therefore:
 

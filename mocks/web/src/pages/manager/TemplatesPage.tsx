@@ -6,6 +6,12 @@ import { Camera, Timer } from "lucide-react";
 import { Chip, Loading } from "@/components/common";
 import type { TaskPriority, TaskTemplate } from "@/types/api";
 
+// §08 — decimal qty formatter, trailing zeros trimmed.
+function fmtQty(n: number): string {
+  const s = n.toFixed(3);
+  return s.replace(/\.?0+$/, "");
+}
+
 const PRIORITY_TONE: Record<TaskPriority, "ghost" | "sand" | "rust"> = {
   low: "ghost",
   normal: "ghost",
@@ -74,6 +80,32 @@ export default function TemplatesPage() {
                   </li>
                 ))}
               </ul>
+            )}
+            {tpl.inventory_effects.length > 0 && (
+              <div className="tpl-card__effects">
+                {tpl.inventory_effects.some((e) => e.kind === "consume") && (
+                  <div className="tpl-effect tpl-effect--consume">
+                    <span className="tpl-effect__label">Uses</span>
+                    <span>
+                      {tpl.inventory_effects
+                        .filter((e) => e.kind === "consume")
+                        .map((e) => `${fmtQty(e.qty)} ${e.item_ref}`)
+                        .join(" · ")}
+                    </span>
+                  </div>
+                )}
+                {tpl.inventory_effects.some((e) => e.kind === "produce") && (
+                  <div className="tpl-effect tpl-effect--produce">
+                    <span className="tpl-effect__label">Produces</span>
+                    <span>
+                      {tpl.inventory_effects
+                        .filter((e) => e.kind === "produce")
+                        .map((e) => `${fmtQty(e.qty)} ${e.item_ref}`)
+                        .join(" · ")}
+                    </span>
+                  </div>
+                )}
+              </div>
             )}
           </article>
         ))}

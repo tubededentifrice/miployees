@@ -143,7 +143,7 @@ scheduling system (§06).
 | schedule_id                | ULID FK? | linked schedule (§06)                |
 | interval_days              | int?    | days between performances             |
 | estimated_duration_minutes | int?    |                                       |
-| inventory_consumption_json | jsonb?  | `[{"sku": "…", "qty": 1}]`; flows through task completion (§08) |
+| inventory_effects_json     | jsonb?  | `[{"item_ref": "…", "kind": "consume \| produce", "qty": 0.3}]`; flows through task completion (§08). Replaces the pre-revision consume-only `inventory_consumption_json`. |
 | last_performed_at          | tstz?   | derived/cached; updated on task completion |
 | last_performed_task_id     | ULID FK? | the task that last performed this action |
 | created_at                 | tstz    |                                       |
@@ -345,7 +345,7 @@ The flow from asset type to completed maintenance:
    from the action's metadata (`label` as template name,
    `interval_days` as RRULE `FREQ=DAILY;INTERVAL=N`,
    `estimated_duration_minutes` carried over,
-   `inventory_consumption_json` copied to the template).
+   `inventory_effects_json` copied to the template).
 
 3. **Schedule worker generates tasks.** The existing
    `generate_task_occurrences` worker (§06) materializes task rows.

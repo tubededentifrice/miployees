@@ -520,6 +520,7 @@ configuration.
 | `expenses.approve`                      | `workspace`, `property`        | `owners, managers`            | —  | §09 |
 | `expenses.reimburse`                    | `workspace`                    | `owners, managers`            | ✅ | §09 |
 | `inventory.adjust`                      | `workspace`, `property`        | `owners, managers`            | —  | §08 |
+| `inventory.stocktake`                   | `workspace`, `property`        | `owners, managers`            | —  | §08 — open, edit, and commit an `inventory_stocktake` session. |
 | `instructions.edit`                     | `workspace`, `property`        | `owners, managers`            | —  | §07 |
 | `assets.edit`                           | `workspace`, `property`        | `owners, managers`            | —  | §21 |
 | `api_tokens.manage`                     | `workspace`                    | `owners, managers`            | ✅ | §03 |

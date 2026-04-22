@@ -220,8 +220,32 @@ fix the offender.
   `task.linked_instruction_ids` is a denormalized cache.
 - **Inventory movement.** An append-only ledger row recording a change
   to `inventory_item.on_hand`. Reason enum: `restock | consume |
-  adjust | waste | transfer_in | transfer_out | audit_correction`.
-  See §08.
+  produce | waste | theft | loss | found | returned_to_vendor |
+  transfer_in | transfer_out | audit_correction | adjust`.
+  Quantities (`delta`, `on_hand`, effect `qty`) are decimal — a
+  movement may record 0.3 L of window-washer or 1.5 kg of
+  detergent. See §08 "Reason taxonomy".
+- **Inventory effects.** A task template's or asset action's
+  `inventory_effects_json` list of `{item_ref, kind, qty}` entries.
+  `kind` is `consume` (negative delta on completion, written as
+  `reason = consume`) or `produce` (positive delta, `reason =
+  produce`). A linen change declares one `consume` of clean sheets
+  and one `produce` of dirty sheets; the following laundry task
+  declares the reverse. Replaces the pre-revision consume-only
+  `inventory_consumption_json`. See §08 "Inventory effects on task
+  completion".
+- **Inventory stocktake.** A property-wide reconciliation session
+  (`inventory_stocktake`) that walks every item at a property,
+  collects observed counts, and writes one
+  `inventory_movement` per non-zero delta under a shared
+  `source_stocktake_id`. Per-item reasons (theft, loss,
+  audit_correction, …) are chosen per line. See §08
+  "Stocktake (property-wide reconciliation)".
+- **Shrinkage.** Sum of `theft + loss` movements per item per
+  property per window, paired with `audit_correction` magnitude
+  as "unexplained variance". Surfaced in the digest when it
+  exceeds `inventory.shrinkage_alert_pct` of rolling consumption.
+  See §08 "Reports".
 - **Issue.** A user-reported problem tracked with state
   (`open | in_progress | resolved | wont_fix`) and possibly converted
   to a task.

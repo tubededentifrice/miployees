@@ -903,15 +903,27 @@ GET    /tasks/{id}/instructions    # resolved set
 ### Inventory
 
 ```
-GET    /inventory                  # items
+GET    /inventory                        # items
 POST   /inventory
 PATCH  /inventory/{id}
-POST   /inventory/{id}/movements   # append a movement
-GET    /inventory/{id}/movements
-POST   /inventory/{id}/adjust      # set on_hand to observed
+POST   /inventory/{id}/movements         # append a movement
+GET    /inventory/{id}/movements         # full per-item history (paginated)
+POST   /inventory/{id}/adjust            # body {observed_on_hand: number, reason, note?}; 422 "nothing_to_adjust" on zero delta
+POST   /properties/{pid}/stocktakes      # open a stocktake session → inventory_stocktake
+GET    /properties/{pid}/stocktakes      # recent sessions for the property
+GET    /stocktakes/{sid}                 # session + draft lines
+PATCH  /stocktakes/{sid}/lines/{item_id} # save observed + reason + note for one line
+POST   /stocktakes/{sid}/commit          # materialise deltas as movements; sets completed_at
 GET    /inventory/reports/low_stock
-GET    /inventory/reports/burn_rate
+GET    /inventory/reports/burn_rate      # consumption
+GET    /inventory/reports/production_rate  # produce, mirror of burn_rate
+GET    /inventory/reports/shrinkage      # theft + loss + unexplained audit_correction
+GET    /inventory/reports/stocktakes     # session activity
 ```
+
+All movement / adjust / stocktake-commit writes append only; the
+ledger is never updated or deleted. Response shapes carry decimal
+quantities as JSON numbers (fractional — e.g. `"qty": 0.3`).
 
 ### Time, payroll, expenses
 

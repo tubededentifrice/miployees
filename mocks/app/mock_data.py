@@ -33,7 +33,7 @@ views derived from the canonical tables.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 
 
@@ -584,6 +584,11 @@ class TaskTemplate:
     photo_evidence: Literal["disabled", "optional", "required"]
     priority: Literal["low", "normal", "high", "urgent"]
     checklist: list[dict] = field(default_factory=list)
+    # §08 Inventory effects — list of `{item_ref, kind, qty}`. A
+    # linen-change template declares one `consume` of clean sheets
+    # and one `produce` of dirty sheets; the laundry template
+    # declares the inverse.
+    inventory_effects: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -617,12 +622,16 @@ class Instruction:
 
 @dataclass
 class InventoryItem:
+    """Per-property stock row. Quantities are `float` (spec §08):
+    a pool service consumes 0.3 bottles; a laundry run uses
+    0.05 kg of detergent."""
+
     id: str
     property_id: str
     name: str
     sku: str
-    on_hand: int
-    par: int
+    on_hand: float
+    par: float
     unit: str
     area: str
 
@@ -957,16 +966,66 @@ class PayPeriod:
 
 @dataclass
 class InventoryMovement:
-    """`actor_kind` collapses to `user | agent | system` in v1 (§02)."""
+    """`actor_kind` collapses to `user | agent | system` in v1 (§02).
+
+    `reason` taxonomy matches §08 — `produce`, `theft`, `loss`,
+    `found`, and `returned_to_vendor` were added alongside
+    task-driven production and richer reconciliation. `delta` is
+    `float` so fractional movements (0.3 L of window-washer) round-
+    trip through the ledger.
+    """
 
     id: str
     item_id: str
-    delta: int
-    reason: Literal["restock", "consume", "adjust", "waste", "transfer_in", "transfer_out", "audit_correction"]
+    delta: float
+    reason: Literal[
+        "restock",
+        "consume",
+        "produce",
+        "waste",
+        "theft",
+        "loss",
+        "found",
+        "returned_to_vendor",
+        "transfer_in",
+        "transfer_out",
+        "audit_correction",
+        "adjust",
+    ]
     actor_kind: Literal["user", "agent", "system"]
     actor_id: str
     occurred_at: datetime
     note: str | None = None
+    source_task_id: str | None = None
+    source_stocktake_id: str | None = None
+
+
+@dataclass
+class InventoryEffect:
+    """An entry on `task_template.inventory_effects_json` or
+    `asset_action.inventory_effects_json` (§08).
+
+    `item_ref` is a SKU during authoring; resolved to an item id at
+    task materialisation against the task's property. `qty` is
+    strictly positive — the delta direction comes from `kind`.
+    """
+
+    item_ref: str
+    kind: Literal["consume", "produce"]
+    qty: float
+
+
+@dataclass
+class InventoryStocktake:
+    """Property-wide reconciliation session — see §08 "Stocktake"."""
+
+    id: str
+    property_id: str
+    started_at: datetime
+    completed_at: datetime | None
+    actor_kind: Literal["user", "agent"]
+    actor_id: str
+    note_md: str | None = None
 
 
 # ── Stay lifecycle ─────────────────────────────────────────────────
@@ -1326,7 +1385,6 @@ def _caps(**overrides: bool | None) -> dict[str, bool | None]:
         "tasks.allow_skip_with_reason": True,
         "messaging.comments": True,
         "messaging.report_issue": True,
-        "inventory.consume_on_task": True,
         "expenses.submit": True,
         "expenses.photo_upload": True,
         "expenses.autofill_llm": True,
@@ -1735,6 +1793,9 @@ ACTION_CATALOG: list[ActionCatalogEntry] = [
                        ["workspace"],
                        ["owners", "managers"], root_protected_deny=True, spec="§09"),
     ActionCatalogEntry("inventory.adjust",                "Manually adjust stock levels.",
+                       ["workspace", "property"],
+                       ["owners", "managers"], spec="§08"),
+    ActionCatalogEntry("inventory.stocktake",             "Open, edit, and commit an inventory stocktake session.",
                        ["workspace", "property"],
                        ["owners", "managers"], spec="§08"),
     ActionCatalogEntry("instructions.edit",               "Edit an SOP / instruction.",
@@ -2264,6 +2325,11 @@ CLOSURES: list[PropertyClosure] = [
 
 
 TEMPLATES: list[TaskTemplate] = [
+    # §08 Inventory effects — `consume` + `produce` entries
+    # declare what a task uses and outputs at completion. Clean /
+    # dirty are distinct SKUs so a turnover consumes the clean
+    # set and produces the dirty set; the laundry template below
+    # does the inverse.
     TaskTemplate("tpl-turnover", "Standard turnover (STR)",
                  "End-of-stay cleaning + reset for a short-term rental unit.", "Housekeeper",
                  120, "listed", "required", "high",
@@ -2274,15 +2340,49 @@ TEMPLATES: list[TaskTemplate] = [
                      {"label": "Restock welcome basket", "guest_visible": False},
                      {"label": "Trash out", "guest_visible": True},
                      {"label": "Dishwasher on", "guest_visible": True},
+                 ],
+                 inventory_effects=[
+                     {"item_ref": "LINEN-Q-CLEAN", "kind": "consume", "qty": 1.0},
+                     {"item_ref": "LINEN-Q-DIRTY", "kind": "produce", "qty": 1.0},
+                     {"item_ref": "TOWEL-L-CLEAN", "kind": "consume", "qty": 4.0},
+                     {"item_ref": "TOWEL-L-DIRTY", "kind": "produce", "qty": 4.0},
+                     {"item_ref": "TP-12",         "kind": "consume", "qty": 0.5},
+                     {"item_ref": "WINDOW-WASHER", "kind": "consume", "qty": 0.3},
                  ]),
     TaskTemplate("tpl-linen-change", "Linen change — master bedroom",
                  "Swap bedding and towels, including fitted sheet orientation.", "Housekeeper",
                  25, "any", "required", "normal",
-                 checklist=[{"label": "Strip bed"}, {"label": "Fresh sheets"}, {"label": "Replace towels"}, {"label": "Photo of finished bed"}]),
+                 checklist=[{"label": "Strip bed"}, {"label": "Fresh sheets"}, {"label": "Replace towels"}, {"label": "Photo of finished bed"}],
+                 inventory_effects=[
+                     {"item_ref": "LINEN-Q-CLEAN", "kind": "consume", "qty": 1.0},
+                     {"item_ref": "LINEN-Q-DIRTY", "kind": "produce", "qty": 1.0},
+                     {"item_ref": "TOWEL-L-CLEAN", "kind": "consume", "qty": 2.0},
+                     {"item_ref": "TOWEL-L-DIRTY", "kind": "produce", "qty": 2.0},
+                 ]),
+    TaskTemplate("tpl-laundry", "Laundry cycle — sheets & towels",
+                 "Run dirty linen through the washer + dryer. Fold and return clean stock to the linen cupboard.",
+                 "Housekeeper",
+                 80, "one", "optional", "normal",
+                 checklist=[
+                     {"label": "Load washer"},
+                     {"label": "Dose detergent"},
+                     {"label": "Transfer to dryer"},
+                     {"label": "Fold and shelve"},
+                 ],
+                 inventory_effects=[
+                     {"item_ref": "LINEN-Q-DIRTY", "kind": "consume", "qty": 2.0},
+                     {"item_ref": "LINEN-Q-CLEAN", "kind": "produce", "qty": 2.0},
+                     {"item_ref": "TOWEL-L-DIRTY", "kind": "consume", "qty": 4.0},
+                     {"item_ref": "TOWEL-L-CLEAN", "kind": "produce", "qty": 4.0},
+                     {"item_ref": "DETERGENT",     "kind": "consume", "qty": 0.15},
+                 ]),
     TaskTemplate("tpl-pool-weekly", "Pool service — weekly",
                  "Skim, test pH and chlorine, check skimmer baskets.", "Pool care",
                  30, "one", "optional", "normal",
-                 checklist=[{"label": "Skim"}, {"label": "pH"}, {"label": "Chlorine"}, {"label": "Skimmer"}]),
+                 checklist=[{"label": "Skim"}, {"label": "pH"}, {"label": "Chlorine"}, {"label": "Skimmer"}],
+                 inventory_effects=[
+                     {"item_ref": "POOL-CL", "kind": "consume", "qty": 0.25},
+                 ]),
     TaskTemplate("tpl-airport", "Airport pickup / drop-off",
                  "Standard guest transfer. Sign with family name at arrivals.", "Driver",
                  90, "any", "disabled", "high"),
@@ -2381,14 +2481,23 @@ INSTRUCTIONS: list[Instruction] = [
 
 
 INVENTORY: list[InventoryItem] = [
-    InventoryItem("inv-1",  "p-villa-sud", "Bed sheet set (queen)", "LINEN-Q", 3,  6,  "sets", "Linen cupboard A"),
-    InventoryItem("inv-2",  "p-villa-sud", "Bath towels (L)",       "TOWEL-L", 12, 16, "pcs",  "Linen cupboard A"),
-    InventoryItem("inv-3",  "p-villa-sud", "Chlorine tablets",      "POOL-CL", 1,  2,  "box",  "Pool shed"),
-    InventoryItem("inv-4",  "p-villa-sud", "Toilet paper",          "TP-12",   2,  4,  "pack", "Utility"),
-    InventoryItem("inv-5",  "p-apt-3b",    "Bed sheet set (double)", "LINEN-D", 4, 4,  "sets", "Hall closet"),
-    InventoryItem("inv-6",  "p-apt-3b",    "Coffee pods",           "COF-NESP", 24, 30, "pcs",  "Kitchen"),
-    InventoryItem("inv-7",  "p-apt-3b",    "Welcome-basket wine",   "WINE-RED",  2, 3,  "btl",  "Kitchen"),
-    InventoryItem("inv-8",  "p-chalet",    "Firewood",              "FW-STR",   0,  4,  "stère","Ski room"),
+    # §08 — clean / dirty are distinct SKUs so a sheet change can
+    # `consume` one and `produce` the other, and laundry the
+    # reverse. Quantities are `float`: pool chemicals and chemicals
+    # in general are fractional, window-washer drains in tenths.
+    InventoryItem("inv-1",  "p-villa-sud", "Bed sheet set, queen — clean", "LINEN-Q-CLEAN", 3.0,   6.0, "sets", "Linen cupboard A"),
+    InventoryItem("inv-1d", "p-villa-sud", "Bed sheet set, queen — dirty", "LINEN-Q-DIRTY", 2.0,   0.0, "sets", "Laundry hamper"),
+    InventoryItem("inv-2",  "p-villa-sud", "Bath towels (L) — clean",      "TOWEL-L-CLEAN", 12.0, 16.0, "pcs",  "Linen cupboard A"),
+    InventoryItem("inv-2d", "p-villa-sud", "Bath towels (L) — dirty",      "TOWEL-L-DIRTY",  4.0,  0.0, "pcs",  "Laundry hamper"),
+    InventoryItem("inv-3",  "p-villa-sud", "Chlorine tablets",             "POOL-CL",        1.0,  2.0, "box",  "Pool shed"),
+    InventoryItem("inv-4",  "p-villa-sud", "Toilet paper",                 "TP-12",          2.0,  4.0, "pack", "Utility"),
+    InventoryItem("inv-9",  "p-villa-sud", "Window washer",                "WINDOW-WASHER",  1.7,  2.0, "L",    "Utility"),
+    InventoryItem("inv-10", "p-villa-sud", "Laundry detergent",            "DETERGENT",      3.5,  5.0, "kg",   "Utility"),
+    InventoryItem("inv-5",  "p-apt-3b",    "Bed sheet set, double — clean", "LINEN-D-CLEAN", 4.0,  4.0, "sets", "Hall closet"),
+    InventoryItem("inv-5d", "p-apt-3b",    "Bed sheet set, double — dirty", "LINEN-D-DIRTY", 1.0,  0.0, "sets", "Laundry hamper"),
+    InventoryItem("inv-6",  "p-apt-3b",    "Coffee pods",                  "COF-NESP",      24.0, 30.0, "pcs",  "Kitchen"),
+    InventoryItem("inv-7",  "p-apt-3b",    "Welcome-basket wine",          "WINE-RED",       2.0,  3.0, "btl",  "Kitchen"),
+    InventoryItem("inv-8",  "p-chalet",    "Firewood",                     "FW-STR",         0.5,  4.0, "stère","Ski room"),
 ]
 
 
@@ -3715,17 +3824,118 @@ PROPERTY_WORKSPACE_INVITES: list[PropertyWorkspaceInvite] = [
     ),
 ]
 
+INVENTORY_STOCKTAKES: list[InventoryStocktake] = [
+    # Quarterly walk-through of Villa Sud. Surfaced deltas on three
+    # items; the bath-towel line was marked `theft` after two
+    # towels were missing from the linen cupboard.
+    InventoryStocktake(
+        id="st-1",
+        property_id="p-villa-sud",
+        started_at=datetime(2026, 4, 8, 9, 0),
+        completed_at=datetime(2026, 4, 8, 10, 15),
+        actor_kind="user",
+        actor_id="u-elodie",
+        note_md="Quarterly count. Towel shortfall flagged to owner.",
+    ),
+]
+
 INVENTORY_MOVEMENTS: list[InventoryMovement] = [
     # `actor_kind` is the v1 collapsed enum: user | agent | system (§02).
-    InventoryMovement("im-1", "inv-3", -1, "consume", "user", "u-ben",
-                      datetime(2026, 4, 12, 9, 30), "Used for weekly pool service"),
-    InventoryMovement("im-2", "inv-6", -4, "consume", "user", "u-ana",
+    # Fractional deltas for chemicals / chlorine — §08 "quantities are decimal".
+    InventoryMovement("im-1",  "inv-3",  -0.25, "consume", "user", "u-ben",
+                      datetime(2026, 4, 12, 9, 30), "Weekly pool service",
+                      source_task_id="t-1"),
+    InventoryMovement("im-2",  "inv-6",  -4.0,  "consume", "user", "u-ana",
                       datetime(2026, 4, 14, 8, 0), "Turnover prep — Apt 3B"),
-    InventoryMovement("im-3", "inv-4", 6, "restock", "user", "u-maria",
+    InventoryMovement("im-3",  "inv-4",   6.0,  "restock", "user", "u-maria",
                       datetime(2026, 4, 13, 17, 0), "Carrefour run"),
-    InventoryMovement("im-4", "inv-8", -2, "consume", "user", "u-sam",
+    InventoryMovement("im-4",  "inv-8",  -1.5,  "consume", "user", "u-sam",
                       datetime(2026, 4, 10, 16, 0)),
+    # Task-driven produce + consume bundle from a turnover at Villa Sud.
+    InventoryMovement("im-5",  "inv-1",  -1.0,  "consume", "user", "u-maria",
+                      datetime(2026, 4, 15, 11, 0), "Turnover — strip + remake master bed",
+                      source_task_id="t-2"),
+    InventoryMovement("im-6",  "inv-1d",  1.0,  "produce", "user", "u-maria",
+                      datetime(2026, 4, 15, 11, 0), "Turnover — dirty sheets to laundry",
+                      source_task_id="t-2"),
+    InventoryMovement("im-7",  "inv-9",  -0.3,  "consume", "user", "u-maria",
+                      datetime(2026, 4, 15, 11, 0), "Window cleaning",
+                      source_task_id="t-2"),
+    # Stocktake session output — three movements sharing st-1.
+    InventoryMovement("im-st-1", "inv-2", -2.0, "theft",   "user", "u-elodie",
+                      datetime(2026, 4, 8, 10, 10), "Two bath towels missing since last guest",
+                      source_stocktake_id="st-1"),
+    InventoryMovement("im-st-2", "inv-9", -0.1, "loss",    "user", "u-elodie",
+                      datetime(2026, 4, 8, 10, 12), "Jug was leakier than expected",
+                      source_stocktake_id="st-1"),
+    InventoryMovement("im-st-3", "inv-4",  1.0, "found",   "user", "u-elodie",
+                      datetime(2026, 4, 8, 10, 14), "Extra pack behind the dryer",
+                      source_stocktake_id="st-1"),
 ]
+
+
+def _backfill_demo_history() -> None:
+    """Synthesise a few months of demo history so the drawer's
+    infinite-scroll pager has something to walk. Runs once at import
+    time, mutating ``INVENTORY_MOVEMENTS`` in place.
+
+    Chosen items: ``inv-9`` (window washer) and ``inv-10`` (detergent)
+    because they're the most obviously fractional, and ``inv-1`` /
+    ``inv-2`` because they show the clean-sheet lifecycle.
+    """
+    backfill: list[tuple[str, float, str, str | None]] = [
+        # (item_id, delta, reason, note)
+        ("inv-9",  -0.2, "consume",   "Pool deck wipe-down"),
+        ("inv-9",  -0.1, "consume",   "Glass doors rinse"),
+        ("inv-9",   1.0, "restock",   "Aldi run — 1 L refill"),
+        ("inv-9",  -0.3, "consume",   "Turnover — exterior windows"),
+        ("inv-9",  -0.2, "consume",   "Mid-stay touch-up"),
+        ("inv-9",  -0.1, "consume",   "Mirror cleaning"),
+        ("inv-9",   1.0, "restock",   "Fresh bottle"),
+        ("inv-9",  -0.3, "consume",   "Post-storm window pass"),
+        ("inv-9",  -0.15, "consume",  "Spot clean after rain"),
+        ("inv-9",   0.5, "found",     "Half-full bottle behind boiler"),
+        ("inv-9",  -0.4, "consume",   "Spring-clean session"),
+        ("inv-9",  -0.2, "consume",   "Guest feedback: water marks"),
+        ("inv-9",   1.0, "restock",   None),
+        ("inv-9",  -0.3, "consume",   None),
+        ("inv-9",  -0.25, "waste",    "Dropped bottle on terrace"),
+        ("inv-9",  -0.2, "consume",   None),
+        ("inv-9",   1.0, "restock",   "Carrefour bulk"),
+        ("inv-9",  -0.1, "consume",   None),
+        ("inv-10", -0.3, "consume",   "Full laundry cycle"),
+        ("inv-10",  2.0, "restock",   "Bulk pouch"),
+        ("inv-10", -0.15, "consume",  "Laundry — towels only"),
+        ("inv-10", -0.2, "consume",   "Two sheet sets"),
+        ("inv-10",  1.0, "restock",   None),
+        ("inv-1",  -1.0, "consume",   "Turnover"),
+        ("inv-1",   1.0, "produce",   "Laundry — folded + shelved"),
+        ("inv-1",  -1.0, "consume",   None),
+        ("inv-1",   1.0, "produce",   None),
+        ("inv-1",  -1.0, "consume",   "Mid-stay change"),
+        ("inv-1",   1.0, "produce",   None),
+    ]
+    # Seed the backfill walking back in time from 2026-04-01 one day
+    # per row (roughly a movement/day over the preceding month and a
+    # half); real ordering doesn't matter much for the mock.
+    anchor = datetime(2026, 4, 1, 9, 0)
+    for i, (iid, delta, reason, note) in enumerate(backfill):
+        at = anchor - timedelta(days=i + 1, hours=(i % 4))
+        INVENTORY_MOVEMENTS.append(
+            InventoryMovement(
+                id=f"im-bk-{i + 1}",
+                item_id=iid,
+                delta=delta,
+                reason=reason,  # type: ignore[arg-type]
+                actor_kind="user",
+                actor_id="u-maria" if i % 3 else "u-ana",
+                occurred_at=at,
+                note=note,
+            ),
+        )
+
+
+_backfill_demo_history()
 
 LIFECYCLE_RULES: list[StayLifecycleRule] = [
     StayLifecycleRule("lr-1", "p-villa-sud", "after_checkout", "tpl-turnover", offset_hours=2),
@@ -3763,6 +3973,11 @@ WORKSPACE_SETTINGS: dict[str, Any] = {
     "scheduling.horizon_days": 30,
     "tasks.checklist_required": False,
     "tasks.allow_skip_with_reason": True,
+    # §08 — gates consume + produce effects declared on task
+    # templates / asset actions. Replaces the pre-revision
+    # `inventory.consume_on_task`.
+    "inventory.apply_on_task": True,
+    "inventory.shrinkage_alert_pct": 10,
 }
 
 WORKSPACE_POLICY: dict[str, Any] = {
@@ -4381,6 +4596,25 @@ def payslips_for_employee(eid: str) -> list[PaySlip]:
 
 def inventory_for_property(pid: str) -> list[InventoryItem]:
     return [i for i in INVENTORY if i.property_id == pid]
+
+
+def inventory_by_id(iid: str) -> InventoryItem | None:
+    return next((i for i in INVENTORY if i.id == iid), None)
+
+
+def inventory_by_sku(pid: str, sku: str) -> InventoryItem | None:
+    return next(
+        (i for i in INVENTORY if i.property_id == pid and i.sku == sku),
+        None,
+    )
+
+
+def stocktakes_for_property(pid: str) -> list[InventoryStocktake]:
+    return [s for s in INVENTORY_STOCKTAKES if s.property_id == pid]
+
+
+def stocktake_by_id(sid: str) -> InventoryStocktake | None:
+    return next((s for s in INVENTORY_STOCKTAKES if s.id == sid), None)
 
 
 def stay_by_id(sid: str) -> Stay | None:

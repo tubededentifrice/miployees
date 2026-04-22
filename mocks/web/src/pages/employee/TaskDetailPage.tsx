@@ -12,10 +12,28 @@ import PageHeader from "@/components/PageHeader";
 import { fmtTime } from "@/lib/dates";
 import type { AgentMessage, Instruction, Property, Task } from "@/types/api";
 
+interface ResolvedInventoryEffect {
+  item_ref: string;
+  kind: "consume" | "produce";
+  qty: number;
+  item_id: string | null;
+  item_name: string;
+  unit: string;
+  on_hand: number | null;
+}
+
 interface TaskPayload {
   task: Task;
   property: Property | null;
   instructions: Instruction[];
+  // §08 — populated on the task detail endpoint from the template's
+  // `inventory_effects_json`, resolved against the task's property.
+  inventory_effects?: ResolvedInventoryEffect[];
+}
+
+function fmtQty(n: number): string {
+  const s = n.toFixed(3);
+  return s.replace(/\.?0+$/, "");
 }
 
 const STATUS_TONE: Record<Task["status"], "moss" | "sky" | "ghost" | "rust"> = {
@@ -141,6 +159,9 @@ export default function TaskDetailPage() {
   }
 
   const { task, property, instructions } = q.data;
+  const effects = q.data.inventory_effects ?? [];
+  const consumes = effects.filter((e) => e.kind === "consume");
+  const produces = effects.filter((e) => e.kind === "produce");
   const terminal = task.status === "completed" || task.status === "skipped";
 
   return (
@@ -219,6 +240,49 @@ export default function TaskDetailPage() {
             ))}
           </ul>
         </div>
+      )}
+
+      {effects.length > 0 && (
+        <section className="task-effects">
+          <h3 className="section-title section-title--sm">
+            {terminal ? "Used / Produced" : "Will use / Will produce"}
+          </h3>
+          {consumes.length > 0 && (
+            <div className="task-effects__group">
+              <span className="task-effects__label">Uses</span>
+              <ul>
+                {consumes.map((e, idx) => {
+                  const short =
+                    e.on_hand !== null && e.on_hand - e.qty < 0;
+                  return (
+                    <li key={`c-${idx}`} className={short ? "task-effects__short" : ""}>
+                      <strong className="mono">{fmtQty(e.qty)} {e.unit}</strong>
+                      <span>{e.item_name}</span>
+                      {short && (
+                        <Chip tone="rust" size="sm">
+                          only {fmtQty(e.on_hand ?? 0)} on hand
+                        </Chip>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          {produces.length > 0 && (
+            <div className="task-effects__group">
+              <span className="task-effects__label">Produces</span>
+              <ul>
+                {produces.map((e, idx) => (
+                  <li key={`p-${idx}`}>
+                    <strong className="mono">{fmtQty(e.qty)} {e.unit}</strong>
+                    <span>{e.item_name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
       )}
 
       {instructions.length > 0 && (

@@ -17,6 +17,7 @@ import {
 } from "@tanstack/react-query";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { useCloseOnEscape } from "@/lib/useCloseOnEscape";
 import PageHeader from "@/components/PageHeader";
 import DeskPage from "@/components/DeskPage";
 import { Loading } from "@/components/common";
@@ -1002,6 +1003,10 @@ function DayDrawer({
   // behind it. The empty-day fallback keeps the section silent if the
   // worker opened a rest day (the hero would otherwise look broken).
   const drawerWindow = useMemo(() => (cell ? computeWindow([cell]) : null), [cell]);
+
+  // Universal Esc-to-close — matches the inventory drawer, prompt
+  // drawer, and everything else scrim-backed across the app.
+  useCloseOnEscape(onClose, cell !== null && drawerWindow !== null);
 
   if (!cell || !drawerWindow) return null;
   const heading = cell.date.toLocaleDateString("en-GB", {

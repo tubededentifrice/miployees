@@ -46,7 +46,7 @@ their bundles.
 | photo_evidence                 | enum      | `disabled | optional | required`      |
 | linked_instruction_ids         | ULID[]    | §07                                   |
 | priority                       | enum      | `low | normal | high | urgent`        |
-| inventory_consumption_json     | jsonb     | SKU → qty expected, see §08           |
+| inventory_effects_json         | jsonb     | list of `{item_ref, kind, qty}` declaring consume / produce effects; see §08 "Inventory effects on task completion". Replaces the pre-revision consume-only `inventory_consumption_json`. |
 | llm_hints_md                   | text      | free text to help agents understand intent |
 | created_at                     | tstz      | used for list ordering (ascending)    |
 | deleted_at                     | tstz?     |                                       |
@@ -674,8 +674,10 @@ Server-side:
 
 1. Validate state transition.
 2. Record `completed_at`, `completed_by_user_id`.
-3. Apply `inventory_consumption_json` as `inventory_movement` rows
-   unless the resolved setting `inventory.consume_on_task = false`
+3. Apply `inventory_effects_json` as `inventory_movement` rows
+   (one per entry, `consume` → negative delta with `reason =
+   consume`, `produce` → positive delta with `reason = produce`)
+   unless the resolved setting `inventory.apply_on_task = false`
    (§08).
 4. If `asset_action_id` is set, update
    `asset_action.last_performed_at = completed_at` and
