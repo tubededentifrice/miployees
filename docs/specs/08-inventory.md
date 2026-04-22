@@ -53,7 +53,7 @@ Postgres → Python → JSON → JS path. Rules:
 | property_id            | ULID FK |                                    |
 | name                   | text    | "Toilet paper (2-ply)"             |
 | sku                    | text?   | free-form                          |
-| unit                   | text    | `each`, `pack`, `kg`, `liter`, `roll` |
+| unit                   | text    | **free-text**, operator-authored — e.g. `each`, `pack`, `kg`, `liter`, `roll`, `set`, `bottle`, `L`, `stère`, `btl`. UI surfaces a pre-filled picker of common choices but always allows a custom entry. Not a closed enum: adding a new unit never requires a migration. |
 | on_hand                | decimal | cached; recomputed from movements  |
 | reorder_point          | decimal | trigger level                      |
 | reorder_target         | decimal | quantity to bring us to            |
@@ -185,12 +185,8 @@ one transaction:
 This is a soft coupling: completing the task never fails because an
 effect disagrees with reality.
 
-**Setting cascade (renamed).** The single key
-`inventory.apply_on_task` (replaces the pre-revision
-`inventory.consume_on_task`) gates both consumption and production.
-Operators migrating from the old key are auto-mapped on read:
-legacy `inventory.consume_on_task` resolves to the same value until
-the key is removed from storage. There is no separate
+**Setting cascade.** The single key `inventory.apply_on_task` gates
+both consumption and production. There is no separate
 `inventory.produce_on_task` — agencies either let tasks touch
 inventory or they don't.
 

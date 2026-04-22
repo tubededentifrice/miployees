@@ -3974,8 +3974,7 @@ WORKSPACE_SETTINGS: dict[str, Any] = {
     "tasks.checklist_required": False,
     "tasks.allow_skip_with_reason": True,
     # §08 — gates consume + produce effects declared on task
-    # templates / asset actions. Replaces the pre-revision
-    # `inventory.consume_on_task`.
+    # templates / asset actions.
     "inventory.apply_on_task": True,
     "inventory.shrinkage_alert_pct": 10,
 }
