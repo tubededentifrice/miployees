@@ -4,13 +4,16 @@ Exercises the FastAPI handlers through :class:`TestClient`:
 
 * happy-path round-trip shapes the response body correctly,
 * error mapping matches the spec (422 too_many_passkeys, 409 replay,
-  400 invalid_registration, 400 challenge_expired),
-* the signup router works without an authenticated context.
+  400 invalid_registration, 400 challenge_expired).
 
 We stand up a minimal FastAPI app per test so we don't depend on the
 full app factory (cd-ika7 — not merged yet).
 
-See cd-8m4 acceptance criteria.
+See cd-8m4 acceptance criteria. The bare-host signup passkey surface
+(``/api/v1/auth/passkey/signup/register/*``) was retired per cd-ju0q
+in favour of the canonical ``/api/v1/signup/passkey/*`` — that flow's
+end-to-end coverage lives in ``tests/integration/auth/test_signup_full_flow.py``
+and ``tests/unit/auth/test_signup.py``.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from app.adapters.db.identity.models import PasskeyCredential, WebAuthnChallenge
 from app.adapters.db.session import UnitOfWorkImpl, make_engine
 from app.adapters.db.workspace.models import Workspace
 from app.api.deps import current_workspace_context, db_session
-from app.api.v1.auth.passkey import router, signup_router
+from app.api.v1.auth.passkey import router
 from app.auth import passkey as passkey_module
 from app.auth.webauthn import RelyingParty, VerifiedRegistration
 from app.tenancy.context import WorkspaceContext
@@ -120,7 +123,6 @@ def app_with_overrides(
 
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
-    app.include_router(signup_router, prefix="/api/v1")
 
     def _override_ctx() -> WorkspaceContext:
         return ctx
@@ -279,55 +281,6 @@ class TestRegisterRouter:
         )
         assert resp.status_code == 400
         assert resp.json()["detail"]["error"] == "invalid_registration"
-
-
-class TestSignupRouter:
-    """Bare-host signup router — no ctx dep, no audit write."""
-
-    def test_signup_start_finish_round_trip(
-        self,
-        app_with_overrides: FastAPI,
-        factory: sessionmaker[Session],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        client = TestClient(app_with_overrides)
-        # Seed a user who will receive the credential on finish.
-        with factory() as s:
-            user = bootstrap_user(
-                s,
-                email="signup@example.com",
-                display_name="Signup User",
-                clock=FrozenClock(_PINNED),
-            )
-            s.commit()
-            new_user_id = user.id
-
-        start = client.post(
-            "/api/v1/auth/passkey/signup/register/start",
-            json={
-                "signup_session_id": "01HWA00000000000000000SGN9",
-                "email": "signup@example.com",
-                "display_name": "Signup User",
-            },
-        )
-        assert start.status_code == 200
-        challenge_id = start.json()["challenge_id"]
-
-        monkeypatch.setattr(
-            passkey_module,
-            "verify_registration",
-            lambda **_: _verified(),
-        )
-        finish = client.post(
-            "/api/v1/auth/passkey/signup/register/finish",
-            json={
-                "signup_session_id": "01HWA00000000000000000SGN9",
-                "user_id": new_user_id,
-                "challenge_id": challenge_id,
-                "credential": _raw(),
-            },
-        )
-        assert finish.status_code == 200, finish.text
 
 
 class TestDeletePasskeyRouter:
@@ -739,90 +692,3 @@ class TestRegisterFinishChallengeSingleUse:
         # Still no row — the idempotent delete didn't insert or crash.
         with factory() as s:
             assert s.get(WebAuthnChallenge, fake_id) is None
-
-
-class TestSignupFinishChallengeSingleUse:
-    """cd-qx1f: signup-flow finish burns the challenge on failure too."""
-
-    def test_invalid_registration_burns_challenge(
-        self,
-        app_with_overrides: FastAPI,
-        factory: sessionmaker[Session],
-        redirect_default_engine: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from app.auth.webauthn import InvalidRegistrationResponse
-
-        client = TestClient(app_with_overrides)
-        # Seed a user for the finish path — the signup service
-        # normally creates this atomically; we pre-create for the test.
-        with factory() as s:
-            user = bootstrap_user(
-                s,
-                email="sigfail@example.com",
-                display_name="Signup Fail",
-                clock=FrozenClock(_PINNED),
-            )
-            s.commit()
-            user_id = user.id
-
-        start = client.post(
-            "/api/v1/auth/passkey/signup/register/start",
-            json={
-                "signup_session_id": "01HWA00000000000000000SGN8",
-                "email": "sigfail@example.com",
-                "display_name": "Signup Fail",
-            },
-        )
-        challenge_id = start.json()["challenge_id"]
-        with factory() as s:
-            assert s.get(WebAuthnChallenge, challenge_id) is not None
-
-        def _raise(**_: Any) -> VerifiedRegistration:
-            raise InvalidRegistrationResponse("signature mismatch")
-
-        monkeypatch.setattr(passkey_module, "verify_registration", _raise)
-        resp = client.post(
-            "/api/v1/auth/passkey/signup/register/finish",
-            json={
-                "signup_session_id": "01HWA00000000000000000SGN8",
-                "user_id": user_id,
-                "challenge_id": challenge_id,
-                "credential": _raw(),
-            },
-        )
-        assert resp.status_code == 400
-        with factory() as s:
-            assert s.get(WebAuthnChallenge, challenge_id) is None
-
-    def test_wrong_signup_session_burns_challenge(
-        self,
-        app_with_overrides: FastAPI,
-        factory: sessionmaker[Session],
-        redirect_default_engine: None,
-    ) -> None:
-        """Cross-signup replay is refused and the original challenge is
-        burned so the attacker can't keep swinging at it."""
-        client = TestClient(app_with_overrides)
-        start = client.post(
-            "/api/v1/auth/passkey/signup/register/start",
-            json={
-                "signup_session_id": "01HWA00000000000000000SGNA",
-                "email": "a@example.com",
-                "display_name": "A",
-            },
-        )
-        challenge_id = start.json()["challenge_id"]
-
-        resp = client.post(
-            "/api/v1/auth/passkey/signup/register/finish",
-            json={
-                "signup_session_id": "01HWA00000000000000000SGNB",
-                "user_id": "01HWA00000000000000000USRX",
-                "challenge_id": challenge_id,
-                "credential": _raw(),
-            },
-        )
-        assert resp.status_code == 400
-        with factory() as s:
-            assert s.get(WebAuthnChallenge, challenge_id) is None

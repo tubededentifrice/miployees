@@ -30,7 +30,11 @@ describe("isAuthEndpoint", () => {
     expect(isAuthEndpoint("/api/v1/auth/logout")).toBe(true);
     expect(isAuthEndpoint("/api/v1/auth/passkey/login/start")).toBe(true);
     expect(isAuthEndpoint("/api/v1/auth/passkey/login/finish")).toBe(true);
-    expect(isAuthEndpoint("/api/v1/auth/passkey/signup/start")).toBe(true);
+    // Canonical signup passkey ceremony is mounted under /api/v1/signup/passkey/*
+    // (§03 "Self-serve signup"; the retired /auth/passkey/signup/register/*
+    // parallel surface was removed per cd-ju0q).
+    expect(isAuthEndpoint("/api/v1/signup/passkey/start")).toBe(true);
+    expect(isAuthEndpoint("/api/v1/signup/passkey/finish")).toBe(true);
     expect(isAuthEndpoint("/api/v1/auth/recover/start")).toBe(true);
     expect(isAuthEndpoint("/api/v1/auth/magic/send")).toBe(true);
     expect(isAuthEndpoint("/api/v1/signup/start")).toBe(true);

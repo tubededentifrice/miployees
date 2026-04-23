@@ -258,9 +258,12 @@ def _mount_auth_routers(
     """Mount the bare-host + workspace-scoped auth routers.
 
     Bare-host routers (signup, magic-link, recovery, invite, passkey
-    signup / login) live at ``/api/v1/...``; workspace-scoped auth
-    routers (tokens, users, passkey register) nest under
-    ``/w/{slug}/api/v1/...`` and run behind the tenancy middleware.
+    login) live at ``/api/v1/...``; workspace-scoped auth routers
+    (tokens, users, passkey register) nest under ``/w/{slug}/api/v1/...``
+    and run behind the tenancy middleware. The signup flow's WebAuthn
+    ceremony (``/api/v1/signup/passkey/{start,finish}``) is mounted
+    by :func:`signup_module.build_signup_router` below (gated on SMTP
+    availability); see cd-ju0q for the dual-surface retirement.
     Routers that need a mailer are skipped when SMTP is not
     configured — each one would raise on first use anyway, but
     skipping the mount keeps the OpenAPI surface honest.
@@ -275,7 +278,6 @@ def _mount_auth_routers(
     scoped_prefix = "/w/{slug}/api/v1"
 
     # --- Bare-host auth routers (§03 "Self-serve signup", §12) ---
-    app.include_router(passkey_module.signup_router, prefix=bare_prefix)
     app.include_router(
         passkey_module.build_login_router(throttle=throttle, settings=settings),
         prefix=bare_prefix,

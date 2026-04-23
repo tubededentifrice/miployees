@@ -52,9 +52,11 @@ export function isAuthEndpoint(path: string): boolean {
   if (bare.endsWith("/api/v1/auth/logout")) return true;
   // Passkey login ceremony only — NOT the register flow (authenticated).
   if (bare.includes("/api/v1/auth/passkey/login/")) return true;
-  // Signup passkey ceremony is mounted under /auth/passkey/signup —
+  // Signup passkey ceremony is mounted under /api/v1/signup/passkey/ —
   // anonymous, so suppress the redirect (the user hasn't signed in yet).
-  if (bare.includes("/api/v1/auth/passkey/signup/")) return true;
+  // Covered by the broader /api/v1/signup/ match below but kept explicit
+  // so the intent is obvious at the predicate level.
+  if (bare.includes("/api/v1/signup/passkey/")) return true;
   // All recover-* endpoints are anonymous (they exist precisely because
   // the user cannot sign in), magic-link send/consume is anonymous, and
   // every /signup/ surface is pre-auth.

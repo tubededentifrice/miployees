@@ -8,10 +8,12 @@ Two bare-host routes, tenant-agnostic:
 * ``POST /auth/magic/consume`` — returns :class:`MagicLinkOutcome`
   fields on success; 400 / 409 / 410 / 429 on errors.
 
-Mounted alongside :data:`app.api.v1.auth.passkey.signup_router` by the
-v1 app factory (cd-ika7). A fresh :class:`Throttle` is built at module
-load; the throttle is process-scoped (see :mod:`app.auth._throttle`)
-and shared across every request this worker serves.
+Mounted by the v1 app factory (cd-ika7) alongside the passkey login
+router and the canonical signup flow at
+:func:`app.api.v1.auth.signup.build_signup_router`. A fresh
+:class:`Throttle` is built at module load; the throttle is
+process-scoped (see :mod:`app.auth._throttle`) and shared across
+every request this worker serves.
 
 The router never talks to py_webauthn or sees plaintext tokens outside
 the domain service — its job is to unpack the request body, call the

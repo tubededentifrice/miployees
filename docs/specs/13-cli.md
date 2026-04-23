@@ -116,9 +116,11 @@ sees them as covered.
 Endpoints intentionally omitted from CLI generation, each with a
 mandatory reason. Canonical list:
 
-- `auth.passkey.signup_register_start`, `auth.passkey.signup_register_finish`,
-  `auth.passkey.login_start`, `auth.passkey.login_finish` — browser-only
-  passkey ceremony.
+- `auth.passkey.login_start`, `auth.passkey.login_finish` — browser-only
+  passkey ceremony. The signup passkey ceremony lives on the signup
+  router (`/api/v1/signup/passkey/{start,finish}`) and is excluded
+  there by the same mechanism (cd-ju0q retired the parallel
+  `/auth/passkey/signup/register/*` surface).
 - `files.blob` — returns a 302 redirect or binary stream, not JSON;
   file metadata is available via the generated `files show` command.
 - `healthz`, `readyz`, `version.get` — no-auth infrastructure probes;

@@ -421,12 +421,18 @@ class TestSkipPaths:
     def test_auth_passkey_child_is_skip_path(self) -> None:
         app = _build_app()
 
-        @app.post("/auth/passkey/signup/register/start")
+        # Any child under ``/auth/passkey/`` inherits the SKIP_PATHS
+        # prefix match — we exercise the bare-host login-start path
+        # because it is the only pre-session passkey surface that
+        # remains at the bare host after cd-ju0q retired the parallel
+        # ``/auth/passkey/signup/register/*`` flow (the canonical
+        # signup ceremony lives at ``/api/v1/signup/passkey/*``).
+        @app.post("/auth/passkey/login/start")
         def passkey_child() -> dict[str, object]:
             return {"ok": True, "bound": get_current() is not None}
 
         with _client(app) as client:
-            response = client.post("/auth/passkey/signup/register/start")
+            response = client.post("/auth/passkey/login/start")
         assert response.status_code == 200
         assert response.json()["bound"] is False
 

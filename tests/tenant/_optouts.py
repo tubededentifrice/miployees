@@ -44,8 +44,6 @@ HTTP_PATH_OPTOUTS: frozenset[str] = frozenset(
         # (§03 "Self-serve signup").
         "/api/v1/auth/passkey/login/start",
         "/api/v1/auth/passkey/login/finish",
-        "/api/v1/auth/passkey/signup/register/start",
-        "/api/v1/auth/passkey/signup/register/finish",
         "/api/v1/invite/accept",
         "/api/v1/invite/complete",
         "/api/v1/invite/{invite_id}/confirm",

@@ -1,6 +1,6 @@
 """Passkey registration + login HTTP routers.
 
-Three routers are exposed:
+Two routers are exposed:
 
 * :data:`router` — mounted at ``/auth/passkey`` inside the
   workspace-scoped tree (``/w/<slug>/api/v1/auth/passkey``). Both
@@ -10,14 +10,6 @@ Three routers are exposed:
   :func:`app.auth.passkey.register_start` /
   :func:`app.auth.passkey.register_finish`.
 
-* :data:`signup_router` — mounted at
-  ``/api/v1/auth/passkey/signup`` at the **bare host**. No workspace
-  exists yet; the caller supplies a ``signup_session_id`` issued by
-  the magic-link verify step (cd-3i5) and, on finish, the freshly
-  minted ``user_id``. These handlers call
-  :func:`app.auth.passkey.register_start_signup` /
-  :func:`app.auth.passkey.register_finish_signup`.
-
 * :func:`build_login_router` — bare-host login flow
   (``/api/v1/auth/passkey/login``). No session exists yet; the
   browser does a conditional-UI passkey ceremony and on success the
@@ -25,6 +17,19 @@ Three routers are exposed:
   via :func:`app.auth.session.build_session_cookie`. Constructed by
   the v1 app factory with the process-wide :class:`Throttle` so
   concurrent requests share the rolling lockout state.
+
+The signup flow's WebAuthn ceremony lives in
+:mod:`app.api.v1.auth.signup` (``/api/v1/signup/passkey/{start,finish}``)
+— its finish handler delegates to :func:`app.auth.signup.complete_signup`
+which atomically creates the user, workspace, owners permission
+group, and first passkey credential in one transaction. A parallel
+bare-host ``/api/v1/auth/passkey/signup/register/{start,finish}``
+router used to live in this module (still calling the same
+:func:`app.auth.passkey.register_start_signup` /
+:func:`app.auth.passkey.register_finish_signup` domain helpers the
+canonical flow uses today); cd-ju0q retired the router itself in
+favour of the single canonical signup flow above. The domain helpers
+remain in active use by :func:`app.auth.signup.complete_signup`.
 
 Handlers are intentionally thin: unpack the body, call the domain
 service under the request's Unit-of-Work, shape the response. The
@@ -74,9 +79,7 @@ from app.auth.passkey import (
     login_finish,
     login_start,
     register_finish,
-    register_finish_signup,
     register_start,
-    register_start_signup,
     revoke_passkey,
 )
 from app.auth.session import build_session_cookie
@@ -88,7 +91,7 @@ from app.config import Settings, get_settings
 from app.tenancy import WorkspaceContext, tenant_agnostic
 from app.util.clock import SystemClock
 
-__all__ = ["build_login_router", "router", "signup_router"]
+__all__ = ["build_login_router", "router"]
 
 
 # FastAPI's convention puts ``Depends`` on the default; newer style is
@@ -136,35 +139,6 @@ class RegisterFinishResponse(BaseModel):
     transports: str | None
     backup_eligible: bool
     aaguid: str
-
-
-class SignupRegisterStartRequest(BaseModel):
-    """Request body for ``POST /auth/passkey/signup/register/start``.
-
-    ``signup_session_id`` is the handle minted by the magic-link
-    verify step; the bare-host flow is tenant-agnostic, so we read
-    the display name + email from the pending signup row
-    indirectly via the request body.
-    """
-
-    signup_session_id: str
-    email: str
-    display_name: str
-
-
-class SignupRegisterFinishRequest(BaseModel):
-    """Request body for ``POST /auth/passkey/signup/register/finish``.
-
-    ``user_id`` is the freshly-minted ULID the signup service
-    reserved for this account. The signup service's finish handler
-    calls this endpoint inside its own UoW so the user + grant +
-    credential land atomically.
-    """
-
-    signup_session_id: str
-    user_id: str
-    challenge_id: str
-    credential: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -409,100 +383,6 @@ def delete_passkey(
         ) from exc
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-# ---------------------------------------------------------------------------
-# Bare-host signup router — first passkey for a fresh account
-# ---------------------------------------------------------------------------
-
-
-signup_router = APIRouter(prefix="/auth/passkey/signup", tags=["auth", "signup"])
-
-
-@signup_router.post(
-    "/register/start",
-    response_model=RegisterStartResponse,
-    operation_id="auth.passkey.signup_register_start",
-    summary="Begin passkey registration during self-serve signup",
-    openapi_extra={
-        # Pre-session ceremony — the caller is anonymous, no PAT /
-        # delegated token can reach it, and the only way to
-        # complete it is through a browser WebAuthn ceremony. The
-        # §12 "mutating route" rule still wants one of the three
-        # agent gates; ``x-interactive-only`` is the honest fit
-        # (tokens cannot reach what has no session context to
-        # attach to) and pairs with ``hidden`` to keep the CLI
-        # generator silent.
-        "x-cli": {
-            "group": "auth",
-            "verb": "passkey-signup-register-start",
-            "summary": "Begin passkey registration during self-serve signup",
-            "mutates": True,
-            "hidden": True,
-        },
-        "x-interactive-only": True,
-    },
-)
-def post_signup_register_start(
-    body: SignupRegisterStartRequest,
-    session: _Db,
-) -> RegisterStartResponse:
-    """Mint a signup-scoped challenge (no workspace, no user row yet)."""
-    try:
-        opts = register_start_signup(
-            session,
-            signup_session_id=body.signup_session_id,
-            email=body.email,
-            display_name=body.display_name,
-        )
-    except _DomainError as exc:
-        raise _http_for(exc) from exc
-    return RegisterStartResponse(
-        challenge_id=opts.challenge_id,
-        options=opts.options,
-    )
-
-
-@signup_router.post(
-    "/register/finish",
-    response_model=RegisterFinishResponse,
-    operation_id="auth.passkey.signup_register_finish",
-    summary="Verify + persist the signup flow's first passkey",
-    openapi_extra={
-        "x-cli": {
-            "group": "auth",
-            "verb": "passkey-signup-register-finish",
-            "summary": "Verify and persist the signup flow's first passkey",
-            "mutates": True,
-            "hidden": True,
-        },
-        "x-interactive-only": True,
-    },
-)
-def post_signup_register_finish(
-    body: SignupRegisterFinishRequest,
-    session: _Db,
-) -> RegisterFinishResponse:
-    """Verify the attestation, insert the credential row."""
-    try:
-        ref = register_finish_signup(
-            session,
-            signup_session_id=body.signup_session_id,
-            user_id=body.user_id,
-            challenge_id=body.challenge_id,
-            credential=body.credential,
-        )
-    except _DomainError as exc:
-        # cd-qx1f: single-use even on failure. See sibling in
-        # :func:`post_register_finish`.
-        _delete_challenge_fresh_uow(body.challenge_id)
-        raise _http_for(exc) from exc
-    return RegisterFinishResponse(
-        credential_id=ref.credential_id_b64url,
-        transports=ref.transports,
-        backup_eligible=ref.backup_eligible,
-        aaguid=ref.aaguid,
-    )
 
 
 # ---------------------------------------------------------------------------

@@ -15,11 +15,16 @@ of ``x-agent-confirm`` / ``x-agent-forbidden`` / ``x-interactive-only``
 
 This test parses the generated OpenAPI document and asserts those
 invariants for every ``/auth/passkey/`` route the factory mounts — the
-workspace-scoped register / revoke tree, the bare-host signup flow,
-and the bare-host login flow. If a new passkey route lands without
-the annotations it will fail here instead of silently sneaking
-through CI until the ``openapi-agent-annotations`` gate (§17) wires
-up and retroactively audits the schema.
+workspace-scoped register / revoke tree and the bare-host login flow.
+(The bare-host signup ceremony lives at ``/api/v1/signup/passkey/*``
+in :mod:`app.api.v1.auth.signup` and is out of scope for this guard —
+that router does not yet declare ``operation_id`` / ``openapi_extra``;
+when it does, its annotations belong alongside the signup router's
+own tests. cd-ju0q retired the parallel ``/auth/passkey/signup/*``
+surface that this file used to also cover.) If a new passkey route
+lands without the annotations it will fail here instead of silently
+sneaking through CI until the ``openapi-agent-annotations`` gate (§17)
+wires up and retroactively audits the schema.
 
 The negative case (a deliberately under-annotated route) is proven
 out-of-process: constructing a fresh ``FastAPI`` with a mutating route
@@ -65,7 +70,7 @@ _REQUIRED_XCLI_KEYS: frozenset[str] = frozenset(
 
 
 def _minimal_app() -> FastAPI:
-    """Return a fresh :class:`FastAPI` with the three passkey routers.
+    """Return a fresh :class:`FastAPI` with the two passkey routers.
 
     **Do NOT replace this with ``app.main.create_app()``.** Calling the
     real factory pulls ``app.logging.setup_logging()`` into
@@ -105,10 +110,9 @@ def _minimal_app() -> FastAPI:
     )
     app = FastAPI()
     # Mirror :func:`app.api.factory._mount_auth_routers` — same prefix,
-    # same three routers, same build shape. If the factory ever
+    # same two routers, same build shape. If the factory ever
     # changes the passkey mount prefix or router set the mismatch
     # will surface as missing paths in ``test_every_route_has_*``.
-    app.include_router(passkey_module.signup_router, prefix="/api/v1")
     app.include_router(
         passkey_module.build_login_router(throttle=Throttle(), settings=settings),
         prefix="/api/v1",
@@ -309,12 +313,18 @@ class TestPasskeyRevokeIsInteractiveOnly:
 
 
 class TestBrowserCeremoniesAreHidden:
-    """WebAuthn ceremonies (register / signup-register / login) are browser-only.
+    """WebAuthn ceremonies (register / login) are browser-only.
 
     The CLI generator has no way to drive ``navigator.credentials.*``
     so emitting a ``crewday auth passkey register-start`` verb would
     just hand the user a dead command. ``hidden: true`` is the record
     that tells the generator to skip them.
+
+    The signup passkey ceremony lives at ``/api/v1/signup/passkey/*``
+    and is outside this guard's scope — that router does not yet
+    declare the ``x-cli`` annotations these tests assert. cd-ju0q
+    retired the parallel ``/auth/passkey/signup/*`` surface that this
+    class used to cover.
     """
 
     @pytest.mark.parametrize(
@@ -322,8 +332,6 @@ class TestBrowserCeremoniesAreHidden:
         [
             "/auth/passkey/register/start",
             "/auth/passkey/register/finish",
-            "/auth/passkey/signup/register/start",
-            "/auth/passkey/signup/register/finish",
             "/auth/passkey/login/start",
             "/auth/passkey/login/finish",
         ],
