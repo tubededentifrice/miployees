@@ -77,17 +77,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
-from app.adapters.db.authz.models import (
-    PermissionGroup,
-    PermissionGroupMember,
-    RoleGrant,
-)
+from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.places.models import PropertyWorkspace
 from app.audit import write_audit
 from app.authz.owners import is_owner_member
+from app.domain.identity._owner_guard import count_owner_members_locked
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
@@ -302,37 +299,6 @@ def _assert_scope_property_in_workspace(
         )
 
 
-def _count_owner_members(session: Session, ctx: WorkspaceContext) -> int:
-    """Return the number of ``owners@<workspace>`` members.
-
-    Used by :func:`revoke`'s last-owner guard so a manager-grant
-    revoke cannot leave the workspace with a single
-    ``owners@<workspace>`` member who no longer carries the manager
-    surface.
-    """
-    stmt = (
-        select(func.count())
-        .select_from(PermissionGroupMember)
-        .join(
-            PermissionGroup,
-            PermissionGroup.id == PermissionGroupMember.group_id,
-        )
-        .where(
-            PermissionGroupMember.workspace_id == ctx.workspace_id,
-            PermissionGroup.slug == "owners",
-            PermissionGroup.system.is_(True),
-        )
-    )
-    count = session.scalar(stmt)
-    # ``select(func.count())`` always returns a scalar (zero if no
-    # rows match); the ``or 0`` keeps mypy honest against the
-    # ``scalar()`` Optional return type without masking a real bug
-    # — an unexpected ``None`` would surface as "treat the workspace
-    # as having zero owners", which then trips the lockout guard
-    # immediately on any revoke, which is the correct failure mode.
-    return count or 0
-
-
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
@@ -475,7 +441,11 @@ def revoke(
     if row.grant_role == "manager" and is_owner_member(
         session, workspace_id=ctx.workspace_id, user_id=row.user_id
     ):
-        owner_count = _count_owner_members(session, ctx)
+        # :func:`count_owner_members_locked` takes a write lock on the
+        # owners-group row before counting so a concurrent
+        # ``remove_member`` / ``revoke`` can't observe the pre-change
+        # count and race us to an empty governance seat (cd-mb5n).
+        owner_count = count_owner_members_locked(session, workspace_id=ctx.workspace_id)
         # The caller's workspace always has ≥ 1 owner (§02
         # "permission_group" §"Invariants"); the count check protects
         # against the ``owner_count == 1`` lockout specifically.

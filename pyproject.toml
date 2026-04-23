@@ -174,6 +174,15 @@ ignore_imports = [
     # land these exceptions drop together.
     "app.domain.identity.role_grants -> app.adapters.db.authz.models",
     "app.domain.identity.role_grants -> app.adapters.db.places.models",
+    # v1 stopgap (cd-mb5n): ``app.domain.identity._owner_guard`` is the
+    # shared cross-dialect locking primitive for the last-owner
+    # invariant; both ``remove_member`` and ``revoke`` delegate their
+    # owner-count read to it. It imports :class:`PermissionGroup` /
+    # :class:`PermissionGroupMember` from ``app.adapters.db.authz.models``
+    # for the same reason as its siblings — the Protocol-seam refactor
+    # hasn't landed yet. Drops with cd-duv6 alongside the other
+    # ``app.domain.identity`` exceptions.
+    "app.domain.identity._owner_guard -> app.adapters.db.authz.models",
     # v1 stopgap (cd-jpa): ``app.domain.identity.membership`` reads
     # identity + authz + workspace ORM models directly. Same
     # Protocol-seam refactor as the siblings above; tracked by

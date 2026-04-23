@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -67,6 +67,7 @@ from app.adapters.db.authz.models import PermissionGroup, PermissionGroupMember
 from app.audit import write_audit
 from app.domain.errors import Validation
 from app.domain.identity._action_catalog import ACTION_CATALOG
+from app.domain.identity._owner_guard import count_owner_members_locked
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
@@ -592,8 +593,12 @@ def remove_member(
     # ``owners`` group, the member row actually exists (otherwise
     # this is an idempotent no-op removal that does not change
     # membership count), and the remove would leave the group empty.
+    # :func:`count_owner_members_locked` takes a write lock on the
+    # owners-group row BEFORE counting so a concurrent ``remove_member``
+    # on the same workspace can't observe the pre-delete count and
+    # race us to zero (cd-mb5n).
     if row is not None and group.slug == "owners" and group.system:
-        owner_count = _count_members(session, group_id=group.id)
+        owner_count = count_owner_members_locked(session, workspace_id=ctx.workspace_id)
         if owner_count <= 1:
             # Do NOT write an audit row on the caller's UoW — the
             # typed exception rolls back the outer transaction and
@@ -618,37 +623,6 @@ def remove_member(
         diff={"group_id": group_id, "user_id": user_id},
         clock=clock,
     )
-
-
-def _count_members(session: Session, *, group_id: str) -> int:
-    """Return the number of ``permission_group_member`` rows for ``group_id``.
-
-    Helper for the last-owner guard in :func:`remove_member`. Lives
-    here (not on ``role_grants``) because the guard triggers on
-    **membership** count, not grant count — the two are distinct
-    concepts (§02 "permission_group_member" vs §02 "role_grants").
-
-    The count does not add an explicit ``workspace_id`` predicate —
-    the ORM tenant filter injects ``permission_group_member.workspace_id
-    = ctx.workspace_id`` automatically on every SELECT. The caller
-    has already loaded the group via :func:`_load_group` so we know
-    it belongs to the caller's workspace; member rows for the same
-    ``group_id`` cannot legally belong to another workspace (FK
-    ``permission_group_member.workspace_id`` points at the group's
-    workspace), so the filter's auto-predicate is sufficient.
-    """
-    stmt = (
-        select(func.count())
-        .select_from(PermissionGroupMember)
-        .where(PermissionGroupMember.group_id == group_id)
-    )
-    count = session.scalar(stmt)
-    # ``select(func.count())`` always returns a scalar (zero when
-    # no rows match); ``or 0`` keeps mypy honest against the
-    # ``scalar()`` Optional return type. An unexpected ``None``
-    # would be treated as "no members", which is the safe-fails-
-    # closed default for the last-owner guard.
-    return count or 0
 
 
 def write_member_remove_rejected_audit(
