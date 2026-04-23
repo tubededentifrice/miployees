@@ -245,7 +245,26 @@ router = APIRouter(prefix="/auth/passkey", tags=["auth"])
 @router.post(
     "/register/start",
     response_model=RegisterStartResponse,
+    operation_id="auth.passkey.register_start",
     summary="Begin passkey registration for the authenticated user",
+    openapi_extra={
+        # Browser-only WebAuthn ceremony — the caller has to complete
+        # it through ``navigator.credentials.create()``, so there is
+        # no meaningful CLI surface. ``hidden: true`` keeps the CLI
+        # generator (§13) from emitting a ``crewday auth passkey
+        # register-start`` verb that would error out immediately.
+        # ``x-interactive-only`` satisfies the §12 "mutating route"
+        # rule: the flow already requires an authenticated passkey
+        # session to reach it (tokens are rejected upstream).
+        "x-cli": {
+            "group": "auth",
+            "verb": "passkey-register-start",
+            "summary": "Begin passkey registration for the authenticated user",
+            "mutates": True,
+            "hidden": True,
+        },
+        "x-interactive-only": True,
+    },
 )
 def post_register_start(
     ctx: _Ctx,
@@ -269,7 +288,21 @@ def post_register_start(
 @router.post(
     "/register/finish",
     response_model=RegisterFinishResponse,
+    operation_id="auth.passkey.register_finish",
     summary="Verify + persist a passkey for the authenticated user",
+    openapi_extra={
+        # Sibling of ``register_start`` — same browser-ceremony
+        # rationale for ``hidden``; same passkey-session requirement
+        # for ``x-interactive-only``.
+        "x-cli": {
+            "group": "auth",
+            "verb": "passkey-register-finish",
+            "summary": "Verify and persist a passkey for the authenticated user",
+            "mutates": True,
+            "hidden": True,
+        },
+        "x-interactive-only": True,
+    },
 )
 def post_register_finish(
     body: RegisterFinishRequest,
@@ -302,7 +335,24 @@ def post_register_finish(
 @router.delete(
     "/{credential_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="auth.passkey.revoke",
     summary="Revoke one of the authenticated user's passkeys",
+    openapi_extra={
+        # Unlike the register ceremonies, the CLI surface for
+        # ``passkey-revoke`` is meaningful — an operator listing
+        # their passkeys should be able to drop a lost device. Not
+        # ``hidden``. §03 "Additional passkeys" pins the flow to a
+        # live passkey session, so PATs + delegated tokens reject
+        # with 403 ``session_only_endpoint`` (see §12 "Interactive-
+        # only extension").
+        "x-cli": {
+            "group": "auth",
+            "verb": "passkey-revoke",
+            "summary": "Revoke one of your passkeys",
+            "mutates": True,
+        },
+        "x-interactive-only": True,
+    },
 )
 def delete_passkey(
     credential_id: str,
@@ -372,7 +422,26 @@ signup_router = APIRouter(prefix="/auth/passkey/signup", tags=["auth", "signup"]
 @signup_router.post(
     "/register/start",
     response_model=RegisterStartResponse,
+    operation_id="auth.passkey.signup_register_start",
     summary="Begin passkey registration during self-serve signup",
+    openapi_extra={
+        # Pre-session ceremony — the caller is anonymous, no PAT /
+        # delegated token can reach it, and the only way to
+        # complete it is through a browser WebAuthn ceremony. The
+        # §12 "mutating route" rule still wants one of the three
+        # agent gates; ``x-interactive-only`` is the honest fit
+        # (tokens cannot reach what has no session context to
+        # attach to) and pairs with ``hidden`` to keep the CLI
+        # generator silent.
+        "x-cli": {
+            "group": "auth",
+            "verb": "passkey-signup-register-start",
+            "summary": "Begin passkey registration during self-serve signup",
+            "mutates": True,
+            "hidden": True,
+        },
+        "x-interactive-only": True,
+    },
 )
 def post_signup_register_start(
     body: SignupRegisterStartRequest,
@@ -397,7 +466,18 @@ def post_signup_register_start(
 @signup_router.post(
     "/register/finish",
     response_model=RegisterFinishResponse,
+    operation_id="auth.passkey.signup_register_finish",
     summary="Verify + persist the signup flow's first passkey",
+    openapi_extra={
+        "x-cli": {
+            "group": "auth",
+            "verb": "passkey-signup-register-finish",
+            "summary": "Verify and persist the signup flow's first passkey",
+            "mutates": True,
+            "hidden": True,
+        },
+        "x-interactive-only": True,
+    },
 )
 def post_signup_register_finish(
     body: SignupRegisterFinishRequest,
@@ -811,7 +891,27 @@ def build_login_router(
     @router.post(
         "/start",
         response_model=LoginStartResponse,
+        operation_id="auth.passkey.login_start",
         summary="Begin a passkey login; returns request options + a challenge id",
+        openapi_extra={
+            # Bare-host login is pre-session — the caller has no
+            # token, no passkey session, just an anonymous browser
+            # about to run ``navigator.credentials.get()``. The
+            # §12 "mutating route" rule still requires one of the
+            # three agent-boundary gates; ``x-interactive-only`` is
+            # the safe fit (the authentication exchange CANNOT be
+            # driven by any token, by definition) and ``hidden``
+            # keeps the CLI generator from emitting a verb that
+            # could never complete the ceremony.
+            "x-cli": {
+                "group": "auth",
+                "verb": "passkey-login-start",
+                "summary": "Begin a passkey login",
+                "mutates": True,
+                "hidden": True,
+            },
+            "x-interactive-only": True,
+        },
     )
     @throttle_decorator(
         scope="passkey.login.begin",
@@ -844,10 +944,21 @@ def build_login_router(
     @router.post(
         "/finish",
         response_model=LoginFinishResponse,
+        operation_id="auth.passkey.login_finish",
         summary=(
             "Verify the passkey assertion, issue a session cookie, "
             "return the authenticating user id"
         ),
+        openapi_extra={
+            "x-cli": {
+                "group": "auth",
+                "verb": "passkey-login-finish",
+                "summary": ("Verify a passkey assertion and issue a session cookie"),
+                "mutates": True,
+                "hidden": True,
+            },
+            "x-interactive-only": True,
+        },
     )
     def post_login_finish(
         body: LoginFinishRequest,
