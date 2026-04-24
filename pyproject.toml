@@ -38,6 +38,14 @@ dependencies = [
     # plaintext after mint; only its argon2id digest is stored, so a
     # DB leak cannot be replayed.
     "argon2-cffi>=23",
+    # AES-256-GCM for the envelope-encryption seam (cd-1ai) — see
+    # :mod:`app.adapters.storage.envelope` and
+    # ``docs/specs/15-security-privacy.md`` §"Secret envelope". This
+    # package is already pulled in transitively by ``webauthn``, but
+    # pinning it directly makes the dependency explicit: the envelope
+    # seam is a production invariant, not something a bump to
+    # ``webauthn`` may quietly drop.
+    "cryptography>=42",
     # Jinja2 for §10 email + push template rendering. The notification
     # service (cd-y1ge) loads ``<kind>.<channel>.j2`` files from
     # :mod:`app.domain.messaging.templates`; every email and push
@@ -329,6 +337,12 @@ ignore_imports = [
     # cd-duv6 (extended scope) — drops once the places repositories
     # land.
     "app.domain.places.property_service -> app.adapters.db.places.models",
+    # v1 stopgap (cd-1ai): ``app.domain.stays.ical_service`` reads
+    # :class:`IcalFeed` from ``app.adapters.db.stays.models`` directly.
+    # Same Protocol-seam pattern as the places / tasks stopgaps above;
+    # tracked by cd-duv6 (extended scope) — drops once the stays
+    # repositories land.
+    "app.domain.stays.ical_service -> app.adapters.db.stays.models",
     # v1 stopgap (cd-whl): ``app.domain.time.shifts`` reads
     # :class:`Shift` + ``_SHIFT_SOURCE_VALUES`` from
     # ``app.adapters.db.time.models`` directly. Same Protocol-seam

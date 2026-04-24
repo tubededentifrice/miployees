@@ -16,11 +16,61 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, Protocol
 
-__all__ = ["Blob", "BlobNotFound", "Storage"]
+__all__ = [
+    "Blob",
+    "BlobNotFound",
+    "EnvelopeDecryptError",
+    "EnvelopeEncryptor",
+    "Storage",
+]
 
 
 class BlobNotFound(Exception):
     """Raised by :meth:`Storage.get` when a hash has no blob on the store."""
+
+
+class EnvelopeDecryptError(Exception):
+    """Raised by :class:`EnvelopeEncryptor` when a ciphertext can't decrypt.
+
+    Ciphertext shape mismatch, wrong version byte, wrong purpose, or
+    AEAD tag mismatch — every failure mode collapses to this single
+    error. Callers treat it as "the bytes on disk are not decipherable
+    under the current key for this purpose": fail loudly rather than
+    silently return garbage. Mirrors the §15 ``KeyFingerprintMismatch``
+    surface for the simpler inline-envelope case.
+
+    See ``docs/specs/15-security-privacy.md`` §"Secret envelope".
+    """
+
+
+class EnvelopeEncryptor(Protocol):
+    """Port: encrypt / decrypt small secrets at rest.
+
+    Every secret persisted in a domain-owned column (iCal feed URL,
+    property wifi password, workspace SMTP secret, ...) flows
+    through this seam so the bytes on disk are never plaintext.
+
+    ``purpose`` is a short ASCII label passed down as the HKDF-Expand
+    ``info`` parameter — different purposes produce unrelated key
+    streams, so ``"ical-feed-url"`` and ``"wifi-password"`` can never
+    decrypt each other's ciphertexts. Callers pin one purpose per
+    column / per owner-entity kind.
+
+    Concrete implementation: :class:`app.adapters.storage.envelope.
+    Aes256GcmEnvelope` (AES-256-GCM, HKDF-derived subkey). Tests
+    wire :class:`tests._fakes.envelope.FakeEnvelope`, a deterministic
+    no-crypto stand-in that still enforces the purpose contract.
+
+    See ``docs/specs/15-security-privacy.md`` §"Secret envelope".
+    """
+
+    def encrypt(self, plaintext: bytes, *, purpose: str) -> bytes:
+        """Return an opaque ciphertext blob. Format is implementation-defined."""
+        ...
+
+    def decrypt(self, ciphertext: bytes, *, purpose: str) -> bytes:
+        """Inverse of :meth:`encrypt`; raises :class:`EnvelopeDecryptError`."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
