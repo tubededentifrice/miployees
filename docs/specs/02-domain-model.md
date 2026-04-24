@@ -1306,8 +1306,6 @@ user does; archiving a user disables every token atomically.
 - Every migration includes a downgrade unless it is lossy; lossy
   migrations say so explicitly and fail downgrade with a clear message.
 - Backfills >1M rows run in the **worker**, not inline in the migration.
-- See `/new-migration` skill for the complete checklist (column types,
-  indexes, backfill, downgrade, idempotency).
 
 ## Portability (SQLite ↔ Postgres)
 

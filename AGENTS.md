@@ -38,8 +38,8 @@ OpenClaw, etc.) operating on this repository.
 
 ## Session bootstrap
 
-1. Run `/resume-work` (or equivalent) to read recent git log, open
-   PRs and issues, uncommitted changes, and active worktrees.
+1. Skim recent git log, open PRs and issues, uncommitted changes,
+   and active worktrees.
 2. Read the relevant spec under `docs/specs/`. **Spec is the source
    of truth; code follows.** Default to updating code on divergence
    unless an ADR or postmortem says otherwise.
@@ -183,7 +183,6 @@ which is `.claude/commands/ai-slop.md`).
 
 | Skill | When |
 |-------|------|
-| `/create-pr` | Every PR body, rebase merges, description upkeep |
 | `/specs` | Interactive spec + mock co-evolution while there's no prod code |
 | `/audit-spec` | After any feature adding or removing behavior |
 | `/selfreview` | Skeptical pass on your own changes before handoff |
@@ -193,13 +192,6 @@ which is `.claude/commands/ai-slop.md`).
 | `/beads` | Create well-formed Beads tasks from a prompt |
 | `/frontend-design:frontend-design` | **Mandatory** before any frontend change under `mocks/web/` (or future `app/web/`) |
 | `/ai-slop` | Strip AI-generated noise from a branch before it ships |
-| `/update-openapi` | After any change under `app/api/` |
-| `/bump-deps` | Periodic dependency bump (uv + Python + JS tooling) |
-| `/fix-osv-finding` | Every OSV finding is a blocker |
-| `/pre-commit-check` | Before committing — lint, type, unit tests |
-| `/new-entity` | Adding a new domain entity |
-| `/new-migration` | Every Alembic migration |
-| `/record-demo` | After any UI change (tape + GIF committed) |
 
 ## Specialised agents
 
@@ -322,8 +314,8 @@ Plain text to the user; CLI handles styling.
   footnotes.
 - **Close or block** what you claimed (`bd close <id>` /
   `bd update <id> --status blocked`); then `bd sync`.
-- **Run the quality gates** that apply (`/pre-commit-check`,
-  `pytest <scope>`, `mypy`, `ruff`).
+- **Run the quality gates** that apply (`pytest <scope>`, `mypy`,
+  `ruff`).
 - **Commit and push** via the `commiter` agent
   (`.claude/agents/commiter.md`); include `.beads/` in the same
   commit. Push rules in §"Git and editing rules".

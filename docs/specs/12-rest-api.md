@@ -60,9 +60,9 @@ workspace A used against `/w/<slug-B>/api/v1/...` returns `404`.
 ## OpenAPI
 
 - OpenAPI 3.1 document served at `GET /api/openapi.json`.
-- Generated from FastAPI's Pydantic models; kept in sync by CI gate
-  `/update-openapi` (the committed `openapi.json` under `docs/api/`
-  must match the live output).
+- Generated from FastAPI's Pydantic models; a CI gate enforces that
+  the committed `openapi.json` under `docs/api/` matches the live
+  output.
 - Swagger UI at `/docs` (dev + staging only), ReDoc at `/redoc`.
 
 ### `operationId` convention
