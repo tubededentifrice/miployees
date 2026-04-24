@@ -256,6 +256,13 @@ ignore_imports = [
     "app.domain.tasks.oneoff -> app.adapters.db.tasks.models",
     "app.domain.tasks.oneoff -> app.adapters.db.places.models",
     "app.domain.tasks.oneoff -> app.authz",
+    # v1 stopgap (cd-8u5): ``app.domain.places.property_service``
+    # reads :class:`Property` and :class:`PropertyWorkspace` from
+    # ``app.adapters.db.places.models`` directly. Same Protocol-
+    # seam pattern as ``app.domain.tasks.templates``; tracked by
+    # cd-duv6 (extended scope) — drops once the places repositories
+    # land.
+    "app.domain.places.property_service -> app.adapters.db.places.models",
     # v1 stopgap (cd-whl): ``app.domain.time.shifts`` reads
     # :class:`Shift` + ``_SHIFT_SOURCE_VALUES`` from
     # ``app.adapters.db.time.models`` directly. Same Protocol-seam

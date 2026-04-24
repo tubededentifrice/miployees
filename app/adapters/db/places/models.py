@@ -26,6 +26,7 @@ See ``docs/specs/02-domain-model.md`` §"property_workspace",
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -55,6 +56,17 @@ _MEMBERSHIP_ROLE_VALUES: tuple[str, ...] = (
     "observer_workspace",
 )
 
+# Allowed ``property.kind`` values — drives default lifecycle rule +
+# area seeding behaviour (§04 "`kind` semantics"). The CHECK on the
+# column enforces the enum; the domain layer narrows the loaded
+# string to a :class:`Literal` on read.
+_PROPERTY_KIND_VALUES: tuple[str, ...] = (
+    "residence",
+    "vacation",
+    "str",
+    "mixed",
+)
+
 # Allowed ``unit.type`` values for the v1 slice. §04 speaks of a
 # free-form unit kind ("Room 1", "Apt 3B"); the column here carries
 # the physical-kind taxonomy (apartment / studio / room / bungalow /
@@ -72,11 +84,26 @@ _UNIT_TYPE_VALUES: tuple[str, ...] = (
 class Property(Base):
     """A physical place the workspace operates in.
 
-    The v1 slice carries only the minimum shared by every downstream
-    context (``address`` as a single text field, IANA ``timezone``,
-    optional ``lat``/``lon``, a ``tags_json`` payload and
-    ``created_at``). The structured ``address_json`` + ``kind`` +
-    ``client_org_id`` columns from §04 land with cd-8u5.
+    The v1 slice (cd-i6u) landed ``id`` / ``address`` / ``timezone``
+    / ``lat`` / ``lon`` / ``tags_json`` / ``created_at``. cd-8u5
+    added the richer §02 / §04 surface the manager UI and the
+    property domain service need:
+
+    * ``name`` — human-visible display name.
+    * ``kind`` — lifecycle-seeding enum (``residence | vacation |
+      str | mixed``).
+    * ``address_json`` — canonical structured address; ``country``
+      inside it is back-filled on write (§04 "`address_json`
+      canonical shape").
+    * ``country`` — ISO-3166-1 alpha-2 country code.
+    * ``locale`` / ``default_currency`` — optional per-property
+      overrides; inherit workspace defaults when ``NULL``.
+    * ``client_org_id`` / ``owner_user_id`` — soft references to
+      ``organization`` (cd-t8m) and ``users``.
+    * ``welcome_defaults_json`` / ``property_notes_md`` — JSON blob
+      + staff-visible notes.
+    * ``updated_at`` / ``deleted_at`` — mutation + soft-delete
+      timestamps.
 
     The table is **NOT** workspace-scoped: the same row may link to
     several workspaces through :class:`PropertyWorkspace`. Services
@@ -87,23 +114,84 @@ class Property(Base):
     __tablename__ = "property"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    # v1 stores the postal address as a single text blob. §04's
-    # structured ``address_json`` lands with cd-8u5; until then
-    # callers persist a rendered single-line form here.
+    # Display name ("Villa Sud", "Apt 3B"). Nullable at the DB layer
+    # so the cd-8u5 migration can backfill from ``address`` without
+    # a two-step tighten; the domain service always writes a non-
+    # blank value on insert.
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Lifecycle-seeding enum. CHECK-enforced via ``ck_property_kind``.
+    # Server default ``residence`` (most conservative seed) so legacy
+    # rows keep working; the service narrows to a :class:`Literal`
+    # on read.
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="residence")
+    # v1 stores the postal address as a single text blob. cd-8u5
+    # keeps ``address`` as the rendered single-line form for legacy
+    # adapters and adds ``address_json`` for the canonical shape.
     address: Mapped[str] = mapped_column(String, nullable=False)
+    # Canonical structured address — ``line1`` / ``line2`` / ``city``
+    # / ``state_province`` / ``postal_code`` / ``country``. Empty
+    # object for legacy rows; the service back-fills ``country`` in
+    # both directions on write.
+    address_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    # ISO-3166-1 alpha-2 country code. Authoritative source is
+    # ``address_json.country`` when present; the back-fill keeps both
+    # columns in sync on every write.
+    country: Mapped[str] = mapped_column(String, nullable=False, default="XX")
+    # BCP-47 locale tag; nullable = inherit workspace language +
+    # property country at render time (§04 "Property" — locale field).
+    locale: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ISO-4217 currency override; nullable = inherit workspace
+    # ``default_currency``.
+    default_currency: Mapped[str | None] = mapped_column(String, nullable=True)
     # IANA timezone (e.g. ``Europe/Paris``). Every timestamp that is
     # "local to this place" — stay check-in/out, task occurrence —
     # resolves through this column.
     timezone: Mapped[str] = mapped_column(String, nullable=False)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Soft reference to ``organization.id`` (cd-t8m). NULL = the
+    # workspace is its own employer (§04 "Billing client").
+    client_org_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Soft reference to ``users.id`` — display-only "owner of record"
+    # pointer. Authorisation is governed by ``property_workspace`` +
+    # the workspace's ``owners`` group, never by this column.
+    owner_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # Free-form labels a workspace uses to group properties (e.g.
     # ``["riviera", "off-season"]``). The list shape is declared on
     # the mapped annotation so callers writing a typed payload don't
     # need an ``Any`` cast; the DB column is a plain JSON blob.
     tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # Welcome-page payload (§04 "Welcome defaults"). Empty object
+    # when unset; the guest welcome page merges unit overrides over
+    # this blob.
+    welcome_defaults_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    # Internal staff-visible notes (§04 "Property" — property_notes_md).
+    property_notes_md: Mapped[str] = mapped_column(String, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+    # Mutation timestamp — bumped on every domain-service update.
+    # Nullable for the cd-8u5 migration's cheap backfill path; the
+    # service always writes it on insert + update.
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Soft-delete marker; live rows carry ``NULL``. The service's
+    # default list excludes non-null rows.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('" + "', '".join(_PROPERTY_KIND_VALUES) + "')",
+            name="kind",
+        ),
+        Index("ix_property_deleted", "deleted_at"),
     )
 
 

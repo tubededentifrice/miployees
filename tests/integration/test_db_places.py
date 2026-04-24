@@ -150,7 +150,12 @@ class TestMigrationShape:
 
     def test_property_columns(self, engine: Engine) -> None:
         cols = {c["name"]: c for c in inspect(engine).get_columns("property")}
+        # cd-8u5 extended the v1 slice's minimal set with the §04
+        # columns the property domain service needs. Names with
+        # ``NOT NULL`` carry server defaults so legacy rows survive
+        # the migration without backfill.
         expected = {
+            # v1 slice (cd-i6u).
             "id",
             "address",
             "timezone",
@@ -158,12 +163,36 @@ class TestMigrationShape:
             "lon",
             "tags_json",
             "created_at",
+            # cd-8u5 extension.
+            "name",
+            "kind",
+            "address_json",
+            "country",
+            "locale",
+            "default_currency",
+            "client_org_id",
+            "owner_user_id",
+            "welcome_defaults_json",
+            "property_notes_md",
+            "updated_at",
+            "deleted_at",
         }
         assert set(cols) == expected
-        # ``lat`` / ``lon`` are nullable; everything else is NOT NULL.
-        for name in ("lat", "lon"):
+        # Nullable columns per the model / migration.
+        nullable = {
+            "lat",
+            "lon",
+            "name",
+            "locale",
+            "default_currency",
+            "client_org_id",
+            "owner_user_id",
+            "updated_at",
+            "deleted_at",
+        }
+        for name in nullable:
             assert cols[name]["nullable"] is True, f"{name} must be nullable"
-        for name in expected - {"lat", "lon"}:
+        for name in expected - nullable:
             assert cols[name]["nullable"] is False, f"{name} must be NOT NULL"
         pk = inspect(engine).get_pk_constraint("property")
         assert pk["constrained_columns"] == ["id"]
