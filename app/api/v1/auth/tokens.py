@@ -248,7 +248,14 @@ def build_tokens_router() -> APIRouter:
     :data:`router` is a thin wrapper for the app factory's eager
     import.
     """
-    api = APIRouter(prefix="/auth/tokens", tags=["auth", "tokens"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` + ``tokens`` are kept for back-compat with existing
+    # clients that filter on the finer-grained tags.
+    api = APIRouter(
+        prefix="/auth/tokens",
+        tags=["identity", "auth", "tokens"],
+    )
 
     permission_gate = Depends(Permission("api_tokens.manage", scope_kind="workspace"))
 

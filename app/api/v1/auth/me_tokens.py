@@ -212,7 +212,13 @@ def build_me_tokens_router() -> APIRouter:
     the app factory's wiring seam stays uniform and tests can mount
     the endpoint against an isolated FastAPI instance.
     """
-    router = APIRouter(prefix="/me/tokens", tags=["auth", "tokens"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` + ``tokens`` stay for fine-grained client filtering.
+    router = APIRouter(
+        prefix="/me/tokens",
+        tags=["identity", "auth", "tokens"],
+    )
 
     @router.post(
         "",

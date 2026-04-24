@@ -114,6 +114,62 @@ class TestOpenapiIntegration:
         expected = [name for name, _ in CONTEXT_ROUTERS]
         assert names[: len(expected)] == expected
 
+    def test_identity_tag_covers_every_identity_operation(
+        self, pinned_settings: Settings, real_make_uow: None
+    ) -> None:
+        """Every identity-adjacent path emits the ``identity`` tag.
+
+        Spec §12 "Auth" + "Users / work roles / settings" enumerates
+        the identity surface; cd-rpxd normalised every router that
+        serves a path from that list to carry ``identity`` in its
+        ``tags=`` so the OpenAPI section shows them together. Any
+        future identity route that forgets the tag trips this check.
+
+        We probe with a prefix heuristic that matches the paths the
+        factory mounts unconditionally — bare-host auth (``/api/v1/
+        invite``, ``/api/v1/auth/passkey/login``, ``/api/v1/auth/me``,
+        ``/api/v1/auth/logout``, ``/api/v1/me``) + workspace-scoped
+        ``/w/{slug}/api/v1/auth/*`` surfaces. SMTP-dependent routers
+        are skipped in this harness (see :class:`TestBareHostAuthRoutes`)
+        so they are not in ``paths`` — the assertion only fires on
+        routes that actually exist.
+        """
+        resp = _client(pinned_settings).get("/api/openapi.json")
+        paths = resp.json().get("paths", {})
+        identity_prefixes = (
+            "/api/v1/invite",
+            "/api/v1/auth/",
+            "/api/v1/me/",
+            "/api/v1/me",
+            "/w/{slug}/api/v1/auth/",
+            "/w/{slug}/api/v1/users",
+        )
+
+        offenders: list[tuple[str, str]] = []
+        for path, operations in paths.items():
+            if not any(path.startswith(prefix) for prefix in identity_prefixes):
+                continue
+            if not isinstance(operations, dict):
+                continue
+            for verb, op in operations.items():
+                if verb not in {
+                    "get",
+                    "post",
+                    "put",
+                    "patch",
+                    "delete",
+                    "options",
+                    "head",
+                }:
+                    continue
+                tags = op.get("tags", []) if isinstance(op, dict) else []
+                if "identity" not in tags:
+                    offenders.append((f"{verb.upper()} {path}", ",".join(tags)))
+
+        assert offenders == [], (
+            f"Identity-adjacent operations missing 'identity' tag: {offenders}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Bare-host auth surface survives the factory refactor

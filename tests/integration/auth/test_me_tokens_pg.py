@@ -221,6 +221,11 @@ class TestMeTokensHttpFlow:
         # The subject-side list never surfaces the delegate_for_user_id
         # discriminator because the surface is dedicated to PATs.
         assert "delegate_for_user_id" not in rows[0]
+        # §03 "Personal access tokens": plaintext `token` is returned
+        # ONLY on the 201 mint response — never again. cd-rpxd
+        # acceptance criterion #3 — regression-pinned so a future
+        # schema edit that re-surfaces the secret fails loudly.
+        assert "token" not in rows[0]
 
         # 3. Revoke — 204.
         r_del = client.delete(f"/api/v1/me/tokens/{key_id}")

@@ -74,7 +74,10 @@ def build_logout_router() -> APIRouter:
     the app factory's wiring seam stays uniform and tests can mount
     the endpoint against an isolated FastAPI instance.
     """
-    router = APIRouter(prefix="/auth", tags=["auth"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` stays for fine-grained client filtering.
+    router = APIRouter(prefix="/auth", tags=["identity", "auth"])
 
     @router.post(
         "/logout",

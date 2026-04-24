@@ -213,7 +213,10 @@ def _http_for(exc: Exception) -> HTTPException:
 # ---------------------------------------------------------------------------
 
 
-router = APIRouter(prefix="/auth/passkey", tags=["auth"])
+# Tags: ``identity`` surfaces every identity-adjacent operation
+# under one OpenAPI section (spec §01 context map + §12 Auth);
+# ``auth`` stays for fine-grained client filtering.
+router = APIRouter(prefix="/auth/passkey", tags=["identity", "auth"])
 
 
 @router.post(
@@ -755,7 +758,13 @@ def build_login_router(
     # default is exactly one process-wide store in practice.
     shield = begin_shield if begin_shield is not None else ShieldStore()
 
-    router = APIRouter(prefix="/auth/passkey/login", tags=["auth", "login"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` + ``login`` stay for fine-grained client filtering.
+    router = APIRouter(
+        prefix="/auth/passkey/login",
+        tags=["identity", "auth", "login"],
+    )
 
     # §15 "Rate limiting and abuse controls": 10/min per IP for login
     # begin. Keyed on the raw client IP string (empty for unresolved

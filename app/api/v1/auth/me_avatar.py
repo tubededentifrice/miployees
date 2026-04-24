@@ -319,7 +319,10 @@ def build_me_avatar_router() -> APIRouter:
     endpoint against an isolated FastAPI instance (see
     :mod:`tests.unit.api.v1.auth.test_me_avatar`).
     """
-    router = APIRouter(prefix="/me", tags=["me"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``me`` stays for fine-grained client filtering.
+    router = APIRouter(prefix="/me", tags=["identity", "me"])
 
     @router.post(
         "/avatar",

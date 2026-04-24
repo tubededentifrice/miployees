@@ -310,7 +310,11 @@ def build_users_router(
     ``/w/<slug>/api/v1/users``. Tests instantiate it directly with
     a recording mailer + per-case throttle for isolation.
     """
-    router = APIRouter(prefix="/users", tags=["users"])
+    # Tags: ``identity`` (spec §01 context map) surfaces every
+    # identity-adjacent operation under one OpenAPI section;
+    # ``users`` is kept for back-compat with existing clients that
+    # filter on the finer-grained tag.
+    router = APIRouter(prefix="/users", tags=["identity", "users"])
     cfg = settings if settings is not None else get_settings()
     resolved_base_url = base_url if base_url is not None else cfg.public_url
 

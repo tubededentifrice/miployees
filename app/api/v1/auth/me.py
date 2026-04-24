@@ -220,7 +220,10 @@ def build_me_router() -> APIRouter:
     tests can mount the endpoint against an isolated FastAPI
     instance.
     """
-    router = APIRouter(prefix="/auth", tags=["auth"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` stays for fine-grained client filtering.
+    router = APIRouter(prefix="/auth", tags=["identity", "auth"])
 
     @router.get(
         "/me",

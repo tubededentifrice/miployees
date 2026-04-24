@@ -64,6 +64,7 @@ from app.config import Settings, get_settings
 __all__ = [
     "MagicConsumeBody",
     "MagicConsumeResponse",
+    "MagicRequestAcceptedResponse",
     "MagicRequestBody",
     "build_magic_router",
 ]
@@ -112,6 +113,22 @@ class MagicConsumeResponse(BaseModel):
     subject_id: str
     email_hash: str
     ip_hash: str
+
+
+class MagicRequestAcceptedResponse(BaseModel):
+    """Response body for ``POST /auth/magic/request`` on 202 accept.
+
+    Body is deliberately opaque: the status is identical whether or
+    not the email matched a user, which is the enumeration guard
+    (§03 "Self-serve signup", §15 "Rate limiting and abuse controls").
+    A single-field ``{"status": "accepted"}`` gives the SPA something
+    to assert on without leaking the existence signal.
+    """
+
+    status: str = Field(
+        default="accepted",
+        description="Always the literal 'accepted'.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -207,20 +224,24 @@ def build_magic_router(
     request, which is the right failure mode for a misconfigured
     deployment (better than silently emitting localhost links).
     """
-    router = APIRouter(prefix="/auth/magic", tags=["auth"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` stays for fine-grained client filtering.
+    router = APIRouter(prefix="/auth/magic", tags=["identity", "auth"])
     cfg = settings if settings is not None else get_settings()
     resolved_base_url = base_url if base_url is not None else cfg.public_url
 
     @router.post(
         "/request",
         status_code=status.HTTP_202_ACCEPTED,
+        response_model=MagicRequestAcceptedResponse,
         summary="Send a magic-link email (202 on enrolment; 429 on rate limit)",
     )
     def post_request(
         body: MagicRequestBody,
         request: Request,
         session: _Db,
-    ) -> dict[str, str]:
+    ) -> MagicRequestAcceptedResponse:
         """Mint + send one magic-link email.
 
         Returns ``202`` with an opaque ``{"status": "accepted"}`` body
@@ -255,7 +276,7 @@ def build_magic_router(
         # 202 body is informational — the spec doesn't mandate a shape
         # beyond "accepted"; a status-only reply tells the SPA nothing
         # about whether the email existed, which is the whole point.
-        return {"status": "accepted"}
+        return MagicRequestAcceptedResponse()
 
     @router.post(
         "/consume",

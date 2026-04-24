@@ -227,6 +227,11 @@ class TestTokensHttpFlow:
         assert rows[0]["scopes"] == {"tasks:read": True, "stays:read": True}
         # The hash is never in the list response.
         assert "hash" not in rows[0]
+        # §03 "API tokens": plaintext `token` is returned ONLY on the
+        # 201 mint response — never on subsequent list reads. cd-rpxd
+        # acceptance criterion #3 — regression-pinned here so a future
+        # schema edit that re-surfaces the secret fails loudly.
+        assert "token" not in rows[0]
 
         # 3. Verify the plaintext token against the DB directly — this
         # mirrors what the future Bearer-auth middleware will do.

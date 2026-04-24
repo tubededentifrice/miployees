@@ -354,7 +354,13 @@ def build_recovery_router(
     Tests instantiate it directly with a recording mailer + per-case
     throttle for isolation.
     """
-    router = APIRouter(prefix="/recover", tags=["auth", "recovery"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` + ``recovery`` stay for fine-grained client filtering.
+    router = APIRouter(
+        prefix="/recover",
+        tags=["identity", "auth", "recovery"],
+    )
     cfg = settings if settings is not None else get_settings()
     resolved_base_url = base_url if base_url is not None else cfg.public_url
 

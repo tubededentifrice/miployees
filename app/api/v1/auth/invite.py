@@ -253,7 +253,13 @@ def build_invite_router(
     Mounted by the v1 app factory at ``/api/v1/invite``. Tests
     instantiate it directly with a per-case throttle for isolation.
     """
-    router = APIRouter(prefix="/invite", tags=["auth", "invite"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` + ``invite`` stay for fine-grained client filtering.
+    router = APIRouter(
+        prefix="/invite",
+        tags=["identity", "auth", "invite"],
+    )
     cfg = settings if settings is not None else get_settings()
 
     @router.post(

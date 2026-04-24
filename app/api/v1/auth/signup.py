@@ -510,7 +510,13 @@ def build_signup_router(
     Mounted by the v1 app factory. Tests instantiate it directly with
     a recording mailer + per-case throttle for isolation.
     """
-    router = APIRouter(prefix="/signup", tags=["auth", "signup"])
+    # Tags: ``identity`` surfaces every identity-adjacent operation
+    # under one OpenAPI section (spec §01 context map + §12 Auth);
+    # ``auth`` + ``signup`` stay for fine-grained client filtering.
+    router = APIRouter(
+        prefix="/signup",
+        tags=["identity", "auth", "signup"],
+    )
     cfg = settings if settings is not None else get_settings()
     resolved_base_url = base_url if base_url is not None else cfg.public_url
 
