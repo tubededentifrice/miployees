@@ -1,3 +1,14 @@
+[build-system]
+# Hatchling gives us a PEP 517 backend with first-class support for
+# the multi-package layout this repo needs: ``app/`` ships as the
+# ``app`` distribution root and ``cli/crewday/`` is re-rooted as the
+# top-level ``crewday`` package so ``[project.scripts] crewday =
+# "crewday._main:main"`` resolves (see ``[tool.hatch.build.targets.wheel]``
+# below). Chosen over ``setuptools`` because the ``sources`` remap is
+# declarative rather than a ``package_dir`` / ``MANIFEST.in`` pairing.
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
 [project]
 name = "crewday"
 version = "0.0.1"
@@ -28,6 +39,28 @@ dependencies = [
     # DB leak cannot be replayed.
     "argon2-cffi>=23",
 ]
+
+# ``crewday`` is the sole console-script entry point. The target is
+# :func:`crewday._main.main` — a ``@click.group`` wrapped by
+# :func:`crewday._main.handle_errors`. See ``docs/specs/13-cli.md``
+# §"Package layout" and Beads ``cd-j202``.
+[project.scripts]
+crewday = "crewday._main:main"
+
+# Hatchling wheel layout. We ship two packages from this repo:
+#   * ``app`` — the server distribution (FastAPI + domain + adapters).
+#   * ``crewday`` — the CLI, which lives under ``cli/crewday/`` on
+#     disk but is exposed at the top level of the wheel so the
+#     ``[project.scripts] crewday`` entry resolves with a plain
+#     ``import crewday._main``.
+# ``sources`` remaps the on-disk path so ``cli/crewday/foo.py``
+# becomes ``crewday/foo.py`` in the built wheel — no symlinks, no
+# ``__init__.py`` redirects.
+[tool.hatch.build.targets.wheel]
+packages = ["app", "cli/crewday"]
+
+[tool.hatch.build.targets.wheel.sources]
+"cli/crewday" = "crewday"
 
 [dependency-groups]
 dev = [
@@ -77,6 +110,14 @@ plugins = ["pydantic.mypy"]
 explicit_package_bases = true
 namespace_packages = true
 exclude = ["mocks/"]
+# Map the on-disk ``cli/crewday/`` directory to the ``crewday``
+# top-level package so ``mypy cli/`` resolves imports the same way
+# the wheel layout does (see
+# ``[tool.hatch.build.targets.wheel.sources]``). Without this,
+# mypy would walk ``cli/crewday/_globals.py`` as the module
+# ``cli.crewday._globals`` and then also find the installed copy as
+# ``crewday._globals``, tripping its duplicate-module check.
+mypy_path = "cli"
 
 # APScheduler 3.x ships no ``py.typed`` marker and has no published
 # stubs. The wrapper in :mod:`app.worker.scheduler` narrows the
@@ -160,7 +201,11 @@ skip_covered = true
 # (e.g. `app.domain.** -> app.adapters.*.ports`) without tripping
 # when no such imports exist yet.
 [tool.importlinter]
-root_packages = ["app"]
+# ``crewday`` joins ``app`` in the graph so the CLI-layer contract
+# below (``"CLI forbids app server internals"``) has something to walk.
+# Both packages are installed by the wheel remap in
+# ``[tool.hatch.build.targets.wheel]``.
+root_packages = ["app", "crewday"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -311,3 +356,34 @@ name = "Adapters forbid handlers (api/web/cli/worker)"
 type = "forbidden"
 source_modules = ["app.adapters"]
 forbidden_modules = ["app.api", "app.web", "app.cli", "cli", "app.worker"]
+
+# The ``crewday`` CLI is a thin client over the HTTP surface; it must
+# not reach into server-side business logic. ``app.util.ulid`` is the
+# one shared-kernel exception today (used for :class:`CrewdayContext`'s
+# idempotency-key factory so the CLI and server mint the same ULID
+# shape). If another ``app.util.*`` module ever becomes legitimately
+# cross-cutting, add it to ``ignore_imports`` here with a note —
+# don't loosen ``forbidden_modules`` to ``app`` wholesale.
+[[tool.importlinter.contracts]]
+name = "CLI forbids app server internals"
+type = "forbidden"
+source_modules = ["crewday"]
+forbidden_modules = [
+    "app.api",
+    "app.adapters",
+    "app.domain",
+    "app.worker",
+    "app.web",
+    "app.auth",
+    "app.authz",
+    "app.audit",
+    "app.core",
+]
+ignore_imports = [
+    # Shared-kernel ULID generator (see :mod:`crewday._globals`
+    # ``default_idempotency_key_factory``). Not listed in
+    # ``forbidden_modules`` above, but the name is recorded here so a
+    # future reviewer grepping for ``app.util`` lands on this note.
+    "crewday._globals -> app.util.ulid",
+]
+unmatched_ignore_imports_alerting = "none"
