@@ -6,7 +6,21 @@ Today's v1 surface:
 
 * ``POST /users/invite`` — spec §03 "Additional users (invite →
   click-to-accept)". Inserts a pending ``invite`` row, mails the
-  ``grant_invite`` magic link.
+  ``grant_invite`` magic link. A pending ``work_engagement`` row is
+  NOT created at invite time — the accept-side path
+  (:func:`app.domain.identity.membership._activate_invite`) seeds
+  it once the invitee completes their passkey challenge.
+* ``PATCH /users/{user_id}`` — partial profile update. Self-edits
+  pass through without a capability check; edits targeting someone
+  else require ``users.edit_profile_other`` (default
+  ``owners, managers``).
+* ``POST /users/{user_id}/archive`` — soft-archive the user's
+  :class:`WorkEngagement` in this workspace PLUS every active
+  :class:`UserWorkRole` they hold here. Idempotent.
+* ``POST /users/{user_id}/reinstate`` — reverse archive. Idempotent.
+  v1 implementation is workspace-local; the cross-workspace
+  reinstate path that clears ``users.archived_at`` is tracked as a
+  follow-up.
 * ``DELETE /users/{user_id}/grants`` — removes every role_grant +
   permission_group_member + user_workspace row for ``user_id`` in
   the caller's workspace, plus revokes all sessions scoped there.
@@ -17,8 +31,9 @@ call the domain service, map typed errors to HTTP symbols. The
 UoW (:func:`app.api.deps.db_session`) owns the transaction
 boundary; domain code never commits itself.
 
-See ``docs/specs/12-rest-api.md`` §"Users" and
-``docs/specs/03-auth-and-tokens.md`` §"Additional users".
+See ``docs/specs/12-rest-api.md`` §"Users",
+``docs/specs/03-auth-and-tokens.md`` §"Additional users", and
+``docs/specs/05-employees-and-roles.md`` §"Archive / reinstate".
 """
 
 from __future__ import annotations
@@ -27,7 +42,7 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -36,15 +51,28 @@ from app.adapters.db.workspace.models import Workspace
 from app.adapters.mail.ports import Mailer
 from app.api.deps import current_workspace_context, db_session
 from app.auth._throttle import Throttle
+from app.authz import PermissionDenied
 from app.config import Settings, get_settings
 from app.domain.identity import membership
 from app.domain.identity.permission_groups import (
     LastOwnerMember,
     write_member_remove_rejected_audit,
 )
+from app.services.employees import (
+    EmployeeNotFound,
+    EmployeeProfileUpdate,
+    EmployeeView,
+    ProfileFieldForbidden,
+    archive_employee,
+    get_employee,
+    reinstate_employee,
+    update_profile,
+)
 from app.tenancy import WorkspaceContext, tenant_agnostic
 
 __all__ = [
+    "EmployeeProfileResponse",
+    "EmployeeUpdateRequest",
     "InviteRequest",
     "InviteResponse",
     "build_users_router",
@@ -123,6 +151,71 @@ class RemoveMemberResponse(BaseModel):
     """
 
     status: str = "removed"
+
+
+class EmployeeUpdateRequest(BaseModel):
+    """Request body for ``PATCH /users/{user_id}``.
+
+    Mirrors :class:`~app.services.employees.EmployeeProfileUpdate` —
+    every field is optional and Pydantic's ``model_fields_set``
+    distinguishes "omitted" from "explicitly set to None".
+    ``extra='forbid'`` so unknown fields fail loud at 422 rather
+    than being silently ignored. ``display_name=None`` is rejected
+    at the DTO boundary via :meth:`_reject_display_name_null` so
+    the NOT NULL contract on :class:`User` surfaces as a 422
+    validation error rather than a 500.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=160)
+    locale: str | None = Field(default=None, max_length=35)
+    timezone: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def _reject_display_name_null(self) -> EmployeeUpdateRequest:
+        """Reject an explicit ``display_name=None`` — the column is NOT NULL."""
+        if "display_name" in self.model_fields_set and self.display_name is None:
+            raise ValueError("display_name cannot be cleared; it is NOT NULL")
+        return self
+
+
+class EmployeeProfileResponse(BaseModel):
+    """Response body for ``PATCH /users/{user_id}`` / ``GET /users/{user_id}``.
+
+    Projection of :class:`~app.services.employees.EmployeeView` —
+    carries the minimal identity-level fields the SPA needs plus the
+    workspace-scoped engagement archival marker (derived from the
+    active :class:`~app.adapters.db.workspace.models.WorkEngagement`
+    row, if any).
+    """
+
+    id: str
+    email: str
+    display_name: str
+    locale: str | None
+    timezone: str | None
+    avatar_blob_hash: str | None
+    engagement_archived_on: str | None
+    created_at: str
+
+
+def _view_to_response(view: EmployeeView) -> EmployeeProfileResponse:
+    """Project an :class:`EmployeeView` into the HTTP response shape."""
+    return EmployeeProfileResponse(
+        id=view.id,
+        email=view.email,
+        display_name=view.display_name,
+        locale=view.locale,
+        timezone=view.timezone,
+        avatar_blob_hash=view.avatar_blob_hash,
+        engagement_archived_on=(
+            view.engagement_archived_on.isoformat()
+            if view.engagement_archived_on is not None
+            else None
+        ),
+        created_at=view.created_at.isoformat(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +367,127 @@ def build_users_router(
             user_id=outcome.user_id,
             user_created=outcome.user_created,
         )
+
+    @router.patch(
+        "/{user_id}",
+        response_model=EmployeeProfileResponse,
+        summary="Update the profile of a user in the caller's workspace",
+    )
+    def patch_user(
+        user_id: str,
+        body: EmployeeUpdateRequest,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> EmployeeProfileResponse:
+        """Partial profile update.
+
+        Routes-level contract:
+
+        * 200 + refreshed view on success.
+        * 404 ``employee_not_found`` when the target user is not a
+          member of the caller's workspace.
+        * 403 ``forbidden`` when the caller is neither the target nor
+          holds ``users.edit_profile_other``.
+        * 422 on DTO validation failure (pydantic).
+        """
+        # Re-emit the request body into the service DTO. The HTTP
+        # shape and the service shape are intentionally identical so
+        # this is a straight passthrough; keeping the two types
+        # distinct lets us evolve either surface without touching
+        # the other.
+        sent_fields = body.model_fields_set
+        service_body = EmployeeProfileUpdate.model_validate(
+            {f: getattr(body, f) for f in sent_fields}
+        )
+
+        try:
+            view = update_profile(
+                session,
+                ctx,
+                user_id=user_id,
+                body=service_body,
+            )
+        except EmployeeNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "employee_not_found"},
+            ) from exc
+        except ProfileFieldForbidden as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": "forbidden"},
+            ) from exc
+        return _view_to_response(view)
+
+    @router.post(
+        "/{user_id}/archive",
+        response_model=EmployeeProfileResponse,
+        summary="Archive a user's engagement + work roles in this workspace",
+    )
+    def post_archive(
+        user_id: str,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> EmployeeProfileResponse:
+        """Soft-archive + idempotent. See §05 "Archive / reinstate"."""
+        try:
+            view = archive_employee(session, ctx, user_id=user_id)
+        except EmployeeNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "employee_not_found"},
+            ) from exc
+        except PermissionDenied as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": "forbidden"},
+            ) from exc
+        return _view_to_response(view)
+
+    @router.post(
+        "/{user_id}/reinstate",
+        response_model=EmployeeProfileResponse,
+        summary="Reinstate a user's engagement + work roles in this workspace",
+    )
+    def post_reinstate(
+        user_id: str,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> EmployeeProfileResponse:
+        """Reverse archive. Idempotent. See §05 "Archive / reinstate"."""
+        try:
+            view = reinstate_employee(session, ctx, user_id=user_id)
+        except EmployeeNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "employee_not_found"},
+            ) from exc
+        except PermissionDenied as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": "forbidden"},
+            ) from exc
+        return _view_to_response(view)
+
+    @router.get(
+        "/{user_id}",
+        response_model=EmployeeProfileResponse,
+        summary="Read a user's workspace-scoped profile",
+    )
+    def get_user(
+        user_id: str,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> EmployeeProfileResponse:
+        """Read-only projection the SPA keys off for the profile page."""
+        try:
+            view = get_employee(session, ctx, user_id=user_id)
+        except EmployeeNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "employee_not_found"},
+            ) from exc
+        return _view_to_response(view)
 
     @router.delete(
         "/{user_id}/grants",

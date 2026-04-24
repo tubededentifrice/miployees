@@ -950,6 +950,19 @@ def _activate_invite(
             f"invite {invite_row.id!r} carries no user_id; cannot activate"
         )
     workspace_id = invite_row.workspace_id
+    # Both callers (:func:`complete_invite` synthesises a fresh ctx;
+    # :func:`confirm_invite` takes it from the route, which already
+    # pins it to ``invite.workspace_id``) guarantee this equality. Be
+    # loud about a divergence rather than silently seeding the
+    # workspace-scoped :class:`WorkEngagement` in the wrong tenant:
+    # the audit trail and the row itself would both land under
+    # ``ctx.workspace_id`` while the grants and membership land under
+    # ``invite_row.workspace_id``.
+    if ctx.workspace_id != workspace_id:
+        raise InviteStateInvalid(
+            f"invite {invite_row.id!r}: ctx workspace {ctx.workspace_id!r} "
+            f"does not match invite workspace {workspace_id!r}"
+        )
 
     activated_grants: list[str] = []
     for g in invite_row.grants_json:
@@ -1004,6 +1017,36 @@ def _activate_invite(
                 source="workspace_grant",
                 added_at=now,
             )
+        )
+        session.flush()
+
+    # §03 "Additional users": seed a minimal pending
+    # :class:`WorkEngagement` at accept time, never at invite-create
+    # time — nothing workspace-scoped exists for the invitee until
+    # they complete the passkey challenge. The helper is idempotent
+    # (returns the existing row if one is already active), so an
+    # accept-replay after partial failure lands the same engagement
+    # id rather than a duplicate. Only run it for ``worker`` /
+    # ``manager`` grants — ``client`` + ``guest`` grants do not carry
+    # a pay pipeline, so a pending engagement for them would be
+    # misleading. The richer cd-1hd0 / cd-4o61 payload overrides
+    # ``engagement_kind`` + supplier fields once those sub-payloads
+    # ship; for now the default ``payroll`` row is a safe minimum.
+    needs_engagement_seed = any(
+        g.get("grant_role") in {"worker", "manager"} for g in invite_row.grants_json
+    )
+    if needs_engagement_seed:
+        # Imported lazily to avoid a circular dependency between the
+        # identity membership module and the employees service
+        # (which re-uses the identity ORM models).
+        from app.services.employees.service import seed_pending_work_engagement
+
+        seed_pending_work_engagement(
+            session,
+            ctx,
+            user_id=user_id,
+            now=now,
+            clock=clock,
         )
 
     invite_row.state = "accepted"
