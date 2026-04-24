@@ -49,11 +49,14 @@ handler. A follow-up request with the same key but a different body
 always hits 409 ``idempotency_conflict``.
 
 **TTL sweep.** :func:`prune_expired_idempotency_keys` deletes every
-row older than :data:`IDEMPOTENCY_TTL_HOURS`. The scheduler is not
-yet wired (see ``app/worker/__init__.py`` — APScheduler wiring is a
-pending task); until it is, the sweeper can be invoked manually
-from a CLI or from a cron outside the app process. Once the
-scheduler lands, register this callable as a daily job.
+row older than :data:`IDEMPOTENCY_TTL_HOURS`. The APScheduler seam
+in :mod:`app.worker.scheduler` registers this callable as the
+``idempotency_sweep`` daily job (cd-j9l7) via
+:func:`~app.worker.scheduler.register_jobs`; operators running a
+split worker container hit the same code path through the shared
+registration function. The callable is still exported publicly so
+it can also be invoked manually from a CLI or from a cron outside
+the app process on deployments that prefer external scheduling.
 
 See ``docs/specs/12-rest-api.md`` §"Idempotency",
 ``docs/specs/11-llm-and-agents.md`` §"interactive-session-only",
@@ -622,12 +625,12 @@ def prune_expired_idempotency_keys(
 ) -> int:
     """Delete every :class:`IdempotencyKey` row older than the TTL.
 
-    Intended as the payload for a daily scheduled job
-    (spec §12 "Idempotency" — TTL 24 h). The APScheduler wiring is
-    not yet landed (see ``app/worker/__init__.py``); until it is,
-    operators invoke this callable from a CLI or cron. The function
-    opens its own UoW when ``db_session`` is ``None`` so it is safe
-    to call from outside a request.
+    The payload for the daily ``idempotency_sweep`` scheduled job
+    (spec §12 "Idempotency" — TTL 24 h). The APScheduler wiring
+    lives in :mod:`app.worker.scheduler` (cd-j9l7); operators who
+    prefer external cron can invoke this callable from a CLI
+    instead. The function opens its own UoW when ``db_session`` is
+    ``None`` so it is safe to call from outside a request.
 
     Returns the number of rows deleted for logging / metric purposes.
 

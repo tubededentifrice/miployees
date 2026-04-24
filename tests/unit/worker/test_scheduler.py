@@ -29,6 +29,7 @@ from app.worker import scheduler as scheduler_mod
 from app.worker.scheduler import (
     GENERATOR_JOB_ID,
     HEARTBEAT_JOB_ID,
+    IDEMPOTENCY_SWEEP_JOB_ID,
     create_scheduler,
     register_jobs,
     registered_job_ids,
@@ -63,13 +64,21 @@ class TestCreateScheduler:
 
 class TestRegisterJobs:
     def test_registers_expected_ids(self) -> None:
-        """The standard job set is the heartbeat + generator placeholder."""
+        """Standard job set: heartbeat + generator + idempotency-sweep."""
         sched = create_scheduler()
         register_jobs(sched)
-        assert registered_job_ids(sched) == (
+        # Compare as a set so inserting a future job (cd-yqm4
+        # user_workspace derive-refresh, the generator fan-out, any
+        # other daily sweep) doesn't break this assertion just by
+        # landing a new alphabetical neighbour. The
+        # ``registered_job_ids`` helper already returns a sorted
+        # tuple, so duplicates would still surface via the companion
+        # ``test_is_idempotent_under_replace_existing`` path.
+        assert set(registered_job_ids(sched)) == {
             GENERATOR_JOB_ID,
+            IDEMPOTENCY_SWEEP_JOB_ID,
             HEARTBEAT_JOB_ID,
-        )
+        }
 
     def test_is_idempotent_under_replace_existing(self) -> None:
         """Re-registering on the same scheduler does not raise.
@@ -90,12 +99,19 @@ class TestRegisterJobs:
         register_jobs(sched)  # must not raise
         # Job count unchanged — ``replace_existing=True`` is not
         # enough on its own; the explicit ``remove_job`` keeps the
-        # pending list to exactly one entry per id.
-        assert registered_job_ids(sched) == (
+        # pending list to exactly one entry per id. Set equality here
+        # mirrors ``test_registers_expected_ids``; the raw
+        # ``len(sched.get_jobs())`` below is what actually catches a
+        # duplicate (a stale entry would make the list longer than
+        # the set).
+        ids = registered_job_ids(sched)
+        assert set(ids) == {
             GENERATOR_JOB_ID,
+            IDEMPOTENCY_SWEEP_JOB_ID,
             HEARTBEAT_JOB_ID,
-        )
-        assert len(sched.get_jobs()) == 2
+        }
+        assert len(ids) == 3
+        assert len(sched.get_jobs()) == 3
 
 
 # ---------------------------------------------------------------------------

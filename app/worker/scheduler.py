@@ -70,6 +70,7 @@ __all__ = [
     "GENERATOR_JOB_ID",
     "HEARTBEAT_JOB_ID",
     "HEARTBEAT_JOB_INTERVAL_SECONDS",
+    "IDEMPOTENCY_SWEEP_JOB_ID",
     "create_scheduler",
     "register_jobs",
     "start",
@@ -100,6 +101,12 @@ HEARTBEAT_JOB_INTERVAL_SECONDS: int = 30
 # single-workspace callable); the registration here seats the hook in
 # the scheduler so the cron cadence is observable immediately.
 GENERATOR_JOB_ID: str = "generate_task_occurrences"
+
+# Stable job id for the daily ``idempotency_key`` TTL sweep (cd-j9l7).
+# Spec §12 "Idempotency" pins the TTL at 24 h; the sweep callable
+# (:func:`app.api.middleware.idempotency.prune_expired_idempotency_keys`)
+# removes rows older than that so the table never grows unbounded.
+IDEMPOTENCY_SWEEP_JOB_ID: str = "idempotency_sweep"
 
 
 # Job-body type. Downstream tasks supply either a synchronous callable
@@ -302,7 +309,7 @@ def register_jobs(
     # path when the id is not present (first register_jobs call);
     # we suppress it narrowly rather than swallowing ``Exception``
     # so a genuinely broken jobstore still surfaces.
-    for pending_id in (HEARTBEAT_JOB_ID, GENERATOR_JOB_ID):
+    for pending_id in (HEARTBEAT_JOB_ID, GENERATOR_JOB_ID, IDEMPOTENCY_SWEEP_JOB_ID):
         with contextlib.suppress(JobLookupError):
             scheduler.remove_job(pending_id)
 
@@ -356,6 +363,43 @@ def register_jobs(
         misfire_grace_time=600,
     )
 
+    # --- Daily ``idempotency_key`` TTL sweep (cd-j9l7) ---
+    # Spec §12 "Idempotency" pins the cache TTL at 24 h. Without a
+    # periodic sweep the table grows unbounded — every retry adds a
+    # row and nothing deletes them. We schedule a CRON trigger at
+    # 03:00 UTC rather than an ``IntervalTrigger(hours=24)`` for two
+    # reasons:
+    #   1. Cron-based cadence is stable across container restarts; an
+    #      interval trigger re-anchors on each ``scheduler.start()``
+    #      so a deployment that restarts at noon would end up sweeping
+    #      at noon every day — harmless, but harder to reason about
+    #      from an operator dashboard that expects a fixed slot.
+    #   2. 03:00 UTC lands in the lowest-traffic window for the
+    #      North-Atlantic / European user base §16 assumes; the bulk
+    #      ``DELETE ... WHERE created_at < cutoff`` takes a brief row
+    #      lock on the backing index, so running it at the quiet hour
+    #      keeps the p99 of a concurrent ``POST`` retry low.
+    # ``misfire_grace_time=3600`` covers a scheduler restart around
+    # 03:00 — running the sweep up to an hour late is strictly better
+    # than skipping the day entirely. The callable is itself
+    # idempotent (``DELETE`` where ``created_at < cutoff`` over rows
+    # all older than the cutoff reaches zero after one run) so a
+    # duplicate run is free.
+    scheduler.add_job(
+        wrap_job(
+            _make_idempotency_sweep_body(resolved_clock),
+            job_id=IDEMPOTENCY_SWEEP_JOB_ID,
+            clock=resolved_clock,
+        ),
+        trigger=CronTrigger(hour=3, minute=0),
+        id=IDEMPOTENCY_SWEEP_JOB_ID,
+        name=IDEMPOTENCY_SWEEP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
 
 def _heartbeat_only_body() -> None:
     """No-op job body — the heartbeat upsert runs after it returns.
@@ -381,6 +425,46 @@ def _generator_fanout_placeholder() -> None:
         "generator fan-out placeholder — real fan-out lands with follow-up",
         extra={"event": "worker.generator.placeholder"},
     )
+
+
+def _make_idempotency_sweep_body(clock: Clock) -> Callable[[], None]:
+    """Build the daily ``idempotency_key`` TTL-sweep body (cd-j9l7).
+
+    Factory rather than a bare module-level function so the body
+    closes over the scheduler's injected :class:`Clock` — the cutoff
+    is ``clock.now() - TTL``, which MUST be driven by the same clock
+    the heartbeat uses. Otherwise a :class:`~app.util.clock.FrozenClock`
+    under test (or a future simulated-time deployment) would have a
+    deterministic heartbeat timestamp and a non-deterministic sweep
+    cutoff — easy to mis-diagnose and pointless to tolerate given how
+    cheap the closure is.
+
+    The returned body is a thin adapter around
+    :func:`app.api.middleware.idempotency.prune_expired_idempotency_keys`:
+    the callable opens its own UoW (and therefore its own
+    transaction) when no session is passed, so the scheduler wrapper
+    does not need to thread one through. The sweeper returns the
+    number of rows deleted; we log it at INFO with
+    ``event=idempotency.sweep`` so operators can correlate the
+    table's steady-state size with the sweep cadence.
+
+    The middleware import is deferred into the closure body so module
+    import order stays robust — the middleware module drags in
+    :mod:`starlette.middleware`, :mod:`app.api.errors`, and
+    :mod:`app.tenancy.middleware`, none of which the standalone
+    ``python -m app.worker`` entrypoint otherwise needs.
+    """
+
+    def _body() -> None:
+        from app.api.middleware.idempotency import prune_expired_idempotency_keys
+
+        deleted = prune_expired_idempotency_keys(now=clock.now())
+        _log.info(
+            "idempotency sweep completed",
+            extra={"event": "idempotency.sweep", "deleted": deleted},
+        )
+
+    return _body
 
 
 def start(scheduler: AsyncIOScheduler) -> None:
