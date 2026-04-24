@@ -507,6 +507,8 @@ configuration.
 | `tasks.assign_other`                    | `workspace`, `property`        | `owners, managers`            | —  | §06 |
 | `tasks.complete_other`                  | `workspace`, `property`        | `owners, managers`            | —  | §06 |
 | `tasks.skip_other`                      | `workspace`, `property`        | `owners, managers`            | —  | §06 |
+| `tasks.comment`                         | `workspace`, `property`        | `owners, managers, all_workers` | — | §06 — post a `kind='user'` message on a task's agent-inbox thread. Workers carry it by default because the thread is where they report progress; the domain service gates `kind='agent' \| 'system'` separately. |
+| `tasks.comment_moderate`                | `workspace`, `property`        | `owners, managers`            | —  | §06 — delete another user's comment, or edit a `kind='user'` comment after the 5-minute author grace window. Service checks this via `app.authz.require` on the non-author branch of `delete_comment`; owners short-circuit via their `owners` group membership. |
 | `bookings.view_other`                   | `workspace`, `property`        | `owners, managers`            | —  | §09 |
 | `bookings.amend_other`                  | `workspace`, `property`        | `owners, managers`            | —  | §09 |
 | `bookings.assign_other`                 | `workspace`, `property`        | `owners, managers`            | —  | §09 |
@@ -578,11 +580,12 @@ Notes:
   they need to do their job:
   - `all_workers` carries `expenses.submit`,
     `messaging.comments.author_global`, `tasks.create`,
-    `bookings.create_pending`, `time.clock_self`, and any
-    task/booking actions scoped to themselves (viewing /
-    amending / declining *your own* booking is not in this
-    catalog — those are identity-scoped actions, not
-    scope-scoped, and do not flow through the resolver).
+    `tasks.comment`, `bookings.create_pending`,
+    `time.clock_self`, and any task/booking actions scoped to
+    themselves (viewing / amending / declining *your own*
+    booking is not in this catalog — those are identity-scoped
+    actions, not scope-scoped, and do not flow through the
+    resolver).
     Workers may create tasks; if
     `is_personal = true` (the quick-add default) the task is
     private to the creator; otherwise it is a normal team task.

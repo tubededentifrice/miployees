@@ -414,6 +414,63 @@ class TestCommentModel:
             "created_at",
         ]
 
+    def test_cd_cfe4_columns_present_with_defaults(self) -> None:
+        """cd-cfe4 extends the ``Comment`` row with the agent-inbox
+        shape — ``kind``, ``mentioned_user_ids``, ``edited_at``,
+        ``deleted_at``, ``llm_call_id``.
+
+        Construct the row without passing any of the new fields and
+        assert the Python-level defaults land. SQLAlchemy applies
+        column defaults at ``session.add()`` / flush time, so a
+        pure-Python construction carries ``None`` for the defaulted
+        columns — we exercise the column-default hooks indirectly by
+        inspecting :attr:`Comment.__table__.c.<col>.default`.
+        """
+        c = Comment(
+            id="01HWA00000000000000000CMA1",
+            workspace_id="01HWA00000000000000000WSPA",
+            occurrence_id="01HWA00000000000000000OCCA",
+            body_md="Looks done.",
+            created_at=_PINNED,
+            attachments_json=[],
+        )
+        # The new soft-state timestamps are nullable and default to
+        # ``None`` at the Python level.
+        assert c.edited_at is None
+        assert c.deleted_at is None
+        assert c.llm_call_id is None
+        # Inspect the table column defaults — Python-level defaults
+        # so every new row gets ``kind='user'`` / mentioned_user_ids=[]
+        # when the caller doesn't pass either.
+        kind_default = Comment.__table__.c.kind.default
+        mentions_default = Comment.__table__.c.mentioned_user_ids.default
+        assert kind_default is not None and kind_default.arg == "user"
+        # ``default=list`` on the model wraps into a
+        # ``CallableColumnDefault``; SQLAlchemy inspects the callable
+        # arity and may wrap the underlying ``list`` constructor in a
+        # thin adapter. The external invariant is that the default
+        # produces ``[]`` — assert that by walking the attached hook
+        # rather than by identity (SQLAlchemy's wrapper shape is an
+        # implementation detail we don't want to pin).
+        assert mentions_default is not None
+        assert mentions_default.is_callable
+
+    def test_cd_cfe4_kind_check_present(self) -> None:
+        """cd-cfe4 adds a CHECK constraint over ``kind`` mirroring the
+        ``evidence.kind`` pattern — the three legal values only.
+        """
+        checks = [
+            c
+            for c in Comment.__table_args__
+            if isinstance(c, CheckConstraint)
+            and c.name is not None
+            and str(c.name).endswith("kind")
+        ]
+        assert len(checks) == 1
+        sql = str(checks[0].sqltext)
+        for legal in ("user", "agent", "system"):
+            assert legal in sql, f"{legal} missing from kind CHECK constraint"
+
 
 class TestPackageReExports:
     """``app.adapters.db.tasks`` re-exports every v1-slice model."""

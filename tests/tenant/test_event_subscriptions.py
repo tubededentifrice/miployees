@@ -138,6 +138,17 @@ def _sentinel_value_for(field_name: str, annotation: object) -> object:
     # shape.
     if field_name == "action":
         return "opened"
+    # ``kind`` on :class:`TaskCommentAdded` is a three-value
+    # :data:`~typing.Literal`; a ULID sentinel would fail the
+    # Pydantic literal check. ``"user"`` is the common shape.
+    if field_name == "kind":
+        return "user"
+    # List-valued payload fields on events registered today
+    # (``mentioned_user_ids`` on :class:`TaskCommentAdded`). An empty
+    # list keeps the cross-tenant routing assertion alive without
+    # having to invent ULID sentinels for the list body.
+    if field_name == "mentioned_user_ids":
+        return []
     # Default: a ULID-shaped string — satisfies every ``*_id`` field
     # in the registry today (``task_id``, ``shift_id``, ``user_id``,
     # ``stay_id``, ``expense_id``, ``assigned_to``, ``completed_by``,

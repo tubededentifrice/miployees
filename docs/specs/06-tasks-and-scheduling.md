@@ -842,6 +842,59 @@ user-facing surface is now the task-scoped chat described in
 "Task notes are the agent inbox" above. Threaded, markdown,
 `@mentions` resolve to workspace members, email fallback via §10.
 
+The `task_comment` row carries the full agent-inbox shape:
+
+| column                | type      | notes                                                                                                                 |
+|-----------------------|-----------|-----------------------------------------------------------------------------------------------------------------------|
+| `kind`                | text      | `user \| agent \| system`. CHECK-constrained. `user` = human author; `agent` = embedded workspace agent speaking in the thread (§11); `system` = internal state-change marker emitted by the completion / assignment services. |
+| `body_md`             | text      | markdown message body. Redacted before it enters the audit stream (§15).                                              |
+| `mentioned_user_ids`  | jsonb/text| resolved-at-write-time list of `@mention` target user ids. Populated by the domain service; consumed by the §10 messaging fanout for the offline-mention email. Empty on `agent` / `system` rows. |
+| `attachments_json`    | jsonb/text| denormalised `{evidence_id, blob_hash, kind}` triples; survives a later evidence soft-delete so the thread view stays intact. |
+| `edited_at`           | tstz?     | NULL = never edited. Domain service allows edits only within `EDIT_WINDOW` (5 min) on `kind='user'` rows; agent / system rows never flip.                   |
+| `deleted_at`          | tstz?     | NULL = live. Soft-delete by author or a moderator holding `tasks.comment_moderate`. Hidden from non-owner readers; visible to workspace owners for moderation history. |
+| `llm_call_id`         | text?     | soft pointer to `llm_call` (no FK — LLM-call retention is independent of comment retention). Populated for `agent` rows; NULL otherwise. |
+
+Write rules (`app/domain/tasks/comments.py`):
+
+- `post_comment` narrows `kind` at the write boundary: `kind='agent'`
+  requires `ctx.actor_kind='agent'` (the embedded agent token);
+  `kind='system'` requires the caller flag `internal_caller=True` (a
+  domain service inside the boundary). Any other combination is
+  403.
+- `@mention` resolution is a domain invariant: a slug matching zero
+  workspace members is rejected as `CommentMentionInvalid` (422);
+  a slug matching **more than one** normalised `display_name` is
+  rejected as `CommentMentionAmbiguous` (422) — the service refuses
+  to silently pick one so the §10 fanout cannot deliver to the
+  wrong user. Once `User.display_name_slug` lands with a
+  per-workspace uniqueness constraint, the ambiguous branch is
+  unreachable.
+- Attachments must resolve to `task_evidence` rows anchored to the
+  **same** occurrence and workspace (cross-thread / cross-workspace
+  ids are rejected).
+- Moderator delete flows through `app.authz.require` on the
+  `tasks.comment_moderate` capability (see §05 "Rule-driven
+  actions") — workspace owners short-circuit the check via their
+  `owners` group membership.
+- Personal-task visibility (§"Self-created and personal tasks")
+  is enforced on every read + write: a non-creator, non-owner
+  caller hitting a personal task's comment collapses to 404, not
+  403 (§01 "tenant surface is not enumerable").
+- `list_comments` paginates oldest-first with a `(created_at, id)`
+  tuple cursor — `after` alone is the coarse "strictly later than
+  this instant" page; `(after, after_id)` resolves ties when an
+  agent batch-posts multiple messages in a single clock tick.
+
+Events + audit:
+
+- `post_comment` / `edit_comment` / `delete_comment` each write one
+  `task_comment.create | edit | delete` audit row.
+- `post_comment` publishes `task.comment_added` on the bus with
+  `task_id`, `comment_id`, `kind`, `author_user_id`, and
+  `mentioned_user_ids`. No free text on the wire — subscribers
+  that need the rendered message call `GET /tasks/{task_id}/
+  chat/log` under the normal per-row authorisation path.
+
 ## Skipping and cancellation
 
 - `skip`: worker action, requires a reason when the resolved setting

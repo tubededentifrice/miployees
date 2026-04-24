@@ -119,6 +119,16 @@ _OCCURRENCE_STATE_VALUES: tuple[str, ...] = (
 # required" marker rather than a stored-artefact kind).
 _EVIDENCE_KIND_VALUES: tuple[str, ...] = ("photo", "note", "voice", "gps")
 
+# Allowed ``comment.kind`` values (cd-cfe4) — the §06 "Task notes are
+# the agent inbox" taxonomy. ``user`` is a human author (worker /
+# manager typing in the chat composer); ``agent`` is the embedded
+# workspace agent speaking in the thread (carries an
+# :attr:`Comment.llm_call_id`); ``system`` is an internal state-change
+# marker emitted by the completion / assignment services (e.g.
+# "marked done by Maya at 14:02"). Mirrors the ``Evidence.kind``
+# CHECK-constraint pattern above.
+_COMMENT_KIND_VALUES: tuple[str, ...] = ("user", "agent", "system")
+
 # Allowed ``task_template.property_scope`` values (cd-0tg). Drives the
 # "which properties does this template target" filter at generation
 # time. ``any`` → workspace-wide; ``one`` → exactly one id in
@@ -793,7 +803,7 @@ class Evidence(Base):
 
 
 class Comment(Base):
-    """Threaded markdown comment on an :class:`Occurrence`.
+    """Threaded markdown comment on an :class:`Occurrence` — the agent inbox.
 
     The author pointer uses ``SET NULL`` so the thread survives a
     user-delete (important for audit). ``attachments_json`` is a
@@ -802,6 +812,18 @@ class Comment(Base):
     ``(workspace_id, occurrence_id, created_at)`` index supports
     the per-thread read path — the expected query is "give me this
     occurrence's comments in order".
+
+    **cd-cfe4** extends the cd-chd v1 slice with the §06 "Task notes
+    are the agent inbox" shape: ``kind`` (``user | agent | system``)
+    separates human authors from the embedded workspace agent and
+    from internal state-change markers; ``mentioned_user_ids`` is
+    the resolved-at-write-time list of ``@mention`` targets the §10
+    messaging fanout reads; ``edited_at`` and ``deleted_at`` are
+    soft-state timestamps (the domain service enforces the 5-minute
+    edit window and soft-delete semantics); ``llm_call_id`` is a
+    soft pointer into ``llm_call`` (no FK yet — the table is not in
+    the schema) so an agent message carries the LLM call that
+    produced it.
     """
 
     __tablename__ = "comment"
@@ -833,8 +855,45 @@ class Comment(Base):
     attachments_json: Mapped[list[Any]] = mapped_column(
         JSON, nullable=False, default=list
     )
+    # cd-cfe4 message kind. Server default ``'user'`` so pre-cd-cfe4
+    # rows survive the migration; the domain service writes through
+    # on every new insert.
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="user")
+    # Resolved ``@mention`` user ids (§06 "Task notes are the agent
+    # inbox"). Populated by the domain service at write time;
+    # consumed by the §10 messaging fanout for the offline-mention
+    # email. Empty list on agent / system messages (they don't
+    # mention humans).
+    mentioned_user_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    # cd-cfe4 edit marker. ``NULL`` = never edited. The domain
+    # service only allows :func:`app.domain.tasks.comments.edit_comment`
+    # within the 5-minute grace window on ``kind='user'`` rows; agent
+    # / system messages never flip this column.
+    edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # cd-cfe4 soft-delete marker. ``NULL`` = live. :func:`list_comments`
+    # hides non-null rows for every reader except workspace owners,
+    # so moderation history survives without bleeding into the
+    # worker / manager thread view.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Soft pointer to the :class:`llm_call` row that produced this
+    # message. NULL for ``user`` / ``system`` rows, populated for
+    # ``agent`` rows when the domain service knows the call id. No
+    # FK — the ``llm_call`` table's lifecycle is independent of
+    # comment retention (an archived LLM call should not sweep the
+    # comment thread).
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
+        CheckConstraint(
+            f"kind IN ({_in_clause(_COMMENT_KIND_VALUES)})",
+            name="kind",
+        ),
         Index(
             "ix_comment_workspace_occurrence_created",
             "workspace_id",

@@ -48,6 +48,7 @@ __all__ = [
     "StayUpcoming",
     "TaskAssigned",
     "TaskCancelled",
+    "TaskCommentAdded",
     "TaskCompleted",
     "TaskCreated",
     "TaskOverdue",
@@ -308,6 +309,55 @@ class TaskCancelled(Event):
     @classmethod
     def _reason_is_code(cls, value: str) -> str:
         return _require_reason_code(value)
+
+
+@register
+class TaskCommentAdded(Event):
+    """A :class:`~app.adapters.db.tasks.models.Comment` row has just been
+    persisted on a task occurrence (cd-cfe4).
+
+    Fired by :func:`app.domain.tasks.comments.post_comment` after the
+    audit write and before the function returns. Consumed by §10 for
+    the offline-mention email fanout (the subscriber reads
+    ``mentioned_user_ids`` and queues a notification for every
+    listed user who is not currently online), by the SSE transport
+    to invalidate ``/tasks/{id}/chat/log`` queries on every
+    subscribed client, and — eventually — by the agent runtime for
+    mention-triggered auto-reply.
+
+    **Role scope.** Narrowed to ``(manager, worker, client)`` — the
+    same posture as :class:`TaskSkipped` / :class:`TaskCancelled`.
+    Guests on the welcome page have no legitimate interest in the
+    task chat; they never read or reply in the thread, so they
+    should not see its events. Workers and clients stay in the
+    allowlist because the worker's "today" list and the client's
+    stay-level task view both render comment activity.
+
+    **Payload posture.** Only foreign-key identifiers are on the
+    wire — no free text (``body_md``). Subscribers that need the
+    rendered message call ``GET /tasks/{task_id}/chat/log`` under
+    the normal per-row authorisation path. The ``task_id`` field
+    carries the :class:`~app.adapters.db.tasks.models.Occurrence`
+    row's id (same convention every sibling ``task.*`` event uses,
+    e.g. :class:`TaskCompleted`, :class:`TaskAssigned`) so a single
+    SSE reducer dispatches the whole family without a per-event
+    key rename. ``kind`` is the three-value enum so the client
+    renders an agent reply differently from a human message without
+    a refetch; ``author_user_id`` is nullable because ``system``
+    rows carry no author and ``agent`` rows set the field to the
+    caller's ``ctx.actor_id`` (the agent token's user id).
+    """
+
+    name: ClassVar[str] = "task.comment_added"
+    # Guests don't observe back-office chatter; the other three
+    # grant roles legitimately watch the task thread.
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager", "worker", "client")
+
+    task_id: str
+    comment_id: str
+    kind: Literal["user", "agent", "system"]
+    author_user_id: str | None
+    mentioned_user_ids: list[str]
 
 
 @register

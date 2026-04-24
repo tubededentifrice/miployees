@@ -554,6 +554,32 @@ _RULE_DRIVEN: tuple[ActionSpec, ...] = (
         root_protected_deny=False,
     ),
     ActionSpec(
+        key="tasks.comment",
+        # cd-cfe4 — post a ``kind='user'`` comment on a task
+        # occurrence. Workers need the capability by default (the
+        # agent inbox is where they actually report progress), so
+        # ``all_workers`` joins owners + managers in ``default_allow``.
+        # Gated at the domain layer by
+        # :func:`app.domain.tasks.comments.post_comment`.
+        valid_scope_kinds=("workspace", "property"),
+        default_allow=("owners", "managers", "all_workers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
+        key="tasks.comment_moderate",
+        # cd-cfe4 — delete another user's comment, or edit a
+        # ``kind='user'`` comment after the 5-minute author grace
+        # window. Owners / managers only; workers cannot moderate
+        # someone else's chat history. Listed in
+        # ``docs/specs/05-employees-and-roles.md`` §"Rule-driven
+        # actions".
+        valid_scope_kinds=("workspace", "property"),
+        default_allow=("owners", "managers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
         key="tasks.complete_other",
         valid_scope_kinds=("workspace", "property"),
         default_allow=("owners", "managers"),

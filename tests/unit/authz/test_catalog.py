@@ -54,12 +54,14 @@ class TestShape:
         assert frozenset(ACTION_CATALOG.keys()) == ACTION_KEYS
 
     def test_catalog_has_expected_size(self) -> None:
-        """v1 spec §05 enumerates 7 root-only + 74 rule-driven = 81 keys.
+        """v1 spec §05 enumerates 7 root-only + 76 rule-driven = 83 keys.
 
         A hard number — if it changes, either the spec or the catalog
-        drifted and the author needs to say which.
+        drifted and the author needs to say which. cd-cfe4 added
+        ``tasks.comment`` and ``tasks.comment_moderate`` alongside the
+        agent-inbox comments service.
         """
-        assert len(ACTION_CATALOG) == 81
+        assert len(ACTION_CATALOG) == 83
 
     def test_entries_are_action_spec_instances(self) -> None:
         for key, spec in ACTION_CATALOG.items():
