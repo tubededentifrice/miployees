@@ -235,6 +235,37 @@ delivery worker skips the push tier. Tier 3 (WhatsApp) ships when
 above is **authoritative for v1** — it simply collapses to tier 1
 → tier 4 while the intermediate tiers are off.
 
+**Web push registration surface (v1).** Browsers register a
+`PushSubscription` via
+`POST /w/<slug>/api/v1/messaging/notifications/push/subscribe`
+(body matches the `PushSubscription.toJSON()` shape:
+`{endpoint, keys:{p256dh, auth}, ua?}`) and unregister via
+`POST /w/<slug>/api/v1/messaging/notifications/push/unsubscribe`
+(body `{endpoint}`). Both are self-scoped — the caller
+registers / un-registers only their own device. The SPA's service
+worker fetches the workspace's VAPID public key from
+`GET /w/<slug>/api/v1/messaging/notifications/push/vapid-key`
+before calling `pushManager.subscribe`; the server caches this
+value in-process for 5 minutes to cut repeat DB hits during
+sign-in.
+
+`PushSubscription.endpoint` URLs are validated against a fixed
+allow-list of mainline web-push provider origins (`fcm.googleapis.com`,
+`updates.push.services.mozilla.com`, `web.push.apple.com`) to
+dodge SSRF amplification through the eventual delivery worker.
+Non-`https://` schemes, URLs with userinfo, explicit non-443
+ports, and `#fragment` segments are rejected at registration time
+with `422 endpoint_scheme_invalid` / `422 endpoint_not_allowed`.
+Query strings are accepted (some providers emit `?auth=...`).
+
+The VAPID keypair lives in `workspace.settings_json` under
+`messaging.push.vapid_public_key` (public) and the corresponding
+private key — provisioned per workspace so a multi-tenant
+deployment can rotate keys independently. The registration router
+returns `503 vapid_not_configured` until the operator sets the
+public key. Rotation is a CLI-driven operation and lands with the
+push delivery worker (out of scope for cd-0bnz).
+
 See §23 for the shared `chat_message` / `chat_thread` substrate and
 §15 for the privacy rules that apply to off-app tiers.
 

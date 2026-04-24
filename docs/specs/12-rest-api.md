@@ -1300,6 +1300,17 @@ GET    /webhooks
 POST   /webhooks/{id}/disable
 POST   /webhooks/{id}/enable
 POST   /webhooks/{id}/replay
+
+# Web-push subscription surface (§10 "Web push registration surface").
+# Self-scoped: the caller registers / un-registers their own browser
+# subscription; no manager cross-user path. The VAPID public key lives
+# in `workspace.settings_json["messaging.push.vapid_public_key"]` and
+# is cached in-process for 5 minutes per workspace. Endpoint URLs are
+# validated against a fixed allow-list of mainline web-push providers
+# (FCM, Mozilla autopush, Apple web.push) to dodge SSRF amplification.
+GET    /messaging/notifications/push/vapid-key          # 200 {key}; 503 vapid_not_configured
+POST   /messaging/notifications/push/subscribe          # body: {endpoint, keys:{p256dh,auth}, ua?}; 201 PushTokenPayload; idempotent on (user_id, endpoint); 422 endpoint_not_allowed | endpoint_scheme_invalid
+POST   /messaging/notifications/push/unsubscribe        # body: {endpoint}; 204 regardless of prior row existence
 ```
 
 ### Files
