@@ -257,7 +257,8 @@ class LlmUsage:
     * ``cost_cents`` — re-computed from current pricing at write time
       via :func:`estimate_cost_cents` or equivalent. Storing cents
       (not dollars) sidesteps decimal / rounding hazards across
-      SQLite + PG.
+      SQLite + PG. **Must be ``0`` when ``status != "ok"``** —
+      see "Cost / status invariant" below.
     * ``latency_ms`` — wall time between request-out and body-in, as
       measured by the adapter.
     * ``api_model_id`` / ``provider_model_id`` — the wire name / the
@@ -267,8 +268,10 @@ class LlmUsage:
       follow-up will split them).
     * ``assignment_id`` — the :class:`~app.adapters.db.llm.models.
       ModelAssignment` row this rung was resolved from. Empty string
-      means "resolver bypassed" (e.g. admin smoke test); the ledger
-      update still fires so the operator sees the spend.
+      means "resolver bypassed" (e.g. admin smoke test) — the adapter
+      writes it as ``NULL`` so the DB column contract (NULL = bypass)
+      lines up with the spec; the ledger update still fires so the
+      operator sees the spend.
     * ``capability`` — the §11 capability key
       (``chat.manager`` / ``receipt_ocr`` / …).
     * ``correlation_id`` — ties related calls across a logical
@@ -276,6 +279,50 @@ class LlmUsage:
     * ``attempt`` — 0 = first attempt, bumped on every fallback rung.
     * ``status`` — ``"ok" | "error" | "refused" | "timeout"``.
       ``"refused"`` writes nothing (refusals don't count per §11).
+
+    cd-wjpl telemetry fields (all default-safe so callers that haven't
+    been updated keep round-tripping):
+
+    * ``fallback_attempts`` — how many prior rungs failed before this
+      one succeeded. 0 = first-rung success. Matches §11 "LLMResult"
+      ``fallback_attempts`` contract; the /admin/usage feed surfaces
+      this verbatim for the operator's "was I on the primary?" view.
+    * ``finish_reason`` — the provider's free-form reason string
+      (``stop`` / ``length`` / ``content_filter`` / ``tool_calls`` /
+      …). NULL when the call produced no body (timeout / transport
+      error).
+    * ``actor_user_id`` — the delegating user (§11 "Agent audit
+      trail"). NULL for service-initiated calls (daily digest worker,
+      health check).
+    * ``token_id`` — the delegated API token used. NULL for
+      passkey-session calls.
+    * ``agent_label`` — short human label (``manager-chat``,
+      ``expenses-autofill``, …). Denormalised off
+      :attr:`~app.adapters.db.llm.models.AgentToken.label` so a
+      /admin/usage readout doesn't need the join. NULL when the call
+      carries no agent context.
+
+    Cost / status invariant:
+
+    * :func:`record_usage` bumps the ledger's ``spent_cents`` by
+      ``cost_cents`` unconditionally on non-refused statuses. Before
+      cd-z8h1 the "callers pass ``cost_cents=0`` on terminal errors"
+      rule lived only in the docstring, so a future caller that
+      forgot would silently inflate the 30-day meter. The invariant
+      is now enforced at construction: if ``status`` is anything
+      other than ``"ok"`` (``"error"`` / ``"timeout"`` / ``"refused"``)
+      the dataclass raises :class:`ValueError` unless
+      ``cost_cents == 0``. §11 "Cost tracking" never bills a provider
+      failure; the /admin/usage row still lands for visibility, but
+      the meter stays on the set of "successful calls" the spec
+      describes.
+    * Edge case: a provider that reports partial usage on a terminal
+      timeout (socket died mid-stream) should be carried on the
+      ``status="ok"`` row the adapter already wrote for the
+      partial-body path, not on a second ``status="timeout"`` row.
+      The /admin/usage feed's ``finish_reason != "stop"`` filter
+      still catches the "this looked like an error" case without the
+      meter double-counting.
     """
 
     prompt_tokens: int
@@ -289,6 +336,37 @@ class LlmUsage:
     attempt: int
     status: UsageStatus
     latency_ms: int = 0
+    # cd-wjpl agent-trail telemetry. Defaults keep pre-cd-wjpl
+    # callers (e.g. the digest worker smoke path) compiling without
+    # a change — the DB columns are nullable / server-defaulted.
+    fallback_attempts: int = 0
+    finish_reason: str | None = None
+    actor_user_id: str | None = None
+    token_id: str | None = None
+    agent_label: str | None = None
+
+    def __post_init__(self) -> None:
+        """Enforce the cost / status invariant — see class docstring.
+
+        ``record_usage`` bumps the ledger by ``cost_cents`` on every
+        non-refused status; a caller that sets a non-zero cost on a
+        terminal failure would silently inflate the 30-day meter. The
+        §11 "Cost tracking" convention pins the caller to zero on
+        ``error`` / ``timeout`` / ``refused`` — this check turns the
+        docstring hope into a type-level invariant so the next caller
+        who reads neither docstring still can't mis-bill a failure.
+
+        Raised eagerly at construction (not later in
+        :func:`record_usage`) so the offending call site shows up in
+        the traceback rather than a line inside the shared helper.
+        """
+        if self.status != "ok" and self.cost_cents != 0:
+            raise ValueError(
+                f"LlmUsage.cost_cents must be 0 when status={self.status!r}; "
+                f"got cost_cents={self.cost_cents}. §11 'Cost tracking' never "
+                f"bills a non-successful call against the workspace's 30-day "
+                f"meter. Pass cost_cents=0 on error / timeout / refused."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +722,12 @@ def record_usage(
     #    pattern, and painful in production where the budget helper
     #    sits inside a larger domain transaction (write audit row +
     #    bump ledger + write usage).
+    # ``assignment_id`` is a required string on the domain dataclass
+    # (empty = "resolver bypassed") but the DB column is nullable —
+    # coerce empty to NULL so the column contract ("NULL = bypass")
+    # lines up with the spec and with the downstream /admin/usage
+    # filter logic. cd-wjpl agent-trail fields are already typed
+    # ``str | None`` on the domain side and pass straight through.
     row = LlmUsageRow(
         id=new_ulid(clock=c),
         workspace_id=ctx.workspace_id,
@@ -656,6 +740,12 @@ def record_usage(
         status=usage.status,
         correlation_id=usage.correlation_id,
         attempt=usage.attempt,
+        assignment_id=usage.assignment_id or None,
+        fallback_attempts=usage.fallback_attempts,
+        finish_reason=usage.finish_reason,
+        actor_user_id=usage.actor_user_id,
+        token_id=usage.token_id,
+        agent_label=usage.agent_label,
         created_at=now,
     )
     try:

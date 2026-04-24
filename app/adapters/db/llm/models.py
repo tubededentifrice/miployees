@@ -483,7 +483,9 @@ class LlmUsage(Base):
     One row per attempted LLM call (including chain retries). The
     ``(workspace_id, created_at)`` and
     ``(workspace_id, capability, created_at)`` composite indexes
-    power the /admin/usage feed + per-capability breakdowns.
+    power the /admin/usage feed + per-capability breakdowns; the
+    cd-wjpl ``(workspace_id, actor_user_id, created_at)`` index
+    serves the delegating-user filter.
 
     ``correlation_id`` ties related calls together across a logical
     operation (a single digest run may issue three calls — ledger
@@ -498,9 +500,49 @@ class LlmUsage(Base):
     rounding hazards across SQLite + PG). ``latency_ms`` is the
     adapter-measured wall time between request-out and body-in.
 
-    FK hygiene: ``workspace_id`` CASCADE. No user FK — usage is a
-    workspace-level telemetry stream; the actor lives on the
-    correlated audit row.
+    **Spec-drift note on ``model_id``.** The column is named
+    ``model_id`` here but the §02 ``llm_call`` spec names the
+    equivalent column ``provider_model_id`` — it holds the resolved
+    provider-model wire reference, not the ``llm_model`` registry
+    id. The cd-cm5 slice landed the shorter name and the cd-wjpl /
+    cd-irng post-flight writers populate it with
+    :attr:`~app.domain.llm.budget.LlmUsage.api_model_id`. The rename
+    is deferred until the deployment-scope ``llm_provider_model``
+    registry lands so the ``/admin/usage`` queries + the router
+    observability seam can flip in lockstep — tracked as a follow-up
+    Beads task referenced from the cd-wjpl summary.
+
+    cd-wjpl telemetry columns (all nullable — §11 "Agent audit
+    trail"):
+
+    * ``assignment_id`` — the :class:`ModelAssignment.id` rung the
+      §11 resolver picked for this call. NULL means the resolver
+      was bypassed (admin smoke path, deployment-scope callers).
+      Soft reference — no FK so deleting an assignment doesn't
+      break the historical row.
+    * ``fallback_attempts`` — how many prior rungs failed before
+      this one succeeded. 0 = first-rung success. Matches §11
+      "LLMResult" ``fallback_attempts`` contract.
+    * ``finish_reason`` — the provider's free-form finish reason
+      (``stop`` / ``length`` / ``content_filter`` / ``tool_calls`` /
+      …). NULL for timeout / transport-error rows that never
+      produced a body. Plain string — providers ship different
+      vocabularies.
+    * ``actor_user_id`` — the delegating user (§11 "Agent audit
+      trail"). NULL for service-initiated calls (digest worker,
+      health check). Soft reference — no FK so a user hard-delete
+      preserves the trail.
+    * ``token_id`` — the delegated API token id. NULL for
+      passkey-session calls. Soft reference.
+    * ``agent_label`` — short human label (``manager-chat``,
+      ``expenses-autofill``, …) denormalised off
+      :attr:`AgentToken.label`. NULL when the call carries no
+      agent context.
+
+    FK hygiene: ``workspace_id`` CASCADE. No user / token FK — the
+    history survives a user hard-delete or a token sweep; the
+    denormalised ``agent_label`` carries the display string without
+    the join.
     """
 
     __tablename__ = "llm_usage"
@@ -514,8 +556,10 @@ class LlmUsage(Base):
     # Capability key from the §11 catalogue. Plain string — see
     # :class:`ModelAssignment.capability` for the rationale.
     capability: Mapped[str] = mapped_column(String, nullable=False)
-    # Soft reference to ``llm_model.id``. Plain :class:`String(26)`
-    # sized for a ULID; see module docstring.
+    # Resolved provider-model reference. Column name is ``model_id``
+    # for cd-cm5-era compatibility; the §02 spec names the equivalent
+    # ``llm_call`` column ``provider_model_id`` — see the class
+    # docstring's "Spec-drift note" for why the rename is deferred.
     model_id: Mapped[str] = mapped_column(String(26), nullable=False)
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -541,6 +585,30 @@ class LlmUsage(Base):
     attempt: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # cd-wjpl telemetry: the ``ModelAssignment.id`` rung the §11
+    # resolver picked. NULL when the resolver was bypassed (admin
+    # smoke path, deployment-scope callers). Soft reference.
+    assignment_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # cd-wjpl telemetry: 0 = first-rung success. Matches §11
+    # "LLMResult" ``fallback_attempts`` contract. Server default 0
+    # keeps pre-cd-wjpl rows consistent without a backfill.
+    fallback_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # cd-wjpl telemetry: provider's free-form finish reason. NULL
+    # when the call produced no body. Plain string — providers ship
+    # different vocabularies.
+    finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # cd-wjpl telemetry: the delegating user (§11 "Agent audit
+    # trail"). NULL for service-initiated calls. Soft reference —
+    # no FK so a user hard-delete preserves the trail.
+    actor_user_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # cd-wjpl telemetry: the delegated API token. NULL for
+    # passkey-session calls. Soft reference.
+    token_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # cd-wjpl telemetry: denormalised :attr:`AgentToken.label` for
+    # display. NULL when the call carries no agent context.
+    agent_label: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -581,6 +649,16 @@ class LlmUsage(Base):
             "correlation_id",
             "attempt",
             unique=True,
+        ),
+        # cd-wjpl: "usage for this workspace filtered by delegating
+        # user, newest first" — the /admin/usage hot path. Leading
+        # ``workspace_id`` rides the tenant filter; trailing
+        # ``created_at`` keeps paginated scrolls cheap.
+        Index(
+            "ix_llm_usage_workspace_actor_created",
+            "workspace_id",
+            "actor_user_id",
+            "created_at",
         ),
     )
 

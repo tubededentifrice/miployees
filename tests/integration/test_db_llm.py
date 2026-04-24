@@ -324,10 +324,31 @@ class TestMigrationShape:
             # attempt)``. See migration
             # ``20260424_1600_a7b8c9d0e1f2_llm_usage_attempt_cd_irng``.
             "attempt",
+            # cd-wjpl agent-trail telemetry columns. All nullable
+            # except ``fallback_attempts`` (server default 0). See
+            # migration ``20260424_1700_b8d0e1f2a3b4_llm_usage_
+            # agent_trail_cd_wjpl``.
+            "assignment_id",
+            "fallback_attempts",
+            "finish_reason",
+            "actor_user_id",
+            "token_id",
+            "agent_label",
             "created_at",
         }
         assert set(cols) == expected
-        for notnull in expected:
+        # cd-wjpl: five of the six new columns are nullable; only
+        # ``fallback_attempts`` carries a server default.
+        nullable = {
+            "assignment_id",
+            "finish_reason",
+            "actor_user_id",
+            "token_id",
+            "agent_label",
+        }
+        for col in nullable:
+            assert cols[col]["nullable"] is True, f"{col} must be NULLABLE"
+        for notnull in expected - nullable:
             assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
 
     def test_llm_usage_fks(self, engine: Engine) -> None:
@@ -368,6 +389,17 @@ class TestMigrationShape:
         # unique — a plain ``bool()`` cast keeps the assertion
         # cross-backend.
         assert bool(attempt_idx["unique"]) is True
+        # cd-wjpl: /admin/usage filter-by-delegating-user hot path.
+        # Non-unique composite on ``(workspace_id, actor_user_id,
+        # created_at)``.
+        assert "ix_llm_usage_workspace_actor_created" in indexes
+        actor_idx = indexes["ix_llm_usage_workspace_actor_created"]
+        assert actor_idx["column_names"] == [
+            "workspace_id",
+            "actor_user_id",
+            "created_at",
+        ]
+        assert bool(actor_idx["unique"]) is False
 
     def test_budget_ledger_columns(self, engine: Engine) -> None:
         cols = {c["name"]: c for c in inspect(engine).get_columns("budget_ledger")}
@@ -2400,5 +2432,248 @@ class TestCdU84yMigrationRoundTrip:
                         "'2026-04-24T12:00:00+00:00')"
                     )
                 )
+        finally:
+            engine.dispose()
+
+
+class TestCdWjplMigrationRoundTrip:
+    """cd-wjpl migration lands cleanly, reverses, and re-applies.
+
+    Mirrors the cd-u84y round-trip smoke: scratch SQLite file,
+    ``alembic upgrade head``, introspect the added columns + index,
+    ``downgrade -1`` to restore the cd-irng shape, then re-upgrade
+    to prove reversibility + idempotence.
+
+    SQLite only — the cross-backend structural parity gate lives in
+    ``tests/integration/test_schema_parity.py`` (picked up via
+    ``CREWDAY_TEST_DB=postgres``), so the PG shard catches a
+    divergent DDL without duplicating the round-trip loop here. The
+    batch_alter_table loop is the SQLite-specific risk; PG's plain
+    ALTER TABLE is a direct translation.
+    """
+
+    _REVISION_ID: str = "b8d0e1f2a3b4"
+    _PREVIOUS_REVISION_ID: str = "a7b8c9d0e1f2"
+
+    @staticmethod
+    def _alembic_ini() -> Path:
+        return Path(__file__).resolve().parents[2] / "alembic.ini"
+
+    @staticmethod
+    @contextmanager
+    def _override_database_url(url: str) -> Iterator[None]:
+        original = os.environ.get("CREWDAY_DATABASE_URL")
+        os.environ["CREWDAY_DATABASE_URL"] = url
+        from app.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            if original is None:
+                os.environ.pop("CREWDAY_DATABASE_URL", None)
+            else:
+                os.environ["CREWDAY_DATABASE_URL"] = original
+            get_settings.cache_clear()
+
+    def test_upgrade_adds_telemetry_columns_and_actor_index(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Upgrade lands the six cd-wjpl columns and the actor index."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-wjpl-mig") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+
+            insp = inspect(engine)
+            cols = {c["name"]: c for c in insp.get_columns("llm_usage")}
+            for added in (
+                "assignment_id",
+                "fallback_attempts",
+                "finish_reason",
+                "actor_user_id",
+                "token_id",
+                "agent_label",
+            ):
+                assert added in cols, f"{added} missing after upgrade"
+            # Only ``fallback_attempts`` is NOT NULL (server default 0);
+            # the other five land nullable per the /admin/usage filter
+            # contract.
+            assert cols["fallback_attempts"]["nullable"] is False
+            for nullable in (
+                "assignment_id",
+                "finish_reason",
+                "actor_user_id",
+                "token_id",
+                "agent_label",
+            ):
+                assert cols[nullable]["nullable"] is True, (
+                    f"{nullable} must be nullable after cd-wjpl upgrade"
+                )
+
+            indexes = {ix["name"]: ix for ix in insp.get_indexes("llm_usage")}
+            assert "ix_llm_usage_workspace_actor_created" in indexes
+            actor_idx = indexes["ix_llm_usage_workspace_actor_created"]
+            assert actor_idx["column_names"] == [
+                "workspace_id",
+                "actor_user_id",
+                "created_at",
+            ]
+            assert bool(actor_idx["unique"]) is False
+        finally:
+            engine.dispose()
+
+    def test_downgrade_reverses_columns_and_index(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Downgrade restores the cd-irng shape (columns + index gone)."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-wjpl-mig-down") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+
+            insp = inspect(engine)
+            cols = {c["name"]: c for c in insp.get_columns("llm_usage")}
+            for absent in (
+                "assignment_id",
+                "fallback_attempts",
+                "finish_reason",
+                "actor_user_id",
+                "token_id",
+                "agent_label",
+            ):
+                assert absent not in cols, (
+                    f"{absent} still present after cd-wjpl downgrade"
+                )
+
+            indexes = {ix["name"]: ix for ix in insp.get_indexes("llm_usage")}
+            assert "ix_llm_usage_workspace_actor_created" not in indexes
+            # Pre-existing indexes survive the downgrade.
+            assert "ix_llm_usage_workspace_created" in indexes
+            assert "ix_llm_usage_workspace_capability_created" in indexes
+            assert "uq_llm_usage_workspace_correlation_attempt" in indexes
+        finally:
+            engine.dispose()
+
+    def test_upgrade_after_downgrade_is_idempotent(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """upgrade → downgrade → upgrade cycles clean on SQLite."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-wjpl-mig-cycle") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+                command.upgrade(cfg, self._REVISION_ID)
+
+            insp = inspect(engine)
+            cols = {c["name"]: c for c in insp.get_columns("llm_usage")}
+            assert "assignment_id" in cols
+            assert "fallback_attempts" in cols
+            indexes = {ix["name"]: ix for ix in insp.get_indexes("llm_usage")}
+            assert "ix_llm_usage_workspace_actor_created" in indexes
+        finally:
+            engine.dispose()
+
+    def test_downgrade_preserves_pre_cd_wjpl_rows(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Rows written before cd-wjpl survive the downgrade untouched.
+
+        A workspace carrying ``llm_usage`` rows from the cd-irng era
+        (no telemetry fields set) must round-trip cleanly. Columns
+        are nullable / server-defaulted → the downgrade discards the
+        telemetry without rewriting the row.
+        """
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+        from sqlalchemy import text
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-wjpl-mig-down-rows") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+
+            # Seed: workspace + one usage row with every telemetry
+            # column left at its default (NULL / 0).
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO workspace "
+                        "(id, slug, name, plan, quota_json, created_at) "
+                        "VALUES ('01HWA00000000000000000WJPL', "
+                        "'wjpl-seed', 'WjplSeed', 'free', '{}', "
+                        "'2026-04-24T12:00:00+00:00')"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO llm_usage "
+                        "(id, workspace_id, capability, model_id, "
+                        "tokens_in, tokens_out, cost_cents, latency_ms, "
+                        "status, correlation_id, attempt, created_at) "
+                        "VALUES ('01HWA00000000000000000UJPL', "
+                        "'01HWA00000000000000000WJPL', 'chat.manager', "
+                        "'01HWA00000000000000000MDLA', "
+                        "5, 5, 3, 100, 'ok', "
+                        "'01HWA00000000000000000CJPL', 0, "
+                        "'2026-04-24T12:00:00+00:00')"
+                    )
+                )
+
+            # Downgrade discards telemetry without touching the row's
+            # core columns.
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT id, workspace_id, capability, cost_cents, "
+                        "status, correlation_id FROM llm_usage WHERE "
+                        "id = '01HWA00000000000000000UJPL'"
+                    )
+                ).fetchone()
+            assert row is not None
+            assert row[0] == "01HWA00000000000000000UJPL"
+            assert row[2] == "chat.manager"
+            assert row[3] == 3
+            assert row[4] == "ok"
         finally:
             engine.dispose()

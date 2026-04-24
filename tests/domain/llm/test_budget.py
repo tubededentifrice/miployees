@@ -1402,3 +1402,233 @@ class TestConcurrency:
                 reset_current(token)
         finally:
             verify.close()
+
+
+# ---------------------------------------------------------------------------
+# cd-wjpl — agent-trail telemetry fields round-trip through record_usage
+# ---------------------------------------------------------------------------
+
+
+class TestNewTelemetryFields:
+    """cd-wjpl: the six new optional columns land on the ORM row verbatim.
+
+    Pins the write contract between the domain :class:`LlmUsage` and
+    the ORM :class:`LlmUsageRow` — the cd-wjpl migration added
+    ``assignment_id`` / ``fallback_attempts`` / ``finish_reason`` /
+    ``actor_user_id`` / ``token_id`` / ``agent_label`` and
+    :func:`record_usage` now carries them through.
+    """
+
+    def test_all_telemetry_fields_round_trip(
+        self, db_session: Session, clock: FrozenClock
+    ) -> None:
+        """Every new cd-wjpl column reads back the value written."""
+        ws = seed_workspace(db_session)
+        ctx = build_context(ws.id)
+        _seed_ledger(db_session, workspace_id=ws.id, cap_cents=500)
+        token = set_current(ctx)
+        try:
+            usage = LlmUsage(
+                prompt_tokens=100,
+                completion_tokens=50,
+                cost_cents=12,
+                provider_model_id="01HWA00000000000000000MDLA",
+                api_model_id="01HWA00000000000000000MDLA",
+                assignment_id="01HWA00000000000000000ASGN",
+                capability="chat.manager",
+                correlation_id="01HWA00000000000000000CR01",
+                attempt=1,
+                status="ok",
+                latency_ms=420,
+                fallback_attempts=2,
+                finish_reason="stop",
+                actor_user_id="01HWA00000000000000000USR0",
+                token_id="01HWA00000000000000000TOK0",
+                agent_label="manager-chat",
+            )
+            record_usage(db_session, ctx, usage, clock=clock)
+            db_session.flush()
+
+            row = db_session.execute(
+                select(LlmUsageRow).where(LlmUsageRow.workspace_id == ws.id)
+            ).scalar_one()
+            assert row.assignment_id == "01HWA00000000000000000ASGN"
+            assert row.fallback_attempts == 2
+            assert row.finish_reason == "stop"
+            assert row.actor_user_id == "01HWA00000000000000000USR0"
+            assert row.token_id == "01HWA00000000000000000TOK0"
+            assert row.agent_label == "manager-chat"
+        finally:
+            reset_current(token)
+
+    def test_defaults_keep_backwards_compatibility(
+        self, db_session: Session, clock: FrozenClock
+    ) -> None:
+        """A caller that omits the new fields still writes cleanly.
+
+        :class:`LlmUsage` defaults every cd-wjpl field to a null-safe
+        value (``0`` for ``fallback_attempts``, ``None`` for the
+        four nullable columns). Pre-cd-wjpl callers that haven't
+        been updated must still round-trip — the /admin/usage feed
+        tolerates NULL on every new column.
+        """
+        ws = seed_workspace(db_session)
+        ctx = build_context(ws.id)
+        _seed_ledger(db_session, workspace_id=ws.id, cap_cents=500)
+        token = set_current(ctx)
+        try:
+            # ``_build_usage`` does not set any of the new fields —
+            # exercises the default path end-to-end.
+            record_usage(
+                db_session,
+                ctx,
+                _build_usage(cost_cents=3),
+                clock=clock,
+            )
+            db_session.flush()
+
+            row = db_session.execute(
+                select(LlmUsageRow).where(LlmUsageRow.workspace_id == ws.id)
+            ).scalar_one()
+            assert row.fallback_attempts == 0
+            assert row.finish_reason is None
+            assert row.actor_user_id is None
+            assert row.token_id is None
+            assert row.agent_label is None
+            # Non-empty ``_build_usage`` assignment_id stays populated.
+            assert row.assignment_id == "01HWA00000000000000000ASGN"
+        finally:
+            reset_current(token)
+
+    def test_cost_cents_must_be_zero_when_status_is_error(self) -> None:
+        """cd-z8h1: non-zero cost on ``status="error"`` trips the invariant.
+
+        :func:`record_usage` bumps the ledger by ``cost_cents`` on
+        every non-refused status — an accidental non-zero cost on a
+        terminal failure would silently inflate the 30-day meter
+        (§11 "Cost tracking" never bills a provider failure). The
+        invariant is enforced at construction so the offending call
+        site surfaces in the traceback rather than a line inside the
+        shared helper.
+        """
+        with pytest.raises(ValueError, match="cost_cents must be 0"):
+            LlmUsage(
+                prompt_tokens=10,
+                completion_tokens=0,
+                cost_cents=5,  # non-zero on an error — must trip.
+                provider_model_id="x",
+                api_model_id="x",
+                assignment_id="",
+                capability="chat.manager",
+                correlation_id="corr",
+                attempt=0,
+                status="error",
+            )
+
+    def test_cost_cents_must_be_zero_when_status_is_timeout(self) -> None:
+        """Same invariant applies to ``status="timeout"``."""
+        with pytest.raises(ValueError, match="cost_cents must be 0"):
+            LlmUsage(
+                prompt_tokens=10,
+                completion_tokens=0,
+                cost_cents=3,
+                provider_model_id="x",
+                api_model_id="x",
+                assignment_id="",
+                capability="chat.manager",
+                correlation_id="corr",
+                attempt=0,
+                status="timeout",
+            )
+
+    def test_cost_cents_must_be_zero_when_status_is_refused(self) -> None:
+        """And to ``status="refused"`` — refusals never bill."""
+        with pytest.raises(ValueError, match="cost_cents must be 0"):
+            LlmUsage(
+                prompt_tokens=0,
+                completion_tokens=0,
+                cost_cents=1,
+                provider_model_id="x",
+                api_model_id="x",
+                assignment_id="",
+                capability="chat.manager",
+                correlation_id="corr",
+                attempt=0,
+                status="refused",
+            )
+
+    def test_zero_cost_on_non_ok_status_passes(self) -> None:
+        """Zero cost on a terminal failure is the documented convention.
+
+        Asserts the invariant does not false-positive the common
+        terminal-error path the /admin/usage feed relies on.
+        """
+        # No exception — `cost_cents=0` on error / timeout / refused
+        # is the documented write shape.
+        for status in ("error", "timeout", "refused"):
+            LlmUsage(
+                prompt_tokens=0,
+                completion_tokens=0,
+                cost_cents=0,
+                provider_model_id="x",
+                api_model_id="x",
+                assignment_id="",
+                capability="chat.manager",
+                correlation_id="corr",
+                attempt=0,
+                status=cast(UsageStatus, status),
+            )
+
+    def test_non_zero_cost_on_ok_status_passes(self) -> None:
+        """Non-zero cost on a successful call is the billable happy path."""
+        usage = LlmUsage(
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost_cents=7,
+            provider_model_id="x",
+            api_model_id="x",
+            assignment_id="",
+            capability="chat.manager",
+            correlation_id="corr",
+            attempt=0,
+            status="ok",
+        )
+        assert usage.cost_cents == 7
+
+    def test_empty_assignment_id_coerces_to_null(
+        self, db_session: Session, clock: FrozenClock
+    ) -> None:
+        """Empty-string ``assignment_id`` lands as NULL on the ORM row.
+
+        The domain dataclass uses empty-string as the "resolver
+        bypassed" sentinel (§11 "Deployment-scope capabilities" +
+        admin smoke path); the DB column contract is NULL. The
+        adapter coerces so the /admin/usage query's
+        ``WHERE assignment_id IS NULL`` picks up the bypass cleanly.
+        """
+        ws = seed_workspace(db_session)
+        ctx = build_context(ws.id)
+        _seed_ledger(db_session, workspace_id=ws.id, cap_cents=500)
+        token = set_current(ctx)
+        try:
+            usage = LlmUsage(
+                prompt_tokens=0,
+                completion_tokens=0,
+                cost_cents=0,
+                provider_model_id="01HWA00000000000000000MDLA",
+                api_model_id="01HWA00000000000000000MDLA",
+                assignment_id="",  # sentinel
+                capability="chat.manager",
+                correlation_id=new_ulid(),
+                attempt=0,
+                status="ok",
+            )
+            record_usage(db_session, ctx, usage, clock=clock)
+            db_session.flush()
+
+            row = db_session.execute(
+                select(LlmUsageRow).where(LlmUsageRow.workspace_id == ws.id)
+            ).scalar_one()
+            assert row.assignment_id is None
+        finally:
+            reset_current(token)
