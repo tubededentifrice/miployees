@@ -27,26 +27,27 @@ main task is coupled to its selfreview; parallel implementation
 breaks that coupling (reviews would batch, context bleeds across
 changes, and failures can't be attributed cleanly).
 
-Pick the next task with **`bv --robot-triage --format toon`** (or
-`--format json` if you prefer; toon is denser). This is the
-prioritised queue — most important first — and replaces raw
-`bd ready` for task selection.
+Pick the next task with **`bv --robot-next --format toon`** — returns
+the single highest-priority ready task. Use **`bv --robot-triage
+--format toon`** instead when you want the full prioritised queue
+(e.g. planning ahead, or sanity-checking what's next). Both replace
+raw `bd ready` for task selection. (`--format json` works too if you
+prefer; toon is denser.)
 
-**Triage does not return paired selfreview tasks.** For every main
-task you pick, locate its paired selfreview (search Beads for one
-that blocks / is blocked by the main task, e.g.
-`bd list --status open | rg -i selfreview`). If none exists, create
-one via `/beads` **before** closing the main task. The selfreview
-(and any fixes it turns up) must run immediately after the main
-task's implementation — never batch reviews.
+**Neither `--robot-next` nor `--robot-triage` returns paired
+selfreview tasks.** For every main task you pick, locate its paired
+selfreview (search Beads for one that blocks / is blocked by the
+main task, e.g. `bd list --status open | rg -i selfreview`). If none
+exists, create one via `/beads` **before** closing the main task.
+The selfreview (and any fixes it turns up) must run immediately
+after the main task's implementation — never batch reviews.
 
-After each main+selfreview pair finishes, commit, then re-run
-`bv --robot-triage --format toon`: closing a task often unblocks new
-ones.
+After each main+selfreview pair commits, re-run `bv --robot-next
+--format toon`: closing a task often unblocks new ones.
 
 You only stop when:
 
-- `bv --robot-triage` returns no actionable items, **or**
+- `bv --robot-next` returns no actionable item, **or**
 - a non-obvious decision with long-lasting impact appears — in that
   case use `AskUserQuestion` with enough context and a clear
   recommendation for the user to decide.
@@ -72,11 +73,18 @@ and ships implementation + review fixes + `.beads/` delta in a single
 signed-off commit. Closure and commit are atomic.
 
 ```
-DIRECTOR: pick top task with `bv --robot-triage --format toon`
+DIRECTOR: pick top task with `bv --robot-next --format toon`
     │
     ▼
-1. DIRECTOR: locate (or create via `/beads`) the paired selfreview
-   task — triage does not return it.
+1. DIRECTOR: `bd show <id>` → sanity-check dependencies.
+   • If a prerequisite is obviously missing (e.g. an API task whose
+     schema migration is still open), add the link
+     `bd dep <blocker> --blocks <picked>` → **the picked task is now
+     blocked; do NOT start it.** Loop back to `bv --robot-next` and
+     pick a different task. The graph fix ships with the next pair's
+     commit (commiter's `bd sync`).
+   • Otherwise, locate (or create via `/beads`) the paired selfreview
+     task — triage does not return it — and continue.
     │
     ▼
 2. CODER: implement + run MODULE tests only.
@@ -97,8 +105,8 @@ DIRECTOR: pick top task with `bv --robot-triage --format toon`
     │       Single atomic step: closure ships with the commit.
     │
     ▼
-5. DIRECTOR: `bv --robot-triage --format toon` again — loop to step 1
-   until empty.
+5. DIRECTOR: `bv --robot-next --format toon` again — loop to step 1
+   until it returns nothing.
 ```
 
 **No Reviewer or Documenter agents.** Review = paired selfreview task
@@ -166,6 +174,14 @@ Read, in order:
   questions with the user.
 - **Pass PII through the redaction seam** whenever LLMs are in the
   loop.
+- **Fix the task graph as you go.** If a task you're about to claim
+  obviously depends on another open task (schema before API, API
+  before CLI, foundational refactor before consumers), add the
+  dependency *before* starting: `bd dep <blocker> --blocks <blocked>`.
+  Then **drop the picked task** — it's now blocked — and re-run
+  `bv --robot-next` for a different one. Wrong-order picks waste a
+  coder run and leave the graph misleading. The dep edit ships with
+  the next commit (commiter's `bd sync` covers it).
 
 ## Invoking agents
 
@@ -242,15 +258,19 @@ Before delegating implementation:
 ## Beads workflow
 
 ```bash
-bv --robot-triage --format toon       # prioritised queue (top = next)
-                                      # also: --format json, or BV_OUTPUT_FORMAT
+bv --robot-next  --format toon        # single highest-priority ready task
+bv --robot-triage --format toon       # full prioritised queue (planning view)
+                                      # both: --format json, or BV_OUTPUT_FORMAT
                                       # NB: selfreview tasks are NOT returned —
-                                      # find or create the pair for each main task
+                                      # find or create the pair for each main
 bd show <id>                          # full context
 bd update <id> --claim                # claim it (in_progress)
 # … implement …
-bd close <id>                         # done
-bd sync                               # export jsonl (push only if asked)
+bd close <id>                         # done — commiter runs this in step 4
+bd sync                               # export jsonl after ANY bd mutation
+                                      # (close/create/update); commiter runs
+                                      # this before `git add` so the .beads/
+                                      # delta ships in the same commit
 ```
 
 Fall back to `bd ready` only if `bv` is unavailable.
