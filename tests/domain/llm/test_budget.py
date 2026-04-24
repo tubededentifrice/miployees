@@ -106,11 +106,32 @@ def _seed_ledger(
     period_end: datetime | None = None,
     now: datetime = _PINNED,
 ) -> BudgetLedger:
-    """Insert a :class:`BudgetLedger` row.
+    """Insert a :class:`BudgetLedger` row with scenario-specific overrides.
 
-    The workspace-create handler should seed this row in production
-    (§11 "Cap"); tests seed it directly because that handler hasn't
-    landed yet — see the cd-irng follow-up Beads task.
+    Production seeds its ledger via
+    :func:`app.auth.signup.provision_workspace_and_owner_seat` (cd-tubi),
+    which calls :func:`app.domain.llm.budget.new_ledger_row` so every
+    fresh workspace lands a ledger in the same transaction as the
+    :class:`~app.adapters.db.workspace.models.Workspace` row per §11
+    "Cap".
+
+    This helper deliberately stays around because the budget tests
+    below need to seed rows with a non-default ``cap_cents`` (e.g.
+    10-cent demo cap, 100 000-cent concurrency stress cap), a
+    pre-populated ``spent_cents`` (the "near-cap" refusal case —
+    :class:`TestCheckBudget.test_refuses_when_sum_exceeds_cap`), or a
+    custom ``period_start / period_end`` (:class:`Test30DayWindow`'s
+    "seed a stale window; refresh rolls it forward"). The
+    :func:`new_ledger_row` seam is intentionally pinned to the
+    fresh-workspace shape (zero spend, ``[now, now+30d]`` rolling
+    window) — widening it to accept every test fixture's knobs would
+    leak test-only parameters into the prod signup call site, which
+    is exactly the coupling the ledger seam exists to prevent.
+
+    The trailing ``[now-30d, now]`` default here is a legacy of the
+    pre-cd-tubi scaffolding (tests seed "the 30 days ending now" to
+    pre-populate ``spent_cents``); callers that care about the exact
+    bounds override explicitly.
     """
     start = (
         period_start if period_start is not None else now - timedelta(days=WINDOW_DAYS)

@@ -24,6 +24,7 @@ __all__ = [
     "FREE_TIER_DEFAULTS",
     "seed_free_tier_10pct",
     "seed_free_tier_quota",
+    "tight_cap_cents",
 ]
 
 
@@ -78,3 +79,29 @@ def seed_free_tier_10pct() -> dict[str, int]:
         scaled = int(value * _TIGHT_CAP_FRACTION)
         tightened[key] = max(scaled, 1)
     return tightened
+
+
+def tight_cap_cents(full_cap_cents: int) -> int:
+    """Return the tight-cap value (§03) for a given full-tier ceiling.
+
+    Used by the signup flow to scale an operator-overridden LLM budget
+    cap (e.g. :attr:`app.capabilities.DeploymentSettings.
+    llm_default_budget_cents_30d`) by the same 10 % fraction
+    :func:`seed_free_tier_10pct` applies to ``workspace.quota_json``,
+    so the ledger row (§11 "Cap") and the quota blob always agree on
+    the number the workspace runs at until it reaches
+    ``verification_state='human_verified'``.
+
+    ``full_cap_cents = 0`` round-trips to ``0`` — a deployment that
+    hard-disables LLMs by setting the full-tier cap to zero keeps the
+    tight cap at zero too, rather than silently promoting it to 1
+    cent (which would ostensibly allow ~one unpriced call through).
+    Non-zero values floor at 1 cent so a sub-threshold override
+    doesn't silently lock the workspace out of every LLM call — this
+    matches the :func:`seed_free_tier_10pct` convention for the
+    other quota knobs.
+    """
+    if full_cap_cents <= 0:
+        return 0
+    scaled = int(full_cap_cents * _TIGHT_CAP_FRACTION)
+    return max(scaled, 1)

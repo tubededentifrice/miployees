@@ -75,7 +75,12 @@ from app.auth._throttle import Throttle
 from app.auth.keys import derive_subkey
 from app.capabilities import Capabilities
 from app.config import Settings, get_settings
-from app.domain.plans import seed_free_tier_10pct
+from app.domain.llm.budget import new_ledger_row
+from app.domain.plans import (
+    FREE_TIER_DEFAULTS,
+    seed_free_tier_10pct,
+    tight_cap_cents,
+)
 from app.tenancy import (
     InvalidSlug,
     WorkspaceContext,
@@ -88,6 +93,7 @@ from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
 
 __all__ = [
+    "FALLBACK_CAP_CENTS",
     "CompletedSignup",
     "HomoglyphCollision",
     "SignupAttemptExpired",
@@ -131,6 +137,31 @@ _ORPHAN_CUTOFF: Final[timedelta] = timedelta(hours=1)
 # nonce row hash the same email with the same subkey, so abuse
 # correlation joins without a re-derivation.
 _HKDF_PURPOSE: Final[str] = "magic-link"
+
+
+# Default cap (US cents) seeded onto the :class:`BudgetLedger` row when
+# :func:`provision_workspace_and_owner_seat` is called without a
+# :class:`Capabilities` envelope — dev-login + direct test harness
+# callers that don't carry one in hand. Matches the factory default on
+# :class:`~app.capabilities.DeploymentSettings.llm_default_budget_cents_30d`
+# and :data:`app.domain.plans.FREE_TIER_DEFAULTS['llm_budget_cents_30d']`
+# so a freshly-minted deployment, a freshly-minted workspace, and the
+# fallback seam all start with the same 5.00 USD **full-tier** ceiling.
+# §11 "Cap" pins the prod default; §24 "Demo mode overrides" shifts it
+# to 10 cents via the ``deployment_setting`` row that cd-xuk2 installs
+# on demo bootstrap — no code change here once that lands, since the
+# capabilities envelope reads it live.
+#
+# **Tight-cap scaling.** §03 "Tight initial caps" keeps a freshly-
+# signed-up workspace at 10 % of its plan's full ceiling until it
+# reaches ``verification_state='human_verified'``. The ledger seed
+# actually written by :func:`provision_workspace_and_owner_seat` is
+# ``tight_cap_cents(FALLBACK_CAP_CENTS)`` — 50 cents — so the ledger
+# (§11 "Cap") and ``workspace.quota_json['llm_budget_cents_30d']``
+# (both seeded here) agree on the number the workspace runs at. An
+# abusive freshly-signed-up workspace cannot burn the full free-tier
+# cap until a human operator lifts the tight-cap gate.
+FALLBACK_CAP_CENTS: Final[int] = FREE_TIER_DEFAULTS["llm_budget_cents_30d"]
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +862,7 @@ def provision_workspace_and_owner_seat(
     now: datetime,
     clock: Clock | None = None,
     workspace_name: str | None = None,
+    capabilities: Capabilities | None = None,
 ) -> WorkspaceContext:
     """Create the workspace, first user, membership, four system groups.
 
@@ -851,6 +883,21 @@ def provision_workspace_and_owner_seat(
     5. :func:`seed_system_permission_groups` — the three empty-membership
        scaffolding groups (``managers``, ``all_workers``,
        ``all_clients``).
+    6. :class:`~app.adapters.db.llm.models.BudgetLedger` — the rolling
+       30-day LLM spend envelope (§11 "Cap": *"This row is inserted in
+       the same transaction as the workspace row."*). The cap comes
+       from ``capabilities.settings.llm_default_budget_cents_30d`` when
+       a :class:`Capabilities` envelope is provided; else
+       :data:`FALLBACK_CAP_CENTS`. Whichever value the caller supplies
+       is then scaled by :func:`~app.domain.plans.tight_cap_cents`
+       (§03 "Tight initial caps": 10 % of the plan ceiling until the
+       workspace reaches ``verification_state='human_verified'``), so
+       the ledger ``cap_cents`` lines up with
+       ``workspace.quota_json['llm_budget_cents_30d']`` — the quota
+       blob and the ledger always report the same number. Without this
+       row every :func:`~app.domain.llm.budget.check_budget` call fails
+       closed (logs ``llm.budget.ledger_missing``) and refuses every
+       LLM call the workspace might make.
 
     Returns the :class:`WorkspaceContext` built for the owners-
     bootstrap audit row so callers can reuse its ``audit_correlation_id``
@@ -860,6 +907,13 @@ def provision_workspace_and_owner_seat(
     ``workspace_name`` defaults to ``slug`` — matches signup's current
     behaviour (the UI's workspace picker needs *something* readable on
     day 1). Callers that want a distinct display name override.
+
+    ``capabilities`` is optional so the dev-login path and direct
+    test-harness callers that don't already hold one can use the
+    fallback seed without wiring a probe. Production signup always
+    threads its live :class:`Capabilities` through so an operator's
+    ``deployment_setting.llm_default_budget_cents_30d`` override takes
+    effect on the very first workspace created after the admin mutation.
 
     Shared between :func:`complete_signup` and
     :mod:`scripts.dev_login` (cd-w1ia) so both pipe their greenfield
@@ -876,6 +930,20 @@ def provision_workspace_and_owner_seat(
     # to filter against. User / UserWorkspace / seed_* likewise sit
     # before the context is resolved, then seed_owners_system_group
     # emits its audit row under the freshly-built real_ctx.
+    full_cap_cents = (
+        capabilities.settings.llm_default_budget_cents_30d
+        if capabilities is not None
+        else FALLBACK_CAP_CENTS
+    )
+    # §03 "Tight initial caps": freshly-signed-up workspaces run at
+    # 10 % of the deployment's full LLM cap until human verification.
+    # Scaling here (rather than inside :func:`new_ledger_row`) keeps
+    # the domain helper agnostic of the verification-state policy —
+    # callers that want to seed a row at the full cap (e.g. an admin
+    # "bootstrap existing workspace" script for a row that *was*
+    # verified) call :func:`new_ledger_row` directly with the full
+    # value, and the policy stays in the signup/dev-login seam.
+    cap_cents = tight_cap_cents(full_cap_cents)
     with tenant_agnostic():
         workspace = Workspace(
             id=workspace_id,
@@ -891,6 +959,25 @@ def provision_workspace_and_owner_seat(
             created_at=now,
         )
         session.add(workspace)
+        session.flush()
+
+        # Seed the rolling-30d LLM budget ledger in the same
+        # transaction as the workspace row (§11 "Cap"). A fresh
+        # workspace without this row refuses every LLM call — the
+        # ledger seam (:mod:`app.domain.llm.budget`) fails closed on
+        # missing rows, logs ``llm.budget.ledger_missing``, and the
+        # seeding bug goes undetected until an operator tries to use
+        # an agent. Building the row through the domain helper keeps
+        # the ledger shape (period bounds, zero spend, current cap)
+        # single-sourced.
+        session.add(
+            new_ledger_row(
+                workspace_id=workspace_id,
+                cap_cents=cap_cents,
+                now=now,
+                clock=clock,
+            )
+        )
         session.flush()
 
         user = User(
@@ -1029,6 +1116,7 @@ def complete_signup(
         timezone=timezone,
         now=resolved_now,
         clock=clock,
+        capabilities=capabilities,
     )
 
     # Passkey finish — verifies the attestation, inserts the credential

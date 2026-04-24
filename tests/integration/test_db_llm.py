@@ -1463,6 +1463,98 @@ class TestBudgetLedgerCrud:
             reset_current(ctx_token)
 
 
+class TestProvisionWorkspaceSeedsBudgetLedger:
+    """cd-tubi: `provision_workspace_and_owner_seat` seeds the ledger row.
+
+    End-to-end check against the real migrated schema: a call to the
+    shared provisioning helper lands a :class:`BudgetLedger` row in
+    the same transaction as the workspace + user + membership rows,
+    with ``cap_cents`` threaded from the passed-in
+    :class:`Capabilities`. Guards the §11 "Cap" invariant at the
+    integration layer so a future migration that adds a NOT NULL
+    column without a default still catches the seeding path.
+    """
+
+    def test_provision_workspace_seeds_budget_ledger_row(
+        self,
+        db_session: Session,
+        filtered_factory: sessionmaker[Session],
+    ) -> None:
+        from app.auth.signup import provision_workspace_and_owner_seat
+        from app.capabilities import (
+            Capabilities,
+            DeploymentSettings,
+            Features,
+        )
+        from app.util.ulid import new_ulid
+
+        caps = Capabilities(
+            features=Features(
+                rls=False,
+                fulltext_search=False,
+                concurrent_writers=False,
+                object_storage=False,
+                wildcard_subdomains=False,
+                email_bounce_webhooks=False,
+                llm_voice_input=False,
+            ),
+            settings=DeploymentSettings(
+                signup_enabled=True,
+                captcha_required=False,
+                # 250-cent full cap → 25-cent tight cap after the
+                # §03 "Tight initial caps" scaling in the signup seam.
+                llm_default_budget_cents_30d=250,
+            ),
+        )
+        workspace_id = new_ulid()
+        user_id = new_ulid()
+
+        provision_workspace_and_owner_seat(
+            db_session,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            slug="tubi-int",
+            email_lower="tubi-int@example.com",
+            display_name="Tubi Int",
+            timezone="UTC",
+            now=_PINNED,
+            capabilities=caps,
+        )
+        db_session.flush()
+
+        # The workspace row is the tenancy anchor for any tenant-filtered
+        # read of :class:`BudgetLedger` — set a ctx before the SELECT
+        # lands so the ORM filter has a workspace_id to bind against.
+        ctx_token = set_current(
+            WorkspaceContext(
+                workspace_id=workspace_id,
+                workspace_slug="tubi-int",
+                actor_id=user_id,
+                actor_kind="user",
+                actor_grant_role="manager",
+                actor_was_owner_member=True,
+                audit_correlation_id=new_ulid(),
+            )
+        )
+        try:
+            ledger = db_session.scalars(
+                select(BudgetLedger).where(BudgetLedger.workspace_id == workspace_id)
+            ).one()
+            # 250 full → 25 tight (§03).
+            assert ledger.cap_cents == 25
+            assert ledger.spent_cents == 0
+            # 30-day rolling window anchored on provisioning time;
+            # :func:`_window_bounds(now)` returns ``[now-30d, now]``.
+            assert ledger.period_end.replace(tzinfo=None) - ledger.period_start.replace(
+                tzinfo=None
+            ) == timedelta(days=30)
+            assert ledger.period_end.replace(tzinfo=None) == _PINNED.replace(
+                tzinfo=None
+            )
+        finally:
+            reset_current(ctx_token)
+
+
 class TestCheckConstraints:
     """CHECK constraints reject values outside the v1 enums."""
 

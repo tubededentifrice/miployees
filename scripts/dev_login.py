@@ -69,8 +69,10 @@ from app.adapters.db.session import make_uow
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.audit import write_audit
 from app.auth.session import SessionIssue, issue
-from app.auth.signup import provision_workspace_and_owner_seat
+from app.auth.signup import FALLBACK_CAP_CENTS, provision_workspace_and_owner_seat
 from app.config import get_settings
+from app.domain.llm.budget import new_ledger_row
+from app.domain.plans import seed_free_tier_10pct, tight_cap_cents
 from app.tenancy import WorkspaceContext, tenant_agnostic
 from app.util.clock import SystemClock
 from app.util.ulid import new_ulid
@@ -367,20 +369,34 @@ def _resolve_or_create_workspace(
     owner_user_id: str,
     now: datetime,
 ) -> str:
-    """Return the workspace id, seeding a fresh one + groups if missing.
+    """Return the workspace id, seeding a fresh one + groups + ledger if missing.
 
     When the workspace is missing we can't reuse
     :func:`provision_workspace_and_owner_seat` (it also inserts a
     :class:`User` row), so we replay the workspace-only half: insert
-    the :class:`Workspace` row and call the same two seed helpers that
-    the shared provisioning path uses, which take care of the
-    ``owners`` group + sole member + ``manager`` role grant + the
-    three empty non-owners groups + the
+    the :class:`Workspace` row, the :class:`BudgetLedger` row, and
+    call the same two seed helpers the shared provisioning path uses,
+    which take care of the ``owners`` group + sole member +
+    ``manager`` role grant + the three empty non-owners groups + the
     ``workspace.owners_bootstrapped`` audit row.
+
+    **Ledger seed.** Mirrors the
+    :func:`provision_workspace_and_owner_seat` invariant (§11 "Cap":
+    *"This row is inserted in the same transaction as the workspace
+    row."*): every fresh workspace — including an existing-user /
+    fresh-workspace dev-login — lands a
+    :class:`~app.adapters.db.llm.models.BudgetLedger` row at the tight
+    cap, so :func:`~app.domain.llm.budget.check_budget` never
+    fail-closes on ``llm.budget.ledger_missing`` for a dev-minted
+    workspace. ``quota_json`` seeds the full tight blob for parity
+    with the signup path (both the ledger ``cap_cents`` and the
+    ``llm_budget_cents_30d`` quota key land on the same 10 %-of-plan
+    number).
     """
     if existing is not None:
         return existing.id
     workspace_id = new_ulid()
+    cap_cents = tight_cap_cents(FALLBACK_CAP_CENTS)
     # justification: seeding the tenancy anchor before any ctx exists;
     # the ORM tenant filter has nothing to apply.
     with tenant_agnostic():
@@ -390,8 +406,19 @@ def _resolve_or_create_workspace(
                 slug=slug,
                 name=slug,
                 plan="free",
-                quota_json={},
+                quota_json=seed_free_tier_10pct(),
                 created_at=now,
+            )
+        )
+        session.flush()
+        # Seed the rolling-30d LLM budget ledger in the same
+        # transaction as the workspace row — parity with
+        # :func:`provision_workspace_and_owner_seat`; §11 "Cap".
+        session.add(
+            new_ledger_row(
+                workspace_id=workspace_id,
+                cap_cents=cap_cents,
+                now=now,
             )
         )
         session.flush()
@@ -484,7 +511,25 @@ def mint_session(
         if existing_workspace is None and existing_user is None:
             # Both fresh — one call to the shared provisioning helper
             # (workspace + user + user_workspace + four groups +
-            # owners seat + ``workspace.owners_bootstrapped`` audit).
+            # owners seat + ``workspace.owners_bootstrapped`` audit +
+            # budget ledger).
+            #
+            # ``capabilities`` is intentionally omitted here. Dev-login
+            # is a script-only escape hatch (§03) whose caller is the
+            # host operator, not an end user walking the self-serve
+            # flow; it has no request-scoped capabilities envelope
+            # threaded in from the FastAPI app. The provisioning seam
+            # falls back to
+            # :data:`~app.auth.signup.FALLBACK_CAP_CENTS`, which
+            # matches the factory default on
+            # :class:`~app.capabilities.DeploymentSettings.
+            # llm_default_budget_cents_30d` — acceptable for a dev-only
+            # path. An operator-override deployment that wants its
+            # ``deployment_setting.llm_default_budget_cents_30d``
+            # change reflected in dev-minted workspaces today must run
+            # ``crewday admin budget set-cap`` after dev-login; cd-w1ia
+            # tracks the follow-up to load :class:`Capabilities` from
+            # the live DB here and route it through.
             user_id = new_ulid()
             workspace_id = new_ulid()
             provision_workspace_and_owner_seat(

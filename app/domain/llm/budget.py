@@ -106,6 +106,7 @@ __all__ = [
     "check_budget",
     "default_pricing_table",
     "estimate_cost_cents",
+    "new_ledger_row",
     "record_usage",
     "refresh_aggregate",
     "reset_unknown_model_dedup_for_tests",
@@ -455,6 +456,85 @@ def estimate_cost_cents(
     # always within one cent of the real cost.
     total = prompt_tokens * input_per_million + max_output_tokens * output_per_million
     return total // 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# Ledger seeding — single source of truth for "what a fresh row looks like"
+# ---------------------------------------------------------------------------
+
+
+def new_ledger_row(
+    *,
+    workspace_id: str,
+    cap_cents: int,
+    now: datetime,
+    clock: Clock | None = None,
+) -> BudgetLedger:
+    """Build a freshly-seeded :class:`BudgetLedger` for ``workspace_id``.
+
+    Called from the workspace-create path (§11 "Cap": *"This row is
+    inserted in the same transaction as the workspace row."*) and from
+    the test seeding helper. The shape is spec-pinned:
+
+    * ``period_start = now - 30d``; ``period_end = now`` — the rolling
+      30-day window anchored on ``now``, matching the bounds
+      :func:`_window_bounds` returns everywhere else in this module
+      (``[now-30d, now)``). Seeding a forward-facing ``[now, now+30d]``
+      window would leave the ledger row claiming a future window until
+      the next :func:`refresh_aggregate` tick (60 s later) overwrote
+      it — harmless for :func:`check_budget` today (it ignores the
+      bounds and only reads ``spent_cents``/``cap_cents``) but actively
+      misleading for any reader that trusts the bounds (the
+      ``period_end.desc()`` selector in :func:`_load_ledger_row`, the
+      admin-usage window label cd-el09 will surface, the unique-index
+      on ``(workspace_id, period_start, period_end)``). Aligning the
+      seed with :func:`_window_bounds` keeps the one invariant every
+      consumer shares.
+    * ``spent_cents = 0`` — a fresh workspace has zero spend on record.
+    * ``cap_cents = cap_cents`` — passed in by the caller. Prod seeds
+      50 cents (10 % of the 5.00 USD free-tier default — §03 "Tight
+      initial caps" keeps a fresh workspace at one-tenth its plan's
+      ceiling until the workspace reaches
+      ``verification_state='human_verified'``); demo seeds 1 cent per
+      §24. The deployment-mode switch lives on
+      :attr:`app.capabilities.DeploymentSettings.llm_default_budget_cents_30d`
+      — cd-xuk2 (demo bootstrap) writes ``llm_default_budget_cents_30d
+      = 10`` into the ``deployment_setting`` row and the signup path
+      scales that by the tight-cap fraction; no code change is needed
+      here when cd-xuk2 lands. The ledger's ``cap_cents`` and
+      ``workspace.quota_json['llm_budget_cents_30d']`` must agree on
+      the same number — the signup seam scales both via the single
+      :func:`app.domain.plans.seed_free_tier_10pct` helper so a
+      diverging cap (meter says unlimited while quota says 10 %, or
+      vice versa) is impossible by construction.
+
+    Returns the (unpersisted) :class:`BudgetLedger` ORM row — the
+    caller is responsible for ``session.add()`` + ``session.flush()``
+    inside the same transaction as the workspace row so the insert
+    shares the outer commit boundary.
+
+    Kept public (not underscore-prefixed) so the shape stays
+    importable from any caller that seeds a ledger. The primary call
+    site today is :func:`app.auth.signup.provision_workspace_and_owner_seat`
+    (prod signup + dev-login). The domain-test helper
+    ``tests.domain.llm.test_budget._seed_ledger`` deliberately takes
+    the hand-assembled path because its tests need to override
+    ``spent_cents`` / ``period_start`` / ``period_end`` to exercise
+    "near-cap" and "stale-window" scenarios — widening this helper
+    with those knobs would leak test-only parameters into the prod
+    signup call site. A third caller — the admin "bootstrap existing
+    workspace" script — is tracked in cd-tubi's follow-up notes.
+    """
+    period_start, period_end = _window_bounds(now)
+    return BudgetLedger(
+        id=new_ulid(clock=clock),
+        workspace_id=workspace_id,
+        period_start=period_start,
+        period_end=period_end,
+        spent_cents=0,
+        cap_cents=cap_cents,
+        updated_at=now,
+    )
 
 
 # ---------------------------------------------------------------------------

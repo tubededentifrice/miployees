@@ -37,8 +37,10 @@ from app.adapters.db.authz.models import (
 from app.adapters.db.base import Base
 from app.adapters.db.identity.models import Session as SessionRow
 from app.adapters.db.identity.models import User
+from app.adapters.db.llm.models import BudgetLedger
 from app.adapters.db.session import make_engine
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
+from app.auth.signup import FALLBACK_CAP_CENTS
 from scripts import dev_login
 
 # ---------------------------------------------------------------------------
@@ -363,6 +365,101 @@ class TestMintSessionRoleSurface:
                 group = s.get(PermissionGroup, member.group_id)
                 assert group is not None
                 assert group.slug != "owners"
+
+
+# ---------------------------------------------------------------------------
+# Budget ledger seed — cd-tubi
+# ---------------------------------------------------------------------------
+
+
+class TestMintSessionBudgetLedger:
+    """cd-tubi: dev-login greenfield workspaces seed a budget ledger row.
+
+    The dev-login path calls :func:`provision_workspace_and_owner_seat`
+    without a :class:`Capabilities` envelope, so the fallback cap fires
+    (``FALLBACK_CAP_CENTS`` = 500, scaled to 50 by §03 "Tight initial
+    caps"). These tests pin the ledger-seed invariant on **every**
+    dev-minted workspace path — greenfield (both user + workspace
+    fresh) and the existing-user / fresh-workspace fallback — so a
+    future refactor of the provisioning seam never silently drops the
+    seed from either path; otherwise dev-minted workspaces would
+    refuse LLM calls until someone hand-seeded the row.
+    """
+
+    def test_mint_session_fresh_seeds_budget_ledger_with_tight_cap(
+        self,
+        patched_uow: sessionmaker[Session],
+        patched_settings: _config_mod.Settings,
+    ) -> None:
+        """Greenfield dev-login seeds the ledger at the tight 10 % cap."""
+        from app.domain.plans import tight_cap_cents
+
+        result = dev_login.mint_session(
+            email="budget@dev.local", workspace_slug="budget-ws"
+        )
+        assert result.workspace_created is True
+
+        with patched_uow() as s:
+            workspace = s.scalars(
+                select(Workspace).where(Workspace.slug == "budget-ws")
+            ).one()
+            ledger = s.scalars(
+                select(BudgetLedger).where(BudgetLedger.workspace_id == workspace.id)
+            ).one()
+            # §03 "Tight initial caps": 10 % of the 500-cent fallback.
+            assert ledger.cap_cents == tight_cap_cents(FALLBACK_CAP_CENTS)
+            assert ledger.cap_cents == 50
+            assert ledger.spent_cents == 0
+            # quota_json agrees with the ledger cap — the two views of
+            # the budget ceiling must never drift.
+            assert workspace.quota_json["llm_budget_cents_30d"] == ledger.cap_cents
+
+    def test_mint_session_existing_user_fresh_workspace_also_seeds_ledger(
+        self,
+        patched_uow: sessionmaker[Session],
+        patched_settings: _config_mod.Settings,
+    ) -> None:
+        """The existing-user / fresh-workspace fallback path also seeds the ledger.
+
+        :func:`_resolve_or_create_workspace` replays the workspace-only
+        half of :func:`provision_workspace_and_owner_seat`; before
+        cd-wpyt it silently skipped the ledger-seed step, so dev-login
+        on an existing user joining a new slug left the workspace
+        with no :class:`BudgetLedger` row — every
+        :func:`~app.domain.llm.budget.check_budget` call on that
+        workspace would then fail closed on ``llm.budget.ledger_missing``
+        until an operator manually seeded the row. Pin the invariant.
+        """
+        from app.domain.plans import tight_cap_cents
+
+        # First call: greenfield user + workspace A.
+        first = dev_login.mint_session(
+            email="shared@dev.local", workspace_slug="dev-existing-a"
+        )
+        assert first.user_created is True
+        assert first.workspace_created is True
+
+        # Second call: SAME user, DIFFERENT workspace slug. Exercises
+        # the ``existing_user is not None and existing_workspace is None``
+        # branch in ``mint_session`` — the one that calls into
+        # :func:`_resolve_or_create_workspace` on the fresh-slug side.
+        second = dev_login.mint_session(
+            email="shared@dev.local", workspace_slug="dev-existing-b"
+        )
+        assert second.user_created is False
+        assert second.workspace_created is True
+
+        with patched_uow() as s:
+            ws_b = s.scalars(
+                select(Workspace).where(Workspace.slug == "dev-existing-b")
+            ).one()
+            ledger_b = s.scalars(
+                select(BudgetLedger).where(BudgetLedger.workspace_id == ws_b.id)
+            ).one()
+            assert ledger_b.cap_cents == tight_cap_cents(FALLBACK_CAP_CENTS)
+            assert ledger_b.cap_cents == 50
+            assert ledger_b.spent_cents == 0
+            assert ws_b.quota_json["llm_budget_cents_30d"] == ledger_b.cap_cents
 
 
 # ---------------------------------------------------------------------------

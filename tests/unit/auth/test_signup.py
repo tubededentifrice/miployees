@@ -45,6 +45,7 @@ from app.adapters.db.identity.models import (
     User,
     WebAuthnChallenge,
 )
+from app.adapters.db.llm.models import BudgetLedger
 from app.adapters.db.session import make_engine
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.api.deps import db_session
@@ -1398,6 +1399,225 @@ class TestPruneStaleSignups:
         assert orphan_a.id not in remaining
         assert orphan_b.id in remaining
         assert kept.id in remaining
+
+
+# ---------------------------------------------------------------------------
+# provision_workspace_and_owner_seat — budget ledger seeding (cd-tubi)
+# ---------------------------------------------------------------------------
+
+
+def _capabilities_with_cap(cap_cents: int) -> Capabilities:
+    """Build a :class:`Capabilities` pinned at ``cap_cents``."""
+    return Capabilities(
+        features=Features(
+            rls=False,
+            fulltext_search=False,
+            concurrent_writers=False,
+            object_storage=False,
+            wildcard_subdomains=False,
+            email_bounce_webhooks=False,
+            llm_voice_input=False,
+        ),
+        settings=DeploymentSettings(
+            signup_enabled=True,
+            captcha_required=False,
+            llm_default_budget_cents_30d=cap_cents,
+        ),
+    )
+
+
+class TestProvisionSeedsBudgetLedger:
+    """cd-tubi: every fresh workspace lands a :class:`BudgetLedger` row.
+
+    Before cd-tubi the ledger was seeded ad-hoc in tests but never by
+    the actual provisioning path — :func:`check_budget` fell closed
+    on every call (§11 "Cap": *"This row is inserted in the same
+    transaction as the workspace row."*). These tests pin the
+    invariant at the `provision_workspace_and_owner_seat` seam so
+    both self-serve signup (``complete_signup``) and the dev-login
+    script inherit the behaviour for free.
+    """
+
+    def test_provision_seeds_budget_ledger_with_default_cap(
+        self, session: Session
+    ) -> None:
+        """Without ``capabilities``, the ledger seeds at the tight-cap fraction.
+
+        §03 "Tight initial caps": freshly-signed-up workspaces run at
+        10 % of the plan ceiling until human verification. The ledger
+        ``cap_cents`` and ``workspace.quota_json['llm_budget_cents_30d']``
+        must therefore agree on the scaled number (50 cents, not 500)
+        — otherwise an abusive signup could burn the full free-tier
+        budget the spec pins at the verified state.
+        """
+        from app.domain.plans import tight_cap_cents
+
+        workspace_id = "01HWAWSTUBI00000000000FLBK"
+        user_id = "01HWAUSRTUBI000000000FLBKU"
+
+        signup.provision_workspace_and_owner_seat(
+            session,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            slug="tubi-fallback",
+            email_lower="fallback@example.com",
+            display_name="Fallback",
+            timezone="UTC",
+            now=_PINNED,
+        )
+
+        ledger = session.scalars(
+            select(BudgetLedger).where(BudgetLedger.workspace_id == workspace_id)
+        ).one()
+        # FALLBACK_CAP_CENTS is the full-tier ceiling (500); the signup
+        # seam scales it to 50 before writing the row.
+        assert signup.FALLBACK_CAP_CENTS == 500
+        assert ledger.cap_cents == tight_cap_cents(signup.FALLBACK_CAP_CENTS)
+        assert ledger.cap_cents == 50
+        # Ledger ``cap_cents`` matches the quota blob's entry — both the
+        # ledger (§11 "Cap") and ``workspace.quota_json`` now agree on
+        # the same number.
+        workspace = session.scalars(
+            select(Workspace).where(Workspace.id == workspace_id)
+        ).one()
+        assert workspace.quota_json["llm_budget_cents_30d"] == ledger.cap_cents
+        assert ledger.spent_cents == 0
+        # 30-day rolling window; :func:`_window_bounds(now)` returns
+        # ``[now-30d, now]`` so the freshly-seeded row's bounds match
+        # what :func:`refresh_aggregate` would write next. Naive compare
+        # survives SQLite's tzinfo strip on round-trip.
+        assert ledger.period_end.replace(tzinfo=None) - ledger.period_start.replace(
+            tzinfo=None
+        ) == timedelta(days=30)
+        assert ledger.period_end.replace(tzinfo=None) == _PINNED.replace(tzinfo=None)
+        assert ledger.period_start.replace(tzinfo=None) == (
+            _PINNED - timedelta(days=30)
+        ).replace(tzinfo=None)
+
+    def test_provision_seeds_budget_ledger_with_capabilities_override(
+        self, session: Session
+    ) -> None:
+        """``Capabilities`` with a 10-cent full cap seeds tight 1-cent ledger.
+
+        §03 scales the operator-supplied cap too — the operator's
+        ``deployment_setting.llm_default_budget_cents_30d`` is the full
+        post-verification ceiling; the freshly-signed-up workspace
+        starts at 10 % of it (floored at 1 cent).
+        """
+        workspace_id = "01HWAWSTUBI000000000000DEM"
+        user_id = "01HWAUSRTUBI00000000000DEM"
+        caps = _capabilities_with_cap(10)
+
+        signup.provision_workspace_and_owner_seat(
+            session,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            slug="tubi-demo",
+            email_lower="demo@example.com",
+            display_name="Demo",
+            timezone="UTC",
+            now=_PINNED,
+            capabilities=caps,
+        )
+
+        ledger = session.scalars(
+            select(BudgetLedger).where(BudgetLedger.workspace_id == workspace_id)
+        ).one()
+        # 10-cent full cap → 1-cent tight cap (floored).
+        assert ledger.cap_cents == 1
+        assert ledger.spent_cents == 0
+
+    def test_provision_budget_ledger_rolls_back_on_workspace_failure(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+        capabilities_enabled: Capabilities,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ledger insert shares the outer UoW — rolls back on any downstream failure.
+
+        Induces a passkey-verification failure after
+        :func:`provision_workspace_and_owner_seat` has already inserted
+        the ledger row and asserts that the row is NOT visible
+        post-rollback. Proves the same-transaction atomicity guarantee
+        §11 "Cap" pins.
+        """
+        _stub_verify_registration(monkeypatch, fail=True)
+        ssn = _start_and_verify(
+            session, mailer, throttle, settings, capabilities_enabled
+        )
+        challenge_id = _make_signup_challenge(
+            session,
+            signup_attempt_id=ssn.signup_attempt_id,
+            now=_PINNED + timedelta(minutes=1),
+        )
+
+        with pytest.raises(passkey.InvalidRegistration):
+            signup.complete_signup(
+                session,
+                signup_attempt_id=ssn.signup_attempt_id,
+                display_name="Owner",
+                timezone="Pacific/Auckland",
+                challenge_id=challenge_id,
+                passkey_payload=_dummy_credential(),
+                ip="127.0.0.1",
+                capabilities=capabilities_enabled,
+                now=_PINNED + timedelta(minutes=2),
+                settings=settings,
+            )
+        session.rollback()
+
+        # Ledger, workspace, user, membership — none should have landed.
+        assert session.scalars(select(BudgetLedger)).all() == []
+        assert session.scalars(select(Workspace)).all() == []
+
+    def test_complete_signup_threads_capabilities_cap_to_ledger(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``complete_signup`` forwards ``capabilities`` through to the seed.
+
+        The prod path is the one that matters: an operator's
+        ``deployment_setting.llm_default_budget_cents_30d`` override
+        takes effect on the very first workspace created after the
+        admin mutation (the :class:`Capabilities` envelope is the
+        single source of truth the provisioning seam reads). The
+        operator's 420-cent full cap lands as 42 cents on the ledger
+        per §03 "Tight initial caps" (10 %).
+        """
+        _stub_verify_registration(monkeypatch)
+        # 420 cents full cap → 42 cents tight ledger (10 %).
+        caps = _capabilities_with_cap(420)
+        ssn = _start_and_verify(session, mailer, throttle, settings, caps)
+        challenge_id = _make_signup_challenge(
+            session,
+            signup_attempt_id=ssn.signup_attempt_id,
+            now=_PINNED + timedelta(minutes=1),
+        )
+
+        result = signup.complete_signup(
+            session,
+            signup_attempt_id=ssn.signup_attempt_id,
+            display_name="Owner",
+            timezone="UTC",
+            challenge_id=challenge_id,
+            passkey_payload=_dummy_credential(),
+            ip="127.0.0.1",
+            capabilities=caps,
+            now=_PINNED + timedelta(minutes=2),
+            settings=settings,
+        )
+
+        ledger = session.scalars(
+            select(BudgetLedger).where(BudgetLedger.workspace_id == result.workspace_id)
+        ).one()
+        assert ledger.cap_cents == 42
 
 
 # ---------------------------------------------------------------------------
