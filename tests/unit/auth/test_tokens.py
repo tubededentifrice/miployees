@@ -36,6 +36,7 @@ from app.adapters.db.identity.models import ApiToken
 from app.adapters.db.session import make_engine
 from app.adapters.db.workspace.models import Workspace
 from app.auth.tokens import (
+    _AGNOSTIC_WORKSPACE_ID,
     InvalidToken,
     MintedToken,
     TokenExpired,
@@ -52,6 +53,7 @@ from app.auth.tokens import (
     verify,
 )
 from app.tenancy import WorkspaceContext, tenant_agnostic
+from app.util.redact import redact
 from app.util.ulid import new_ulid
 from tests.factories.identity import bootstrap_user
 
@@ -1236,3 +1238,246 @@ class TestKindValidation:
                 expires_at=_PINNED + timedelta(days=90),
                 now=_PINNED,
             )
+
+
+# ---------------------------------------------------------------------------
+# cd-t2su — tenant-agnostic audit seam for PAT mint / revoke
+# ---------------------------------------------------------------------------
+
+
+class TestPatAuditSeam:
+    """PAT mint + revoke land identity-scope audit rows (cd-t2su).
+
+    Spec §03 "API tokens" requires an audit row for every rotation /
+    revocation. PATs have no workspace, so they land on the tenant-
+    agnostic seam: ``workspace_id`` is the zero-ULID sentinel and
+    ``actor_id`` is the **real subject user** (so the ``/me`` audit
+    view can filter per-user without a JSON scan).
+    """
+
+    def test_personal_mint_writes_identity_audit_row(
+        self, db_session: Session, user: object
+    ) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        result = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="kitchen-printer",
+            scopes={"me.tasks:read": True, "me.bookings:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        audits = db_session.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "api_token.minted")
+            .where(AuditLog.entity_id == result.key_id)
+        ).all()
+        assert len(audits) == 1
+        row = audits[0]
+        assert row.entity_kind == "api_token"
+        assert row.workspace_id == _AGNOSTIC_WORKSPACE_ID
+        # The real subject user lands on the row itself so the
+        # ``/me`` audit view can filter ``actor_id = <user>`` without
+        # a JSON scan into ``diff``.
+        assert row.actor_id == user_id
+        assert row.actor_kind == "user"
+        assert isinstance(row.diff, dict)
+        assert row.diff["token_id"] == result.key_id
+        assert row.diff["kind"] == "personal"
+        assert row.diff["subject_user_id"] == user_id
+        # Scope keys serialise as a sorted list so a future readback
+        # is stable regardless of dict insertion order.
+        assert row.diff["scopes"] == ["me.bookings:read", "me.tasks:read"]
+        # Plaintext token must not appear anywhere in the diff.
+        _mip, _key_id, secret = result.token.split("_", 2)
+        assert secret not in repr(row.diff)
+        assert result.token not in repr(row.diff)
+
+    def test_personal_revoke_writes_identity_audit_row(
+        self, db_session: Session, user: object
+    ) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        result = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        revoke_time = _PINNED + timedelta(hours=2)
+        revoke_personal(
+            db_session,
+            token_id=result.key_id,
+            subject_user_id=user_id,
+            now=revoke_time,
+        )
+        audits = db_session.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "api_token.revoked")
+            .where(AuditLog.entity_id == result.key_id)
+        ).all()
+        assert len(audits) == 1
+        row = audits[0]
+        assert row.entity_kind == "api_token"
+        assert row.workspace_id == _AGNOSTIC_WORKSPACE_ID
+        assert row.actor_id == user_id
+        assert row.actor_kind == "user"
+        assert isinstance(row.diff, dict)
+        assert row.diff["token_id"] == result.key_id
+        assert row.diff["subject_user_id"] == user_id
+        assert row.diff["kind"] == "personal"
+        assert row.diff["at"] == revoke_time.isoformat()
+
+    def test_double_revoke_personal_writes_one_audit_row(
+        self, db_session: Session, user: object
+    ) -> None:
+        """Idempotent re-revoke must NOT write a second audit row.
+
+        Matches the workspace-side ``revoke`` precedent: one
+        revocation event per token lifetime. Total audit rows for
+        the token after mint + double-revoke is exactly two
+        (one mint + one revoke).
+        """
+        user_id = user.id  # type: ignore[attr-defined]
+        result = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        first = _PINNED + timedelta(hours=1)
+        second = _PINNED + timedelta(hours=2)
+        revoke_personal(
+            db_session,
+            token_id=result.key_id,
+            subject_user_id=user_id,
+            now=first,
+        )
+        revoke_personal(
+            db_session,
+            token_id=result.key_id,
+            subject_user_id=user_id,
+            now=second,
+        )
+        # ``revoked_at`` keeps the first time — second call is a no-op.
+        row = db_session.get(ApiToken, result.key_id)
+        assert row is not None
+        assert row.revoked_at is not None
+        assert _as_utc(row.revoked_at) == first
+
+        # Exactly one revoke audit row, exactly one mint audit row.
+        all_for_token = db_session.scalars(
+            select(AuditLog).where(AuditLog.entity_id == result.key_id)
+        ).all()
+        actions = sorted(r.action for r in all_for_token)
+        assert actions == ["api_token.minted", "api_token.revoked"]
+
+    def test_failed_revoke_writes_no_audit_row(
+        self, db_session: Session, user: object
+    ) -> None:
+        """An unknown / cross-user revoke raises and writes nothing."""
+        user_id = user.id  # type: ignore[attr-defined]
+        # Mint one PAT so the audit table isn't empty for unrelated reasons.
+        result = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        with pytest.raises(InvalidToken):
+            revoke_personal(
+                db_session,
+                token_id="01HWA00000000000000000NOPE",
+                subject_user_id=user_id,
+                now=_PINNED,
+            )
+        # No revoke row landed; only the mint row from the seed exists.
+        revokes = db_session.scalars(
+            select(AuditLog).where(AuditLog.action == "api_token.revoked")
+        ).all()
+        assert revokes == []
+        # Mint row still there to confirm the audit table is wired.
+        mints = db_session.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "api_token.minted")
+            .where(AuditLog.entity_id == result.key_id)
+        ).all()
+        assert len(mints) == 1
+
+    def test_workspace_mint_audit_still_lands_on_real_workspace(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        """Regression guard: workspace-scoped mints still land on ``ctx``.
+
+        cd-t2su added a tenant-agnostic branch under ``mint``; this
+        test asserts the workspace-scoped branch still writes to the
+        caller's real workspace (not the zero-ULID sentinel).
+        """
+        result = mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="ws-token",
+            scopes={"tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            now=_PINNED,
+        )
+        audits = db_session.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "api_token.minted")
+            .where(AuditLog.entity_id == result.key_id)
+        ).all()
+        assert len(audits) == 1
+        row = audits[0]
+        # Real workspace, not the agnostic sentinel.
+        assert row.workspace_id == ctx.workspace_id
+        assert row.workspace_id != _AGNOSTIC_WORKSPACE_ID
+        assert row.actor_id == ctx.actor_id
+
+    def test_prefix_survives_pii_redactor(self) -> None:
+        """The 8-char base32 ``prefix`` field must not be scrubbed.
+
+        The PII redactor (``app.util.redact``) runs over every audit
+        ``diff`` before persistence (``app.audit.write_audit``). The
+        ``prefix`` value is 8 chars of base32 (alphabet ``A-Z2-7``);
+        the credential-shape regexes require 32+ hex / 40+ base64url
+        chars, so an 8-char prefix is below every threshold and the
+        ``prefix`` key name is not in the sensitive-key token list.
+        Confirmed end-to-end here so a future redactor tweak that
+        widens the net trips this test instead of silently corrupting
+        the ``/me`` audit view.
+        """
+        sample_diff = {
+            "token_id": "01HWA00000000000000000PATX",
+            "subject_user_id": "01HWA00000000000000000USRX",
+            "label": "kitchen",
+            "prefix": "ABCD2345",  # exactly the shape mint() emits
+            "scopes": ["me.tasks:read"],
+            "kind": "personal",
+            "expires_at": "2026-07-20T12:00:00+00:00",
+        }
+        scrubbed = redact(sample_diff, scope="log")
+        assert isinstance(scrubbed, dict)
+        assert scrubbed["prefix"] == "ABCD2345"
+        # Spot-check that other plain fields also survive — if they
+        # don't, the redactor changed shape and this test should be
+        # updated alongside the redactor change.
+        assert scrubbed["kind"] == "personal"
+        assert scrubbed["scopes"] == ["me.tasks:read"]

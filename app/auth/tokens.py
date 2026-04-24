@@ -74,10 +74,16 @@ writes to the audit log"):
 * ``audit.api_token.minted`` on :func:`mint` — carries ``token_id``,
   ``prefix``, ``label``, ``scopes`` keys. Never the plaintext token.
 * ``audit.api_token.revoked`` on :func:`revoke` when a live row is
-  flipped to revoked.
+  flipped to revoked, and on :func:`revoke_personal` for PATs.
 * ``audit.api_token.revoked_noop`` on :func:`revoke` when the row
   was already revoked — kept separate so the trail distinguishes an
   intentional double-click from a real revocation event.
+
+Workspace-scoped events (``scoped`` / ``delegated``) land on the
+caller's workspace; PAT events land on the tenant-agnostic identity
+seam (zero-ULID workspace id + ``actor_id = subject_user_id``, see
+:func:`_pat_audit_ctx`) so workspace-scoped audit views exclude
+them and the ``/me`` PAT audit view can filter per-user directly.
 
 See ``docs/specs/03-auth-and-tokens.md`` §"API tokens" and
 ``docs/specs/15-security-privacy.md`` §"Token hashing".
@@ -200,6 +206,15 @@ PERSONAL_SCOPE_PREFIX: Final[str] = "me."
 # index on every request; the debounce drops the write rate to
 # ≤1/min per token — the exact ceiling §03 pins.
 _LAST_USED_DEBOUNCE: Final[timedelta] = timedelta(minutes=1)
+
+
+# Sentinel workspace id for tenant-agnostic (identity-scope) audit
+# rows — PAT mint / revoke have no workspace to borrow. Mirrors the
+# private constants in :mod:`app.auth.session`, :mod:`app.auth.magic_link`,
+# and :mod:`app.api.v1.auth.me_avatar`. cd-rqhy promotes all four
+# copies to a shared helper; until then each module redefines locally
+# rather than reaching across module boundaries for a private symbol.
+_AGNOSTIC_WORKSPACE_ID: Final[str] = "00000000000000000000000000"
 
 
 # argon2-cffi's ``PasswordHasher`` is thread-safe and stateless once
@@ -409,6 +424,51 @@ class TokenShapeError(ValueError):
 def _now(clock: Clock | None) -> datetime:
     """Return an aware UTC ``datetime`` from ``clock`` or a fresh system clock."""
     return (clock if clock is not None else SystemClock()).now()
+
+
+def _pat_audit_ctx(subject_user_id: str) -> WorkspaceContext:
+    """Return a tenant-agnostic :class:`WorkspaceContext` for a PAT audit row.
+
+    Personal access tokens live at the identity scope — they have no
+    workspace, so the usual :func:`app.audit.write_audit` path (which
+    demands a live :class:`WorkspaceContext`) has nothing to borrow.
+    We mint a synthetic context that pins:
+
+    * ``workspace_id`` to the zero-ULID sentinel shared with
+      :mod:`app.auth.session`, :mod:`app.auth.magic_link`,
+      :mod:`app.auth.signup`, and :mod:`app.auth.recovery` — the
+      audit reader recognises that value as "identity-scope event"
+      and workspace-scoped views naturally exclude it.
+    * ``actor_id`` to the **real** subject user's id (not the
+      zero-ULID). The ``/me`` "Personal access tokens" audit view
+      (§03, §14) filters on
+      ``workspace_id=<zero-ulid> AND actor_id=<user>``, so the
+      subject's id has to land on the row itself — putting it only
+      inside ``diff`` would force a JSON scan on every read. The
+      four sibling auth-module helpers use the zero-ULID actor
+      because their events (magic link consumed, session revoked
+      "everywhere", …) do not yet have a bound user at the moment
+      of emission; a PAT mint / revoke always does.
+    * ``actor_kind`` to ``"user"`` (the domain literal). The row
+      represents a user-initiated rotation / revocation, not a
+      system worker firing on schedule.
+
+    ``actor_grant_role`` and ``actor_was_owner_member`` are unused
+    for this event family (PATs grant no workspace authority) and
+    follow the neutral defaults the sibling helpers pick. The
+    correlation id is fresh per call so sibling writes (rare — each
+    mint / revoke is a single audit row) still get their own
+    trace cursor.
+    """
+    return WorkspaceContext(
+        workspace_id=_AGNOSTIC_WORKSPACE_ID,
+        workspace_slug="",
+        actor_id=subject_user_id,
+        actor_kind="user",
+        actor_grant_role="manager",  # unused for identity-scope events
+        actor_was_owner_member=False,
+        audit_correlation_id=new_ulid(),
+    )
 
 
 def _generate_secret() -> str:
@@ -720,10 +780,15 @@ def mint(
     * :class:`TokenMintFailed` — structural failure (argon2 refused,
       RNG refused). Rare enough to bubble as 500.
 
-    The audit row lands with ``kind`` stamped into its diff so the
-    ``/tokens`` page can filter (§03 "per-token audit log view") and
-    the downstream owner-revoke path can walk delegated tokens per
-    delegating-user without re-joining.
+    Every successful mint emits one ``api_token.minted`` audit row
+    with ``kind`` stamped into its diff so the ``/tokens`` page can
+    filter (§03 "per-token audit log view") and the downstream
+    owner-revoke path can walk delegated tokens per delegating-user
+    without re-joining. Workspace-scoped mints land on the caller's
+    workspace via ``ctx``; PAT mints land on the tenant-agnostic
+    identity seam (zero-ULID workspace id, real subject user as the
+    actor) so the ``/me`` audit view can filter per-user without a
+    JSON scan.
     """
     resolved_now = now if now is not None else _now(clock)
 
@@ -818,10 +883,13 @@ def mint(
         session.add(row)
         session.flush()
 
-    # Audit for workspace-scoped tokens lands on the workspace's
-    # audit log via ``ctx``. PAT mints currently write NO audit row
-    # (see the ``else`` branch below) — a known §03 gap tracked as
-    # cd-t2su and **blocking on any prod release**.
+    # Every mint writes an audit row. Workspace-scoped tokens
+    # (``scoped`` / ``delegated``) land on the caller's workspace via
+    # ``ctx``; PATs land on the tenant-agnostic identity seam via
+    # :func:`_pat_audit_ctx` — zero-ULID workspace id + real subject
+    # user id as the actor, so the ``/me`` audit view can filter on
+    # ``workspace_id=<zero-ulid> AND actor_id=<user>`` without a JSON
+    # scan (§03 "API tokens", §14 "/me Personal access tokens").
     if ctx is not None:
         write_audit(
             session,
@@ -847,18 +915,30 @@ def mint(
             clock=clock,
         )
     else:
-        # PATs are identity-scoped (workspace_id = NULL). The current
-        # :func:`app.audit.write_audit` seam requires a live
-        # :class:`WorkspaceContext` and writes a workspace-scoped
-        # ``audit_log`` row — neither fits a PAT. Wiring a
-        # tenant-agnostic audit seam (``audit_log`` with
-        # ``workspace_id = NULL`` and ``actor_id = subject_user_id``)
-        # is the right fix and is tracked as **cd-t2su**. Shipping
-        # without the seam means every PAT mint / revoke currently
-        # skips the audit trail §03 requires for "every enrollment,
-        # login, rotation, and revocation". This is an explicit,
-        # known gap and must block any prod release.
-        pass
+        # ``subject_user_id`` is guaranteed non-None on this branch by
+        # :func:`_validate_personal_shape` above; mypy needs the
+        # explicit narrowing for the helper call.
+        assert subject_user_id is not None
+        write_audit(
+            session,
+            _pat_audit_ctx(subject_user_id=subject_user_id),
+            entity_kind="api_token",
+            entity_id=key_id,
+            action="api_token.minted",
+            diff={
+                "token_id": key_id,
+                "user_id": user_id,
+                "subject_user_id": subject_user_id,
+                "label": label,
+                "prefix": prefix,
+                "scopes": sorted(scopes.keys()),
+                "expires_at": (
+                    expires_at.isoformat() if expires_at is not None else None
+                ),
+                "kind": kind,  # always "personal" on this branch
+            },
+            clock=clock,
+        )
 
     return MintedToken(
         token=f"{_TOKEN_PREFIX}{key_id}_{secret}",
@@ -1046,12 +1126,14 @@ def revoke_personal(
     unknown id all collapse into :class:`InvalidToken` (404) so the
     API doesn't leak whose tokens exist.
 
-    Idempotent on an already-revoked row, matching the workspace-
-    side :func:`revoke` shape. No audit row is written in v1 because
-    the workspace-audit seam is the only audit surface implemented;
-    a tenant-agnostic audit for PATs is tracked as **cd-t2su** and
-    **blocks any prod release** — §03 requires an audit row for
-    every revocation event.
+    Writes one ``api_token.revoked`` audit row through the tenant-
+    agnostic identity seam (see :func:`_pat_audit_ctx`) so the
+    ``/me`` "Personal access tokens" audit view has a trail. An
+    already-revoked row is an idempotent no-op and does NOT write a
+    second row — matching the workspace-side :func:`revoke`
+    precedent of "one revoke event per token lifetime" (the
+    workspace path writes an ``api_token.revoked_noop`` for the
+    double-click; PATs don't currently need that distinction).
     """
     resolved_now = now if now is not None else _now(clock)
 
@@ -1062,12 +1144,28 @@ def revoke_personal(
         raise InvalidToken(f"personal token {token_id!r} not found for this user")
 
     if row.revoked_at is not None:
-        # Idempotent no-op.
+        # Idempotent no-op — no second audit row, matching the
+        # "one revoke per token lifetime" invariant.
         return
 
     with tenant_agnostic():
         row.revoked_at = resolved_now
         session.flush()
+
+    write_audit(
+        session,
+        _pat_audit_ctx(subject_user_id=subject_user_id),
+        entity_kind="api_token",
+        entity_id=token_id,
+        action="api_token.revoked",
+        diff={
+            "token_id": token_id,
+            "subject_user_id": subject_user_id,
+            "at": resolved_now.isoformat(),
+            "kind": "personal",
+        },
+        clock=clock,
+    )
 
 
 # ---------------------------------------------------------------------------
