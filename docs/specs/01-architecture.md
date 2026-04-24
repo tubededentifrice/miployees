@@ -113,7 +113,11 @@ clients** to `api.v1.*` using a long-lived API token (§03). The CLI
   `rotate_audit_log`, `refresh_exchange_rates` (daily, §09),
   `agent_dispatch_sweep` (§16, §23 — restart-safety net for the
   chat-gateway inbound dispatcher; the dispatcher itself is an
-  event-bus subscriber, not a scheduled job).
+  event-bus subscriber, not a scheduled job),
+  `llm_budget_refresh_aggregate` (60 s, §11 — re-sums the last 30
+  days of `llm_usage` per workspace and writes back to
+  `budget_ledger.spent_cents`; idempotent rewrite, crash-safe per-
+  workspace SAVEPOINT).
 
 ## Module boundaries and bounded contexts
 

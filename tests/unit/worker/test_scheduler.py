@@ -30,6 +30,8 @@ from app.worker.scheduler import (
     GENERATOR_JOB_ID,
     HEARTBEAT_JOB_ID,
     IDEMPOTENCY_SWEEP_JOB_ID,
+    LLM_BUDGET_REFRESH_INTERVAL_SECONDS,
+    LLM_BUDGET_REFRESH_JOB_ID,
     create_scheduler,
     register_jobs,
     registered_job_ids,
@@ -64,7 +66,7 @@ class TestCreateScheduler:
 
 class TestRegisterJobs:
     def test_registers_expected_ids(self) -> None:
-        """Standard job set: heartbeat + generator + idempotency-sweep."""
+        """Standard job set: heartbeat + generator + idempotency-sweep + llm-budget."""
         sched = create_scheduler()
         register_jobs(sched)
         # Compare as a set so inserting a future job (cd-yqm4
@@ -78,6 +80,7 @@ class TestRegisterJobs:
             GENERATOR_JOB_ID,
             IDEMPOTENCY_SWEEP_JOB_ID,
             HEARTBEAT_JOB_ID,
+            LLM_BUDGET_REFRESH_JOB_ID,
         }
 
     def test_is_idempotent_under_replace_existing(self) -> None:
@@ -109,9 +112,200 @@ class TestRegisterJobs:
             GENERATOR_JOB_ID,
             IDEMPOTENCY_SWEEP_JOB_ID,
             HEARTBEAT_JOB_ID,
+            LLM_BUDGET_REFRESH_JOB_ID,
         }
-        assert len(ids) == 3
-        assert len(sched.get_jobs()) == 3
+        assert len(ids) == 4
+        assert len(sched.get_jobs()) == 4
+
+
+# ---------------------------------------------------------------------------
+# LLM budget refresh job (cd-ca1k)
+# ---------------------------------------------------------------------------
+
+
+class TestLlmBudgetRefreshJob:
+    """Registration shape + clock propagation for the 60 s refresh job.
+
+    The body's fan-out behaviour (skip missing ledger, isolate broken
+    workspaces, sum total_cents) is covered end-to-end in
+    ``tests/integration/test_worker_llm_budget.py`` against a real
+    engine — the unit layer only asserts what can be proven without a
+    DB: the registration metadata, idempotent re-registration, and
+    that the injected clock reaches the closure.
+    """
+
+    def test_adds_llm_budget_refresh_job_at_60s_interval(self) -> None:
+        """Job is registered with the pinned interval + coalesce settings.
+
+        Ties the concrete APScheduler trigger shape to the spec's
+        60 s cadence. ``coalesce=True`` + ``max_instances=1`` + a 90 s
+        ``misfire_grace_time`` are the three knobs the task description
+        enumerates; asserting the exact values here pins them so a
+        future registration refactor has to update this test in
+        lockstep (and surface the operator-visible cadence change).
+        """
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        sched = create_scheduler()
+        register_jobs(sched)
+
+        job = sched.get_job(LLM_BUDGET_REFRESH_JOB_ID)
+        assert job is not None, (
+            f"{LLM_BUDGET_REFRESH_JOB_ID} not registered by register_jobs"
+        )
+
+        # Trigger: IntervalTrigger at 60 s.
+        assert isinstance(job.trigger, IntervalTrigger)
+        # APScheduler stores the interval as a :class:`datetime.timedelta`;
+        # compare the total seconds to stay readable.
+        assert job.trigger.interval.total_seconds() == 60.0
+        assert LLM_BUDGET_REFRESH_INTERVAL_SECONDS == 60
+
+        # Wrapper knobs: misfire grace 90 s, coalesce on, single
+        # instance. A late restart up to 90 s catches up; beyond that
+        # the next tick picks up and the skipped window is recovered
+        # by the next refresh (the function is idempotent — it
+        # rewrites the same sum).
+        assert job.misfire_grace_time == 90
+        assert job.coalesce is True
+        assert job.max_instances == 1
+
+    def test_is_idempotent(self) -> None:
+        """Re-registering keeps exactly one budget-refresh job.
+
+        Same invariant as :class:`TestRegisterJobs.
+        test_is_idempotent_under_replace_existing` but pinned on
+        the new job id — a regression that missed the new id in the
+        ``remove_job`` loop would leave duplicate pending entries
+        here without the suite-wide set assertion catching it. The
+        head-level count already catches duplicates; this narrower
+        test makes the regression signature obvious.
+        """
+        sched = create_scheduler()
+        register_jobs(sched)
+        register_jobs(sched)
+
+        matching = [j for j in sched.get_jobs() if j.id == LLM_BUDGET_REFRESH_JOB_ID]
+        assert len(matching) == 1
+
+        # Trigger shape survives the re-register.
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        assert isinstance(matching[0].trigger, IntervalTrigger)
+        assert matching[0].trigger.interval.total_seconds() == 60.0
+
+    def test_uses_resolved_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Injected :class:`FrozenClock` propagates into the refresh body.
+
+        The factory closes over the scheduler's clock at registration
+        time, not at tick time (matches the idempotency-sweep pattern).
+        Without this assertion a future refactor that reached for
+        :class:`~app.util.clock.SystemClock` inside the body would
+        silently trip every FrozenClock-driven test by falling back to
+        the OS clock — a hazard that cost the generator-fan-out work
+        an iteration. We prove propagation by patching
+        :func:`app.domain.llm.budget.refresh_aggregate` and observing
+        the clock kwarg the body hands in.
+        """
+        clock = FrozenClock(datetime(2026, 4, 24, 12, 0, tzinfo=UTC))
+
+        seen_clocks: list[object] = []
+
+        def fake_refresh_aggregate(
+            session: object,
+            ctx: object,
+            *,
+            clock: object | None = None,
+        ) -> int:
+            seen_clocks.append(clock)
+            return 0
+
+        monkeypatch.setattr(
+            "app.domain.llm.budget.refresh_aggregate",
+            fake_refresh_aggregate,
+        )
+
+        # Fabricate a single workspace row so the body's SELECT
+        # returns one tenant to dispatch into the patched
+        # ``refresh_aggregate``. A direct monkeypatch on the execute
+        # path keeps the test DB-free — the scheduler body only
+        # reaches SQLAlchemy through ``session.execute(select(...))``.
+        class _FakeRow:
+            def __init__(self, id: str, slug: str) -> None:
+                self.id = id
+                self.slug = slug
+
+        fake_rows = [_FakeRow("01HWA00000000000000000WSP1", "ws-one")]
+
+        class _FakeResult:
+            def all(self) -> list[_FakeRow]:
+                return list(fake_rows)
+
+        class _FakeNestedTx:
+            """Trivial context manager standing in for ``session.begin_nested()``.
+
+            The real call opens a SAVEPOINT; here the body just needs
+            a context manager that enters / exits cleanly so the
+            ``with session.begin_nested(): ...`` block around the
+            per-workspace refresh runs. We don't need rollback
+            semantics because the happy-path test never raises.
+            """
+
+            def __enter__(self) -> _FakeNestedTx:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+        class _FakeSession:
+            """Minimal stand-in for ``sqlalchemy.orm.Session`` — only the
+            methods the body touches are implemented. The ``isinstance``
+            guard on ``Session`` in the body is patched below so the
+            fake session survives the runtime type check.
+            """
+
+            def execute(self, _stmt: object) -> _FakeResult:
+                return _FakeResult()
+
+            def scalar(self, _stmt: object) -> str:
+                """Stand-in for ``session.scalar(select(BudgetLedger.id)...)``.
+
+                The body pre-checks ledger presence before calling
+                :func:`refresh_aggregate` — a truthy return (any
+                non-``None`` value) tells the body the ledger exists
+                and the refresh path should fire. Returning a fixed
+                ULID-shaped sentinel keeps the test DB-free while
+                guiding the body past the ``no_ledger`` early-skip.
+                """
+                return "01HWA00000000000000000LGR0"
+
+            def begin_nested(self) -> _FakeNestedTx:
+                return _FakeNestedTx()
+
+        class _FakeUow:
+            """Context-manager shim imitating :class:`UnitOfWorkImpl`."""
+
+            def __enter__(self) -> _FakeSession:
+                return _FakeSession()
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+        # Patch the seams the body pulls from:
+        #   * ``make_uow`` — hand back the fake UoW.
+        #   * ``Session`` — isinstance check flips to ``_FakeSession``.
+        monkeypatch.setattr(scheduler_mod, "make_uow", lambda: _FakeUow())
+        import sqlalchemy.orm as _orm_mod
+
+        monkeypatch.setattr(_orm_mod, "Session", _FakeSession)
+
+        body = scheduler_mod._make_llm_budget_refresh_body(clock)
+        body()
+
+        # The body dispatched one ``refresh_aggregate`` call and
+        # handed the patched clock through.
+        assert len(seen_clocks) == 1
+        assert seen_clocks[0] is clock
 
 
 # ---------------------------------------------------------------------------

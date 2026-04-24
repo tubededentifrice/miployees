@@ -55,7 +55,7 @@ import contextlib
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any
+from typing import Any, Final
 
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -63,6 +63,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.adapters.db.session import make_uow
+from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
 from app.worker.heartbeat import upsert_heartbeat
 
@@ -71,6 +72,8 @@ __all__ = [
     "HEARTBEAT_JOB_ID",
     "HEARTBEAT_JOB_INTERVAL_SECONDS",
     "IDEMPOTENCY_SWEEP_JOB_ID",
+    "LLM_BUDGET_REFRESH_INTERVAL_SECONDS",
+    "LLM_BUDGET_REFRESH_JOB_ID",
     "create_scheduler",
     "register_jobs",
     "start",
@@ -107,6 +110,23 @@ GENERATOR_JOB_ID: str = "generate_task_occurrences"
 # (:func:`app.api.middleware.idempotency.prune_expired_idempotency_keys`)
 # removes rows older than that so the table never grows unbounded.
 IDEMPOTENCY_SWEEP_JOB_ID: str = "idempotency_sweep"
+
+# Stable job id for the 60 s LLM-budget aggregate refresh (cd-ca1k).
+# Spec §11 "Workspace usage budget" §"Meter" pins the cadence:
+# ``workspace_usage.cost_30d_cents`` is re-summed from the last 30
+# days of ``llm_usage`` every 60 s so the cached aggregate never
+# trails the meter by more than that window. The fan-out body
+# iterates every workspace with a ``budget_ledger`` row, building a
+# system-actor :class:`~app.tenancy.WorkspaceContext` per workspace
+# and calling :func:`~app.domain.llm.budget.refresh_aggregate`.
+LLM_BUDGET_REFRESH_JOB_ID: str = "llm_budget_refresh_aggregate"
+
+# Interval for the LLM-budget refresh. Spec §11 pins 60 s; also
+# matches the 60 s freshness promise surfaced on the admin /
+# settings usage tile ("a cap edit reflects in the cached aggregate
+# within 60 s"). Pulled out as a module-level constant so tests can
+# import it rather than re-derive the number from the spec.
+LLM_BUDGET_REFRESH_INTERVAL_SECONDS: int = 60
 
 
 # Job-body type. Downstream tasks supply either a synchronous callable
@@ -309,7 +329,12 @@ def register_jobs(
     # path when the id is not present (first register_jobs call);
     # we suppress it narrowly rather than swallowing ``Exception``
     # so a genuinely broken jobstore still surfaces.
-    for pending_id in (HEARTBEAT_JOB_ID, GENERATOR_JOB_ID, IDEMPOTENCY_SWEEP_JOB_ID):
+    for pending_id in (
+        HEARTBEAT_JOB_ID,
+        GENERATOR_JOB_ID,
+        IDEMPOTENCY_SWEEP_JOB_ID,
+        LLM_BUDGET_REFRESH_JOB_ID,
+    ):
         with contextlib.suppress(JobLookupError):
             scheduler.remove_job(pending_id)
 
@@ -400,6 +425,35 @@ def register_jobs(
         misfire_grace_time=3600,
     )
 
+    # --- 60 s LLM budget aggregate refresh (cd-ca1k) ---
+    # Spec §11 "Workspace usage budget" §"Meter" pins a 60 s cadence.
+    # The fan-out body iterates every workspace, builds a system-actor
+    # :class:`~app.tenancy.WorkspaceContext`, and calls
+    # :func:`~app.domain.llm.budget.refresh_aggregate`. The per-workspace
+    # call is idempotent (it rewrites ``spent_cents`` from the last 30
+    # days of ``llm_usage``), so a misfire that runs late or a coalesced
+    # tick is strictly safe.
+    #
+    # ``misfire_grace_time=90`` — one tick late is tolerated (idempotent
+    # rewrite) but a two-tick-late run is a signal the scheduler is
+    # stuck and a skip is preferable to a stacked catch-up.
+    # ``coalesce=True`` + ``max_instances=1`` keep a slow refresh from
+    # stacking ticks on an overloaded DB.
+    scheduler.add_job(
+        wrap_job(
+            _make_llm_budget_refresh_body(resolved_clock),
+            job_id=LLM_BUDGET_REFRESH_JOB_ID,
+            clock=resolved_clock,
+        ),
+        trigger=IntervalTrigger(seconds=LLM_BUDGET_REFRESH_INTERVAL_SECONDS),
+        id=LLM_BUDGET_REFRESH_JOB_ID,
+        name=LLM_BUDGET_REFRESH_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=90,
+    )
+
 
 def _heartbeat_only_body() -> None:
     """No-op job body — the heartbeat upsert runs after it returns.
@@ -462,6 +516,288 @@ def _make_idempotency_sweep_body(clock: Clock) -> Callable[[], None]:
         _log.info(
             "idempotency sweep completed",
             extra={"event": "idempotency.sweep", "deleted": deleted},
+        )
+
+    return _body
+
+
+# Pinned system-actor identifiers for worker-initiated LLM-budget
+# refreshes. ``WorkspaceContext`` requires non-empty ULIDs on
+# ``actor_id`` + ``audit_correlation_id``, but the refresh path writes
+# zero audit rows — :func:`~app.domain.llm.budget.refresh_aggregate`
+# only issues an ``UPDATE budget_ledger ...`` and emits structured
+# logs. A zero-ULID string satisfies the dataclass invariant without
+# lying about provenance: any downstream seam that eventually reads
+# these fields (e.g. a future worker-audit writer) sees an all-zero
+# sentinel that operators can pattern-match on.
+#
+# Matches the convention in :func:`app.auth.signup._agnostic_audit_ctx`
+# (system actor with zero-ULID ids) — kept module-private so callers
+# don't accidentally construct the sentinel outside the scheduler's
+# fan-out loop.
+_SYSTEM_ACTOR_ZERO_ULID: Final[str] = "00000000000000000000000000"
+
+
+def _system_refresh_context(
+    *,
+    workspace_id: str,
+    workspace_slug: str,
+) -> WorkspaceContext:
+    """Build the system-actor :class:`WorkspaceContext` for the refresh fan-out.
+
+    ``actor_grant_role`` uses ``"manager"`` to mirror the established
+    system-actor convention in the auth modules
+    (:func:`app.auth.signup._agnostic_audit_ctx`,
+    :func:`app.auth.recovery._agnostic_audit_ctx`,
+    :func:`app.auth.magic_link._agnostic_audit_ctx`, and the passkey
+    and session ``actor_kind="system"`` sites). The field is unused
+    for ``actor_kind="system"`` rows in audit writes; picking the same
+    canonical value across every system-actor context lets operators
+    ``grep`` one shape when triaging a "which ctx fired this?" thread.
+    """
+    return WorkspaceContext(
+        workspace_id=workspace_id,
+        workspace_slug=workspace_slug,
+        actor_id=_SYSTEM_ACTOR_ZERO_ULID,
+        actor_kind="system",
+        actor_grant_role="manager",
+        actor_was_owner_member=False,
+        audit_correlation_id=_SYSTEM_ACTOR_ZERO_ULID,
+    )
+
+
+def _make_llm_budget_refresh_body(clock: Clock) -> Callable[[], None]:
+    """Build the 60 s LLM-budget refresh body (cd-ca1k).
+
+    Factory rather than a bare module-level function so the body
+    closes over the scheduler's injected :class:`Clock` — the
+    ``refresh_aggregate`` window bounds are derived from
+    ``clock.now() - 30d``, which MUST be driven by the same clock
+    the heartbeat uses. A :class:`~app.util.clock.FrozenClock` under
+    test otherwise would have a deterministic heartbeat timestamp
+    and a non-deterministic refresh window; trivially cheap closure,
+    no reason to tolerate the mismatch.
+
+    The returned body:
+
+    1. Opens its own UoW (one per tick) via
+       :func:`app.adapters.db.session.make_uow`. ``wrap_job`` does
+       not hand in a session — every sibling body opens its own
+       (``_make_idempotency_sweep_body`` does the same). This keeps
+       the per-tick transaction boundary explicit: a broken workspace
+       does not poison the session for its siblings because the
+       outer UoW rolls back only on an un-caught exception (this
+       body catches per-workspace).
+    2. Queries every :class:`~app.adapters.db.workspace.models.Workspace`
+       row. No ``archived_at`` column exists yet (tracked as a
+       Beads follow-up); for now "active" == "row exists".
+    3. For each workspace, constructs a system-actor
+       :class:`WorkspaceContext` and calls
+       :func:`~app.domain.llm.budget.refresh_aggregate`. Wrapped in
+       ``try / except Exception`` so a single broken workspace
+       doesn't starve the fan-out.
+    4. Emits structured log events the operator dashboard keys on:
+
+       * ``event="llm.budget.refresh.no_ledger"`` (DEBUG) — per
+         workspace, when :func:`refresh_aggregate` returns 0 and no
+         ledger row exists. Logged at DEBUG because the workspace-
+         create handler seeds the ledger (cd-tubi); the DEBUG line
+         lets an operator trace the skip without alerting.
+       * ``event="llm.budget.refresh.workspace_failed"`` (WARNING) —
+         per workspace, with the exception class name. The exception
+         is swallowed here; the outer tick continues.
+       * ``event="llm.budget.refresh.tick"`` (INFO) — once per tick,
+         with ``workspaces`` (count attempted), ``failures`` (count
+         raising), and ``total_cents`` (sum of freshly-computed
+         aggregates across every workspace that returned a value).
+         Health metric for operator dashboards — NOT a cap check.
+
+    The import of :func:`refresh_aggregate` is deferred into the
+    closure body so module import order stays robust: the budget
+    module drags in :mod:`app.adapters.db.llm.models`, which is
+    unnecessary for the standalone ``python -m app.worker``
+    entrypoint that only needs the scheduler seam.
+    """
+
+    def _body() -> None:
+        # Deferred imports — see factory docstring rationale. Keep
+        # them narrow so a worker process that fails to start the
+        # budget job still boots (the heartbeat + idempotency sweep
+        # ride a separate import path). ``make_uow`` is already
+        # imported at module scope (the heartbeat writer uses it);
+        # the budget / workspace / tenancy imports are the ones we
+        # defer to keep the standalone worker's import surface lean.
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+
+        from app.adapters.db.llm.models import BudgetLedger
+        from app.adapters.db.workspace.models import Workspace
+        from app.domain.llm.budget import refresh_aggregate
+        from app.tenancy import tenant_agnostic
+        from app.tenancy.current import reset_current, set_current
+
+        workspaces_attempted = 0
+        failures = 0
+        # ``total_cents`` is the sum of freshly-computed aggregates
+        # across every workspace the tick actually refreshed. Python
+        # ``int`` is arbitrary-precision so overflow is impossible;
+        # downstream log serializers see a plain integer.
+        total_cents = 0
+
+        with make_uow() as session:
+            # ``UnitOfWorkImpl.__enter__`` returns the concrete
+            # :class:`~sqlalchemy.orm.Session` under a :class:`DbSession`
+            # protocol annotation; :func:`refresh_aggregate` wants the
+            # concrete class. Narrow with an ``isinstance`` assertion
+            # — same pattern as
+            # :func:`app.api.middleware.idempotency.prune_expired_idempotency_keys`.
+            assert isinstance(session, Session)
+
+            # ``workspace`` is NOT in the tenant-filter registry
+            # (it is the tenancy anchor; see
+            # ``app/adapters/db/workspace/__init__.py``) — no
+            # ``workspace_id`` predicate is injected, so a plain
+            # SELECT returns every tenant row. Wrap in
+            # ``tenant_agnostic()`` as belt-and-braces in case a
+            # future migration registers the table.
+            # justification: scheduler fan-out must enumerate every
+            # tenant's workspace row before binding a per-workspace
+            # ctx; the ``workspace`` table is the tenancy anchor and
+            # carries no ``workspace_id`` column of its own.
+            with tenant_agnostic():
+                rows = list(session.execute(select(Workspace.id, Workspace.slug)).all())
+
+            for row in rows:
+                workspace_id = row.id
+                workspace_slug = row.slug
+                workspaces_attempted += 1
+                ctx = _system_refresh_context(
+                    workspace_id=workspace_id,
+                    workspace_slug=workspace_slug,
+                )
+                # Tenant filter reads the ``current`` ContextVar on
+                # every scoped SELECT; :func:`refresh_aggregate`'s
+                # ``_sum_usage_cents`` hits the workspace-scoped
+                # ``llm_usage`` table and would raise
+                # :class:`~app.tenancy.orm_filter.TenantFilterMissing`
+                # without an active context. Scope the bind to the
+                # single ``refresh_aggregate`` call so a later fan-out
+                # step (or the tick's INFO log emit) never runs with
+                # a lingering per-workspace ctx. ``try / finally``
+                # guarantees the token is reset even if the body
+                # below raises before the SAVEPOINT catches — without
+                # it the ContextVar would leak into the next iteration
+                # and the next workspace's refresh would see a stale
+                # ctx.
+                token = set_current(ctx)
+                try:
+                    # Per-workspace SAVEPOINT wraps BOTH the ledger
+                    # pre-check AND the refresh call. Two reasons:
+                    #
+                    # 1. A crashing workspace must not roll back a
+                    #    sibling's UPDATE. The outer UoW owns the
+                    #    top-level transaction (commit on clean exit,
+                    #    rollback on exception); the nested
+                    #    ``session.begin_nested()`` lets us roll back
+                    #    only this workspace's work on failure while
+                    #    keeping the preceding workspaces' updates
+                    #    live. Without this scope, a single poisoned
+                    #    refresh would take down the entire fan-out's
+                    #    progress at commit time.
+                    # 2. If the pre-check SELECT itself raises (bad
+                    #    connection, malformed row, tenant-filter
+                    #    misconfiguration), we MUST treat it as a
+                    #    per-workspace failure — not an unhandled
+                    #    exception that skips the tick-summary INFO
+                    #    emit and leaves the ``/readyz`` heartbeat
+                    #    silently disconnected from actual progress.
+                    try:
+                        with session.begin_nested():
+                            # Pre-check the ledger row existence BEFORE
+                            # calling :func:`refresh_aggregate`. The
+                            # domain function returns ``0`` for two
+                            # distinct shapes:
+                            #   (a) no ledger row — the seeding bug
+                            #       cd-tubi tracks; the workspace-
+                            #       create handler has not yet run
+                            #       (or has a bug).
+                            #   (b) a ledger row whose in-window usage
+                            #       sums to zero — a perfectly healthy
+                            #       zero-spend workspace.
+                            # Conflating the two at the DEBUG log level
+                            # makes ``event=llm.budget.refresh.no_ledger``
+                            # useless for the seeding-bug dashboard
+                            # cd-tubi is meant to drive — a fleet with
+                            # ten healthy zero-spend tenants would page
+                            # the same signal as a single broken seed
+                            # path. Pre-checking disambiguates the two
+                            # signals and skips the domain call (and
+                            # its redundant
+                            # ``llm.budget.ledger_missing_on_refresh``
+                            # WARNING) entirely on path (a).
+                            #
+                            # The ledger probe is itself a workspace-
+                            # scoped SELECT — ``budget_ledger`` is in
+                            # the tenancy registry — so it runs INSIDE
+                            # the ``set_current`` / ``reset_current``
+                            # bracket, not before.
+                            ledger_exists = (
+                                session.scalar(
+                                    select(BudgetLedger.id)
+                                    .where(BudgetLedger.workspace_id == workspace_id)
+                                    .limit(1)
+                                )
+                                is not None
+                            )
+                            if not ledger_exists:
+                                result = None
+                            else:
+                                result = refresh_aggregate(session, ctx, clock=clock)
+                    except Exception as exc:
+                        # SAVEPOINT already rolled back by the context
+                        # manager; the outer transaction is still
+                        # usable. Log at WARNING with the exception
+                        # class name (full traceback would be noisy
+                        # at 60 s cadence; operators can ``grep`` for
+                        # the event and re-run with DEBUG logging if
+                        # the root cause needs deeper plumbing).
+                        failures += 1
+                        _log.warning(
+                            "llm.budget.refresh.workspace_failed",
+                            extra={
+                                "event": "llm.budget.refresh.workspace_failed",
+                                "workspace_id": workspace_id,
+                                "error": type(exc).__name__,
+                            },
+                        )
+                        continue
+                finally:
+                    reset_current(token)
+
+                if result is None:
+                    # Pre-check saw a missing ledger — the
+                    # seeding-bug signal (cd-tubi). DEBUG so the
+                    # fan-out trace stays complete without paging
+                    # on a fleet of healthy tenants.
+                    _log.debug(
+                        "llm.budget.refresh.no_ledger",
+                        extra={
+                            "event": "llm.budget.refresh.no_ledger",
+                            "workspace_id": workspace_id,
+                        },
+                    )
+                    continue
+
+                total_cents += result
+
+        _log.info(
+            "llm.budget.refresh.tick",
+            extra={
+                "event": "llm.budget.refresh.tick",
+                "workspaces": workspaces_attempted,
+                "failures": failures,
+                "total_cents": total_cents,
+            },
         )
 
     return _body
