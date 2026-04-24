@@ -73,6 +73,10 @@ workspaces):
 
 * ``audit.recovery.requested`` with ``hit``, ``email_hash``,
   ``ip_hash``.
+* ``audit.recovery.disabled_by_workspace`` with ``email_hash``,
+  ``ip_hash``, ``reason`` (§03 "Workspace kill-switch"; written
+  on a fresh UoW because the primary UoW has no domain state to
+  commit in this branch).
 * ``audit.recovery.verified`` with ``email_hash``,
   ``ip_hash_at_verify``.
 * ``audit.recovery.completed`` with ``user_id``,
@@ -98,11 +102,14 @@ from typing import Any, Final
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session as SqlaSession
 
+from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.identity.models import (
     PasskeyCredential,
     User,
     canonicalise_email,
 )
+from app.adapters.db.session import make_uow
+from app.adapters.db.workspace.models import Workspace
 from app.adapters.mail.ports import MailDeliveryError, Mailer
 from app.audit import write_audit
 from app.auth import magic_link, passkey
@@ -127,6 +134,7 @@ __all__ = [
     "RecoverySessionExpired",
     "RecoverySessionNotFound",
     "complete_recovery",
+    "is_self_service_recovery_disabled",
     "prune_expired_recovery_sessions",
     "request_recovery",
     "verify_recovery",
@@ -148,6 +156,15 @@ _RECOVERY_SESSION_TTL: Final[timedelta] = timedelta(minutes=15)
 # pepper as the magic-link nonce row, so abuse correlation joins
 # without a re-derivation.
 _HKDF_PURPOSE: Final[str] = "magic-link"
+
+
+# Canonical setting key for the workspace kill-switch (§02 "Settings
+# cascade" catalog + §03 "Workspace kill-switch"). Lives on
+# ``workspace.settings_json`` — cd-n6p is the task that lands owner-
+# facing writes, but the recovery gate is the first reader and reads
+# the key straight out of the JSON blob so the resolver can stay
+# simple until the richer cd-n6p surface lands.
+_SELF_SERVICE_RECOVERY_KEY: Final[str] = "auth.self_service_recovery_enabled"
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +383,82 @@ def _lookup_user_by_email(session: SqlaSession, *, email_lower: str) -> User | N
         return session.scalar(select(User).where(User.email_lower == email_lower))
 
 
+def is_self_service_recovery_disabled(session: SqlaSession, *, user_id: str) -> bool:
+    """Return ``True`` if **any** workspace holding a grant for ``user_id``
+    has the self-service recovery kill-switch flipped.
+
+    Spec §03 "Workspace kill-switch": the flag is evaluated *most-
+    restrictive-wins* across every workspace the user holds a non-
+    archived grant in. A single workspace with
+    ``auth.self_service_recovery_enabled = false`` disables self-
+    service recovery for the user deployment-wide — managers still
+    re-issue manually, but the ``/recover/passkey/request`` flow
+    mails nothing and audits
+    ``audit.recovery.disabled_by_workspace``.
+
+    **Non-archived grants in v1.** The v1 ``role_grant`` schema has no
+    ``revoked_at`` column — revocation is a hard DELETE today (see
+    :mod:`app.domain.identity.role_grants` module docstring), so every
+    extant row is an active grant by construction. ``users.archived_at``
+    likewise hasn't landed. When those columns arrive (cd-x1xh lands
+    the role_grant soft-retire shape) the WHERE-clause below extends
+    with ``RoleGrant.revoked_at IS NULL`` / a ``users.archived_at IS
+    NULL`` pre-gate; until then "non-archived" == "row exists". The
+    helper's public contract ("return True iff **any** workspace
+    disables self-service recovery for the user") stays unchanged.
+
+    **Default semantics.** Absence of the key — a workspace that
+    never wrote a value for the flag — is treated as ``True`` (the
+    catalog default in §02 "Settings cascade"). The check only
+    disables recovery when a workspace has **explicitly** stored
+    ``False`` under the canonical key. Non-bool values are ignored:
+    operators write to this column through the admin UI which
+    validates the payload, but a corrupt row is better fail-open
+    (recovery still works) than a locked-out user. Fail-open matches
+    §03's guidance that the kill-switch is a deliberate operator
+    action, not a mis-parse.
+
+    Runs under :func:`tenant_agnostic` because ``role_grant`` is
+    workspace-scoped and recovery executes outside any
+    :class:`~app.tenancy.WorkspaceContext` (the user may hold grants
+    in arbitrarily many workspaces and we don't pick one at recovery
+    time). One SELECT joins ``role_grant`` → ``workspace`` by
+    ``workspace_id`` so a single round-trip returns the full set of
+    candidate ``settings_json`` payloads; the Python-side loop stops
+    at the first ``False`` for the common case where one workspace
+    flags the kill-switch while most do not.
+    """
+    # justification: ``role_grant`` is workspace-scoped and recovery
+    # runs outside any tenant context (see module docstring on
+    # :func:`_agnostic_audit_ctx`). ``workspace`` is tenant-agnostic
+    # by registration — the filter ignores it — but the
+    # ``tenant_agnostic`` guard is required for the RoleGrant side of
+    # the join.
+    stmt = (
+        select(Workspace.settings_json)
+        .join(RoleGrant, RoleGrant.workspace_id == Workspace.id)
+        .where(RoleGrant.user_id == user_id)
+    )
+    with tenant_agnostic():
+        payloads = session.scalars(stmt).all()
+    for payload in payloads:
+        # ``payload`` is the flat dotted-key map the cascade reads
+        # (§02 "Schema"). A defensive ``isinstance`` catches a
+        # corrupt JSON row (e.g. someone wrote a list) without
+        # tripping ``KeyError``; the non-dict path falls through to
+        # fail-open, matching the rationale in the docstring.
+        if not isinstance(payload, dict):
+            continue
+        value = payload.get(_SELF_SERVICE_RECOVERY_KEY)
+        # Strict ``is False`` rather than ``not value`` — we want to
+        # disable only on the explicit operator choice, not on every
+        # falsy-adjacent value (``0``, ``""``, ``None``, missing
+        # key) the JSON could land with.
+        if value is False:
+            return True
+    return False
+
+
 def _send_unknown_email(
     *,
     mailer: Mailer,
@@ -379,6 +472,56 @@ def _send_unknown_email(
     subject = render_template(recovery_unknown_template.SUBJECT)
     body_text = render_template(recovery_unknown_template.BODY_TEXT)
     mailer.send(to=[to_email], subject=subject, body_text=body_text)
+
+
+def _audit_recovery_disabled_by_workspace(
+    *,
+    user_id: str,
+    email_hash: str,
+    ip_hash: str,
+    clock: Clock | None = None,
+) -> None:
+    """Write one ``audit.recovery.disabled_by_workspace`` row on a fresh UoW.
+
+    Spec §03 "Self-service lost-device recovery" step 5 + §"Workspace
+    kill-switch": when the user's grants land in a workspace whose
+    ``auth.self_service_recovery_enabled`` flag is ``false``, the
+    recovery service neither mints nor mails anything. The caller's
+    primary UoW therefore has no domain row to commit; using it only
+    for the audit would work but mirrors poorly with the other
+    "refusal without domain state" paths (the router's
+    :func:`_audit_recovery_refusal`). A fresh UoW pins the audit row
+    in its own transaction — any rollback later in the caller's
+    request handler (e.g. middleware tripping an HTTP error) cannot
+    silently swallow the forensic trail of "operator has disabled
+    this user's self-service recovery".
+
+    Failures of the audit UoW are logged and swallowed: the caller is
+    about to return 202 per §15's enumeration guard, and a shadowing
+    500 here would leak the disabled state on the wire. The catch is
+    deliberately broad (``Exception``) so a transient DB / config
+    hiccup still logs-and-drops; ``BaseException`` propagates so
+    operator aborts aren't swallowed.
+    """
+    diff = {
+        "email_hash": email_hash,
+        "ip_hash": ip_hash,
+        "reason": "workspace_kill_switch",
+    }
+    try:
+        with make_uow() as uow_session:
+            assert isinstance(uow_session, SqlaSession)
+            write_audit(
+                uow_session,
+                _agnostic_audit_ctx(),
+                entity_kind="user",
+                entity_id=user_id,
+                action="recovery.disabled_by_workspace",
+                diff=diff,
+                clock=clock,
+            )
+    except Exception:
+        _log.exception("recovery disabled-by-workspace audit write failed on fresh UoW")
 
 
 def _burn_cpu_for_miss_branch(pepper: bytes) -> None:
@@ -520,7 +663,15 @@ def request_recovery(
        only, no plaintext. Raises :class:`RecoveryRateLimited` on
        any over-cap bucket.
     3. Look up the user by canonical email.
-    4. **Hit branch** (user exists): hand off to
+    4. **Kill-switch gate** (§03 "Workspace kill-switch"): for a
+       matched user, consult
+       :func:`is_self_service_recovery_disabled`. If any workspace
+       the user holds a non-archived grant in has
+       ``auth.self_service_recovery_enabled = false``, skip every
+       downstream step and write one
+       ``audit.recovery.disabled_by_workspace`` row on a fresh UoW.
+       Wire contract (202) is unchanged.
+    5. **Hit branch** (user exists + not kill-switched): hand off to
        :func:`magic_link.request_link` with purpose
        ``recover_passkey``. The magic-link service mints the token,
        inserts the nonce row, and sends the mail via the
@@ -528,14 +679,17 @@ def request_recovery(
        as the caller-owned ``mailer_template`` parameter. ``subject_id``
        is pinned to the user's id so the verify step binds directly to
        the row without trusting the browser.
-    5. **Miss branch** (no user): send the ``recovery_unknown``
+    6. **Miss branch** (no user): send the ``recovery_unknown``
        template to the typed address so a legitimate owner who
        typo'd sees "we couldn't find you" instead of a silent
        no-op.
-    6. In either branch, write one ``audit.recovery.requested`` row
-       with ``hit`` discriminator — the spec AC requires audit to
-       distinguish hit vs miss even though the caller's response
-       is identical.
+    7. In the hit + miss branches (but NOT the kill-switch branch),
+       write one ``audit.recovery.requested`` row with ``hit``
+       discriminator — the spec AC requires audit to distinguish
+       hit vs miss even though the caller's response is identical.
+       The kill-switch branch has a dedicated audit action so
+       operators see the refusal distinctly from a normal "no
+       recovery happened yet" row.
 
     Returns ``None`` in every success path. The caller's UoW owns
     the transaction; this function does not commit.
@@ -564,6 +718,28 @@ def request_recovery(
 
     user = _lookup_user_by_email(session, email_lower=email_lower)
     hit = user is not None
+
+    # Workspace kill-switch (§03 "Workspace kill-switch"): if any of
+    # the user's non-archived grants lands in a workspace with
+    # ``auth.self_service_recovery_enabled = false``, refuse the
+    # flow. Caller still sees the same 202 as every other branch
+    # (the enumeration guard also covers "known user, disabled by
+    # workspace"); the forensic trail lives in
+    # ``audit.recovery.disabled_by_workspace`` written on a FRESH
+    # UoW. Primary UoW is not used for the audit because this branch
+    # writes nothing else — committing the caller's UoW with just an
+    # audit row and no nonce / session state would work, but the
+    # fresh UoW mirrors the rate-limit refusal shape in the HTTP
+    # router (``_audit_recovery_refusal``) and keeps "we took no
+    # action" visible in a dedicated transaction even when the
+    # caller's UoW later rolls back for an unrelated reason.
+    if user is not None and is_self_service_recovery_disabled(session, user_id=user.id):
+        _audit_recovery_disabled_by_workspace(
+            user_id=user.id,
+            email_hash=email_hash,
+            ip_hash=ip_hash,
+        )
+        return
 
     # Enumeration guard (§15 "constant-time responses"): both branches
     # must produce an identical observable response regardless of

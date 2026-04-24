@@ -369,12 +369,13 @@ field is required for owners and managers.
    no manager or owners membership anywhere), the code field is
    ignored and never burnt; a recover-purpose magic link is
    mailed directly.
-5. If **every** workspace the target user holds a grant in has
-   `auth.self_service_recovery_enabled = false` (§"Workspace
-   kill-switch" below), no email is sent and
-   `auth.recover.disabled_by_workspace` is logged. The 200 body
-   is unchanged. The user falls back to manager-mediated recovery
-   (existing `users.reissue_magic_link` path).
+5. If **any** workspace the target user holds a non-archived
+   grant in has `auth.self_service_recovery_enabled = false`
+   (§"Workspace kill-switch" below; *most-restrictive-wins*), no
+   email is sent and `auth.recover.disabled_by_workspace` is
+   logged. The 202 body is unchanged. The user falls back to
+   manager-mediated recovery (existing
+   `users.reissue_magic_link` path).
 
 **Redemption.** The magic link lands on
 `/recover/enroll?token=…`, which:
@@ -465,8 +466,8 @@ same way (owner revokes the invite via
 
 A workspace setting
 `auth.self_service_recovery_enabled` (bool, default `true`,
-override scope `W`, §"Settings catalog" in §05) gates the
-self-service path **for members of that workspace only**. Because
+override scope `W`, registered in §02 "Settings cascade" catalog)
+gates the self-service path **for members of that workspace only**. Because
 identity is global and a user may hold grants in multiple
 workspaces, the server evaluates the flag as
 *most-restrictive-wins*: if **any** workspace the user holds a
@@ -834,7 +835,7 @@ subject narrowing is enforced at the row level regardless of which
 
 | Situation                                  | Recovery path                                                  |
 |--------------------------------------------|----------------------------------------------------------------|
-| Worker/client/guest lost every device      | **Self-service** via `/recover` — enter email, receive a magic link, register a fresh passkey. No break-glass code required. Available unless every workspace the user belongs to has `auth.self_service_recovery_enabled = false`; managers on deployments that disable it use `users.reissue_magic_link` as before. |
+| Worker/client/guest lost every device      | **Self-service** via `/recover` — enter email, receive a magic link, register a fresh passkey. No break-glass code required. Available unless **any** workspace the user holds a non-archived grant in has `auth.self_service_recovery_enabled = false` (*most-restrictive-wins*, §"Workspace kill-switch"); managers on deployments that disable it use `users.reissue_magic_link` as before. |
 | Manager or owners-member lost every device | **Self-service with step-up** via `/recover` — enter email **and** an unused break-glass code. The code is burnt on request; the magic link enrolls a fresh passkey and regenerates the code set. |
 | Manager or owners-member lost every device + all break-glass codes, another owners-group member exists on a shared scope | Peer clicks `users.reissue_magic_link` on the user's profile. |
 | Last owners-group member locked out completely | **Host-CLI recovery only in v1.** Stop service, run `crewday admin recover --email ...` on the host, which emits a one-time magic link to stdout. Operator must have shell access to the deployment host. Hosted / SaaS recovery flows (support escalation, out-of-band identity verification) are **out of scope for v1** — see §19. |

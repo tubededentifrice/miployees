@@ -64,57 +64,49 @@ editing rules".
 
 ## Per-task workflow
 
-**One commit per pair, and only after selfreview has finished.**
-Selfreview (even in autofix mode) does **not** commit — it applies
-fixes in the working tree and runs gates. The director then dispatches
-the `commiter` subagent, which bundles the main task's implementation
-**and** its review fixes into a single commit and pushes. No interim
-commit between implementation and selfreview.
+**One commit per main+selfreview pair, produced by the `commiter`.**
+Neither the implementing coder nor the selfreview-autofix coder commits
+or closes Beads tasks — both stop at quality gates and leave changes
+in the working tree. The commiter then closes both tasks, syncs Beads,
+and ships implementation + review fixes + `.beads/` delta in a single
+signed-off commit. Closure and commit are atomic.
 
 ```
-DIRECTOR: pick top task from `bv --robot-triage --format toon`
+DIRECTOR: pick top task with `bv --robot-triage --format toon`
     │
     ▼
-1. DIRECTOR: locate (or create via `/beads`) the paired
-   selfreview task — triage doesn't return it
+1. DIRECTOR: locate (or create via `/beads`) the paired selfreview
+   task — triage does not return it.
     │
     ▼
 2. CODER: implement + run MODULE tests only.
-    │       **Do NOT commit.** Leave changes in the working tree.
-    │       Delegated via subagent to keep director context clean.
+    │       **No commit, no `bd close`.** Leave changes in the working
+    │       tree. Delegated via subagent.
     │
     ▼
-3. CODER: run the paired selfreview task **in autofix mode**
-    │       (`/selfreview autofix` — fixes every BUGS/MISSING/RISKY
-    │       directly, no plan mode, no user prompt, runs the repo's
-    │       quality gates). Fixes stay uncommitted in the working
-    │       tree. Delegated via subagent; preserves the 1:1
-    │       main↔selfreview coupling.
+3. CODER: run paired selfreview in autofix mode (`/selfreview autofix`).
+    │       Fixes every BUGS/MISSING/RISKY in place, runs quality
+    │       gates. **No commit, no `bd close`.** Director-invoked
+    │       override (see selfreview SKILL §Modes). Delegated via
+    │       subagent; preserves the 1:1 main↔selfreview coupling.
     │
     ▼
-4. DIRECTOR: `bd close <main-task-id>` and
-    │       `bd close <selfreview-task-id>` (no `bd sync`, no commit
-    │       yet — the commiter will sync and bundle both closures
-    │       into the single commit).
+4. COMMITER: `bd close <main>` → `bd close <sr>` → `bd sync` →
+    │       `git add` (in-scope code + `.beads/`) → signed-off
+    │       Conventional Commit referencing both IDs → `git push`.
+    │       Single atomic step: closure ships with the commit.
     │
     ▼
-5. COMMITER: `bd sync` → `git add` (in-scope code + `.beads/`) →
-    │       signed-off Conventional Commit referencing both task IDs
-    │       → `git push`. **This is the only commit for the pair.**
-    │
-    ▼
-6. DIRECTOR: `bv --robot-triage --format toon` again —
-   loop to step 1 until empty.
+5. DIRECTOR: `bv --robot-triage --format toon` again — loop to step 1
+   until empty.
 ```
 
-**No Reviewer or Documenter agents.** Review = the paired selfreview
-Beads task run in autofix mode. Documentation updates happen inside
-the main or selfreview task itself — the Coder owns spec / README /
-OpenAPI changes for the scope it touched.
+**No Reviewer or Documenter agents.** Review = paired selfreview task
+in autofix mode. Doc updates happen inside the main or selfreview
+task — the Coder owns specs / README / OpenAPI for its scope.
 
-**Never commit before step 5.** If the Coder or the selfreview
-subagent commits mid-flow, that's a bug — stop and investigate
-rather than stacking more commits on top.
+**Never commit or close before step 4.** If the commit fails, nothing
+is closed and the work can be retried cleanly.
 
 For hard architectural decisions: invoke **ORACLE** for deep research
 before planning, not after.
@@ -192,8 +184,10 @@ prompt: |
   Acceptance criteria: see bd-042
 ```
 
-**For selfreview delegations, explicitly instruct autofix mode** —
-belt-and-braces even though the `selfreview` label auto-triggers it:
+**Selfreview delegations must explicitly instruct autofix mode AND
+the no-commit override** — selfreview SKILL defaults to commit+close
+in standalone autofix; the director flow needs neither (the commiter
+handles both atomically in step 4).
 
 ```
 subagent_type: "general-purpose"
@@ -201,13 +195,14 @@ prompt: |
   Read and follow: .claude/agents/coder.md
 
   Area: app/api/tasks  (same as the paired main task)
-  Beads task: bd-042-sr   # the selfreview task, labelled `selfreview`
+  Beads task: bd-042-sr   # selfreview task, labelled `selfreview`
   Test path: tests/api/test_tasks.py
-  Task: Run `/selfreview` in **autofix mode** against bd-042's commits.
+  Task: Run `/selfreview autofix` against bd-042's working-tree changes.
     - No plan mode, no user prompt.
-    - Fix every BUGS / MISSING / RISKY finding directly.
+    - Fix every BUGS / MISSING / RISKY finding in place.
     - Run the repo's quality gates (lint, type, affected tests).
-    - Close the Beads task, commit, push.
+    - **Do NOT commit. Do NOT `bd close`.** Stop at Phase 6 and return —
+      the commiter will close both tasks and ship the bundled commit.
 ```
 
 ### Frontend work — load `/frontend-design:frontend-design`

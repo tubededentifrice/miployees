@@ -113,6 +113,11 @@ class TestMigrationShape:
             "name",
             "plan",
             "quota_json",
+            # ``settings_json`` landed with cd-jdhm to host the recovery
+            # kill-switch flag; §02 "Settings cascade" documents the
+            # single flat-map shape this column carries for every
+            # registered workspace setting (cd-n6p writes the rest).
+            "settings_json",
             "created_at",
             "owner_onboarded_at",
         }
@@ -175,6 +180,7 @@ class TestWorkspaceInsertAndRead:
             name="Read Back",
             plan="free",
             quota_json={"users_max": 5},
+            settings_json={"auth.self_service_recovery_enabled": False},
             created_at=_PINNED,
         )
         db_session.add(ws)
@@ -188,6 +194,36 @@ class TestWorkspaceInsertAndRead:
         assert loaded.name == "Read Back"
         assert loaded.plan == "free"
         assert loaded.quota_json == {"users_max": 5}
+        # ``settings_json`` round-trips verbatim — the resolver (cd-n6p)
+        # reads whole payloads here without further coalescing.
+        assert loaded.settings_json == {"auth.self_service_recovery_enabled": False}
+
+    def test_insert_defaults_settings_json_to_empty(self, db_session: Session) -> None:
+        """Omitting ``settings_json`` yields the empty-map default.
+
+        The ORM default + server-side default together ensure a
+        caller that doesn't know about the column still writes
+        ``{}`` — both the unit-level path (ORM ``default=dict``) and
+        the raw-SQL path (``server_default='{}'``) land the same
+        sentinel, so the recovery kill-switch can read the column
+        without worrying about NULL on a pre-cd-jdhm row.
+        """
+        ws = Workspace(
+            id="01HWA00000000000000000DFLT",
+            slug="default-settings-slug",
+            name="Default Settings",
+            plan="free",
+            quota_json={},
+            created_at=_PINNED,
+        )
+        db_session.add(ws)
+        db_session.commit()
+        db_session.expire_all()
+
+        loaded = db_session.scalars(
+            select(Workspace).where(Workspace.slug == "default-settings-slug")
+        ).one()
+        assert loaded.settings_json == {}
 
 
 class TestUniqueSlug:

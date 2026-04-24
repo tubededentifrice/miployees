@@ -38,7 +38,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 from webauthn.helpers.structs import (
     AttestationFormat,
@@ -47,6 +47,7 @@ from webauthn.helpers.structs import (
 )
 
 from app.adapters.db.audit.models import AuditLog
+from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.identity.models import (
     MagicLinkNonce,
     PasskeyCredential,
@@ -198,10 +199,17 @@ def client(
 
     # Sweep committed rows so sibling tests see a clean table.
     with factory() as s:
+        # ``RoleGrant`` sweeps before ``Workspace`` because the FK
+        # cascade would otherwise hard-delete grants under the
+        # workspace-delete, and SQLAlchemy's per-row ``delete()`` in
+        # the loop below would fail to find them the second pass.
+        # Ordering deletes FK-children first also mirrors how a real
+        # tenant hard-delete would run.
         for table_model in (
             PasskeyCredential,
             AuthSession,
             MagicLinkNonce,
+            RoleGrant,
             User,
             Workspace,
             AuditLog,
@@ -518,3 +526,237 @@ class TestRecoveryInvalidToken:
         r = client.get("/api/v1/recover/passkey/verify?token=not-a-real-token")
         assert r.status_code == 400
         assert r.json()["detail"]["error"] == "invalid_token"
+
+
+# ---------------------------------------------------------------------------
+# Workspace kill-switch (auth.self_service_recovery_enabled)
+# ---------------------------------------------------------------------------
+
+
+def _seed_user_with_killswitch(
+    engine: Engine,
+    *,
+    email: str,
+    display_name: str,
+    kill_switch: bool,
+) -> str:
+    """Seed a user with one grant in a workspace whose kill-switch state
+    is pinned.
+
+    Returns the user id. ``kill_switch=True`` writes the flag
+    ``False`` into the workspace's ``settings_json`` (i.e. self-service
+    recovery is *disabled* for anyone with a grant here). The dual
+    meaning ("kill_switch=True → recovery disabled") is ugly but
+    matches the test's narrative intent; the model column stays the
+    spec's ``auth.self_service_recovery_enabled`` boolean.
+    """
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    with factory() as s:
+        user = bootstrap_user(s, email=email, display_name=display_name)
+        workspace_id = new_ulid()
+        s.add(
+            Workspace(
+                id=workspace_id,
+                slug=f"ws-{workspace_id[:8].lower()}",
+                name="KillSwitch",
+                plan="free",
+                quota_json={},
+                settings_json=(
+                    {"auth.self_service_recovery_enabled": False} if kill_switch else {}
+                ),
+                created_at=user.created_at,
+            )
+        )
+        s.flush()
+        s.add(
+            RoleGrant(
+                id=new_ulid(),
+                workspace_id=workspace_id,
+                user_id=user.id,
+                grant_role="worker",
+                scope_property_id=None,
+                created_at=user.created_at,
+                created_by_user_id=None,
+            )
+        )
+        s.commit()
+        return user.id
+
+
+class TestRecoveryKillSwitch:
+    """Spec §03 "Workspace kill-switch" end-to-end."""
+
+    def test_kill_switched_user_no_mail_and_audit_lands(
+        self,
+        client: TestClient,
+        engine: Engine,
+        mailer: _RecordingMailer,
+    ) -> None:
+        """A user with a grant in a kill-switched workspace sees 202,
+        receives no mail, and an ``audit.recovery.disabled_by_workspace``
+        row is written on a fresh UoW.
+        """
+        user_id = _seed_user_with_killswitch(
+            engine,
+            email="ks@example.com",
+            display_name="KS",
+            kill_switch=True,
+        )
+
+        r = client.post(
+            "/api/v1/recover/passkey/request",
+            json={"email": "ks@example.com"},
+        )
+        # Wire-identical to every other 202 — the enumeration guard
+        # survives the kill-switch case.
+        assert r.status_code == 202
+        assert r.json()["status"] == "accepted"
+        # No mail, no magic-link nonce — the hit branch was skipped.
+        assert mailer.sent == []
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        with factory() as s:
+            assert s.scalars(select(MagicLinkNonce)).all() == []
+            # The disabled-by-workspace audit row landed.
+            disabled = s.scalars(
+                select(AuditLog).where(
+                    AuditLog.action == "recovery.disabled_by_workspace"
+                )
+            ).all()
+            assert len(disabled) == 1
+            row = disabled[0]
+            assert row.entity_id == user_id
+            assert isinstance(row.diff, dict)
+            assert row.diff["reason"] == "workspace_kill_switch"
+            # No ``recovery.requested`` row — the domain branch
+            # short-circuits before the primary UoW audit.
+            assert (
+                s.scalars(
+                    select(AuditLog).where(AuditLog.action == "recovery.requested")
+                ).all()
+                == []
+            )
+
+    def test_flag_true_everywhere_flows_through_happy_path(
+        self,
+        client: TestClient,
+        engine: Engine,
+        mailer: _RecordingMailer,
+    ) -> None:
+        """The explicit ``True`` case matches the catalog default — the
+        mail lands, the nonce is written, the ``recovery.requested``
+        audit fires."""
+        _seed_user_with_killswitch(
+            engine,
+            email="on@example.com",
+            display_name="On",
+            kill_switch=False,
+        )
+        r = client.post(
+            "/api/v1/recover/passkey/request",
+            json={"email": "on@example.com"},
+        )
+        assert r.status_code == 202
+        assert len(mailer.sent) == 1
+
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        with factory() as s:
+            assert len(s.scalars(select(MagicLinkNonce)).all()) == 1
+            assert s.scalars(
+                select(AuditLog).where(AuditLog.action == "recovery.requested")
+            ).all()
+            assert (
+                s.scalars(
+                    select(AuditLog).where(
+                        AuditLog.action == "recovery.disabled_by_workspace"
+                    )
+                ).all()
+                == []
+            )
+
+    def test_archived_grants_do_not_block(
+        self,
+        client: TestClient,
+        engine: Engine,
+        mailer: _RecordingMailer,
+    ) -> None:
+        """§03 "Workspace kill-switch": only non-archived grants feed
+        the decision. v1's archival == hard-delete, so we seed the
+        kill-switched grant and then delete it — the user must still
+        reach the happy path via their surviving non-kill-switched
+        grant. When cd-x1xh lands ``role_grant.revoked_at``, this
+        test extends to soft-revoke semantics without changing the
+        behavioural assertion.
+        """
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        with factory() as s:
+            user = bootstrap_user(s, email="arch@example.com", display_name="Arch")
+            ok_ws_id = new_ulid()
+            s.add(
+                Workspace(
+                    id=ok_ws_id,
+                    slug=f"ok-{ok_ws_id[:8].lower()}",
+                    name="OK",
+                    plan="free",
+                    quota_json={},
+                    settings_json={},
+                    created_at=user.created_at,
+                )
+            )
+            killed_ws_id = new_ulid()
+            s.add(
+                Workspace(
+                    id=killed_ws_id,
+                    slug=f"ko-{killed_ws_id[:8].lower()}",
+                    name="Killed",
+                    plan="free",
+                    quota_json={},
+                    settings_json={"auth.self_service_recovery_enabled": False},
+                    created_at=user.created_at,
+                )
+            )
+            s.flush()
+            s.add(
+                RoleGrant(
+                    id=new_ulid(),
+                    workspace_id=ok_ws_id,
+                    user_id=user.id,
+                    grant_role="worker",
+                    scope_property_id=None,
+                    created_at=user.created_at,
+                    created_by_user_id=None,
+                )
+            )
+            killed_grant_id = new_ulid()
+            s.add(
+                RoleGrant(
+                    id=killed_grant_id,
+                    workspace_id=killed_ws_id,
+                    user_id=user.id,
+                    grant_role="worker",
+                    scope_property_id=None,
+                    created_at=user.created_at,
+                    created_by_user_id=None,
+                )
+            )
+            s.flush()
+            # Archive == delete in v1.
+            s.execute(delete(RoleGrant).where(RoleGrant.id == killed_grant_id))
+            s.commit()
+
+        r = client.post(
+            "/api/v1/recover/passkey/request",
+            json={"email": "arch@example.com"},
+        )
+        assert r.status_code == 202
+        # Happy path — mail sent, no disabled audit.
+        assert len(mailer.sent) == 1
+        with factory() as s:
+            assert len(s.scalars(select(MagicLinkNonce)).all()) == 1
+            assert (
+                s.scalars(
+                    select(AuditLog).where(
+                        AuditLog.action == "recovery.disabled_by_workspace"
+                    )
+                ).all()
+                == []
+            )

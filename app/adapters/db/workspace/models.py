@@ -10,10 +10,13 @@ enough columns to unblock downstream DB + auth work:
 
 The richer ``workspaces`` surface from §02 —
 ``verification_state``, ``signup_ip``, ``default_language`` /
-``_currency`` / ``_country`` / ``_locale``, ``settings_json``,
-``created_via``, ``created_by_user_id`` — is deferred to cd-n6p
-(owner settings) and cd-055 (signup quotas) and lands via follow-up
-migrations without breaking the v1 public surface.
+``_currency`` / ``_country`` / ``_locale``, ``created_via``,
+``created_by_user_id`` — is deferred to cd-n6p (owner settings) and
+cd-055 (signup quotas) and lands via follow-up migrations without
+breaking the v1 public surface. The ``settings_json`` column already
+lands here (cd-jdhm) so the recovery kill-switch has a canonical
+home; cd-n6p populates the rest of the owner-facing settings keys
+against the same column.
 
 ``user_workspace.user_id`` is a **soft reference** (no FK) because
 the ``users`` table lands with cd-w92. Once cd-w92 ships a later
@@ -86,6 +89,16 @@ class Workspace(Base):
     # should use a TypedDict locally and coerce into this column.
     quota_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
+    )
+    # ``settings_json`` is the flat map of ``dotted.key → value`` holding
+    # concrete workspace defaults for every registered setting (§02
+    # "Settings cascade"). cd-jdhm lands the column so the self-service
+    # recovery kill-switch (``auth.self_service_recovery_enabled``) has
+    # a canonical home; cd-n6p is the task that wires owner-facing
+    # writes for the broader setting catalog. Defaulted to ``{}`` so
+    # callers never need to coalesce when reading a missing key.
+    settings_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

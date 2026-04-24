@@ -29,10 +29,11 @@ from typing import Any
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.audit.models import AuditLog
+from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.base import Base
 from app.adapters.db.identity.models import (
     MagicLinkNonce,
@@ -60,6 +61,7 @@ from app.auth.recovery import (
     RecoverySessionExpired,
     RecoverySessionNotFound,
     complete_recovery,
+    is_self_service_recovery_disabled,
     prune_expired_recovery_sessions,
     request_recovery,
     verify_recovery,
@@ -187,6 +189,36 @@ def reset_recovery_store() -> Iterator[None]:
     recovery_module._RECOVERY_SESSIONS.clear()
     yield
     recovery_module._RECOVERY_SESSIONS.clear()
+
+
+@pytest.fixture
+def redirect_default_engine(
+    engine: Engine,
+) -> Iterator[None]:
+    """Point :func:`app.adapters.db.session.make_uow` at the test engine.
+
+    The kill-switch branch of :func:`request_recovery` writes its
+    ``audit.recovery.disabled_by_workspace`` row on a fresh UoW
+    (:func:`make_uow`), which reads the module-level default
+    sessionmaker. Without this redirect the fresh UoW opens against
+    whatever DB the default factory was last built for, the broad
+    ``except Exception`` in the helper swallows the cross-DB failure,
+    and the audit assertion reads from the test DB where nothing was
+    written. Mirrors the shim used in
+    ``tests.unit.auth.test_passkey_login``.
+    """
+    import app.adapters.db.session as _session_mod
+
+    original_engine = _session_mod._default_engine
+    original_factory = _session_mod._default_sessionmaker_
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    _session_mod._default_engine = engine
+    _session_mod._default_sessionmaker_ = factory
+    try:
+        yield
+    finally:
+        _session_mod._default_engine = original_engine
+        _session_mod._default_sessionmaker_ = original_factory
 
 
 # ---------------------------------------------------------------------------
@@ -1225,3 +1257,505 @@ class TestAuditPIIMinimisation:
             assert "pii@example.com" not in body
             assert "203.0.113.77" not in body
             assert "127.0.0.1" not in body  # request IP
+
+
+# ---------------------------------------------------------------------------
+# Workspace kill-switch (auth.self_service_recovery_enabled)
+# ---------------------------------------------------------------------------
+
+
+def _seed_workspace(
+    session: Session,
+    *,
+    slug: str,
+    settings_json: dict[str, Any] | None = None,
+) -> str:
+    """Seed one :class:`Workspace` row; return its id.
+
+    Kept narrow: kill-switch tests only care about the ``settings_json``
+    blob and the workspace id, so the helper intentionally sidesteps
+    the richer :func:`tests.factories.identity.bootstrap_workspace`
+    which also seeds the ``owners`` permission group + membership.
+    Those rows would pull in ``user_workspace`` / ``permission_group``
+    /  ``permission_group_member`` (and their FKs), none of which the
+    kill-switch helper reads.
+    """
+    workspace_id = new_ulid()
+    session.add(
+        Workspace(
+            id=workspace_id,
+            slug=slug,
+            name=slug.replace("-", " ").title(),
+            plan="free",
+            quota_json={},
+            settings_json=settings_json if settings_json is not None else {},
+            created_at=_PINNED,
+        )
+    )
+    session.flush()
+    return workspace_id
+
+
+def _seed_role_grant(
+    session: Session,
+    *,
+    workspace_id: str,
+    user_id: str,
+    grant_role: str = "worker",
+) -> str:
+    """Seed one :class:`RoleGrant` row; return its id."""
+    grant_id = new_ulid()
+    session.add(
+        RoleGrant(
+            id=grant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            grant_role=grant_role,
+            scope_property_id=None,
+            created_at=_PINNED,
+            created_by_user_id=None,
+        )
+    )
+    session.flush()
+    return grant_id
+
+
+class TestIsSelfServiceRecoveryDisabled:
+    """Unit coverage of the ``auth.self_service_recovery_enabled`` gate.
+
+    The helper walks the user's grants → workspaces and returns
+    ``True`` iff any workspace has the flag explicitly set to
+    ``False``. Covers the absent-key default, missing-grant empty
+    path, single-workspace flip, multi-workspace most-restrictive-
+    wins, and the "non-bool value is ignored (fail-open)" fallback.
+    """
+
+    def test_no_grants_returns_false(
+        self,
+        session: Session,
+    ) -> None:
+        """A user with no grants is never kill-switched — there's no
+        workspace to impose the setting on them."""
+        user = bootstrap_user(session, email="nog@example.com", display_name="NoG")
+        assert is_self_service_recovery_disabled(session, user_id=user.id) is False
+
+    def test_default_absent_key_returns_false(
+        self,
+        session: Session,
+    ) -> None:
+        """An empty ``settings_json`` → flag defaults to ``True`` →
+        helper returns ``False`` (not disabled)."""
+        user = bootstrap_user(session, email="dflt@example.com", display_name="Dflt")
+        ws_id = _seed_workspace(session, slug="default-settings")
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+        assert is_self_service_recovery_disabled(session, user_id=user.id) is False
+
+    def test_explicit_true_returns_false(
+        self,
+        session: Session,
+    ) -> None:
+        """An operator who wrote the flag ``True`` explicitly matches
+        the catalog default; the helper returns ``False``."""
+        user = bootstrap_user(session, email="on@example.com", display_name="On")
+        ws_id = _seed_workspace(
+            session,
+            slug="explicit-true",
+            settings_json={"auth.self_service_recovery_enabled": True},
+        )
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+        assert is_self_service_recovery_disabled(session, user_id=user.id) is False
+
+    def test_single_workspace_false_returns_true(
+        self,
+        session: Session,
+    ) -> None:
+        """The baseline kill-switch: one workspace flips the flag and
+        the user is disabled."""
+        user = bootstrap_user(session, email="off@example.com", display_name="Off")
+        ws_id = _seed_workspace(
+            session,
+            slug="single-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+        assert is_self_service_recovery_disabled(session, user_id=user.id) is True
+
+    def test_most_restrictive_wins(
+        self,
+        session: Session,
+    ) -> None:
+        """One-of-many workspaces flipped is enough (§03 "Workspace
+        kill-switch")."""
+        user = bootstrap_user(session, email="mrw@example.com", display_name="MRW")
+        ok_ws = _seed_workspace(session, slug="mrw-ok")
+        flipped_ws = _seed_workspace(
+            session,
+            slug="mrw-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        third_ws = _seed_workspace(
+            session,
+            slug="mrw-also-ok",
+            settings_json={"auth.self_service_recovery_enabled": True},
+        )
+        _seed_role_grant(session, workspace_id=ok_ws, user_id=user.id)
+        _seed_role_grant(session, workspace_id=flipped_ws, user_id=user.id)
+        _seed_role_grant(
+            session, workspace_id=third_ws, user_id=user.id, grant_role="manager"
+        )
+        assert is_self_service_recovery_disabled(session, user_id=user.id) is True
+
+    def test_other_user_grants_do_not_leak(
+        self,
+        session: Session,
+    ) -> None:
+        """The helper scopes the walk to its ``user_id`` argument — a
+        sibling user in a kill-switched workspace must not disable the
+        target user."""
+        target = bootstrap_user(session, email="t@example.com", display_name="T")
+        other = bootstrap_user(session, email="o@example.com", display_name="O")
+        flipped_ws = _seed_workspace(
+            session,
+            slug="leak-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        ok_ws = _seed_workspace(session, slug="leak-ok")
+        # Other user is kill-switched; target user is in a healthy workspace.
+        _seed_role_grant(session, workspace_id=flipped_ws, user_id=other.id)
+        _seed_role_grant(session, workspace_id=ok_ws, user_id=target.id)
+        assert is_self_service_recovery_disabled(session, user_id=target.id) is False
+        assert is_self_service_recovery_disabled(session, user_id=other.id) is True
+
+    def test_non_bool_value_is_ignored(
+        self,
+        session: Session,
+    ) -> None:
+        """A corrupt / typo'd payload (``"false"`` string vs ``False``
+        bool) fails open — we only disable on the explicit operator
+        choice, not on a truthy-adjacent value. The ``is False``
+        check in the helper enforces strict bool semantics."""
+        user = bootstrap_user(session, email="corrupt@example.com", display_name="C")
+        ws_id = _seed_workspace(
+            session,
+            slug="corrupt-payload",
+            # String "false" rather than the bool — a misuse the admin
+            # UI should reject, but the resolver treats as "not
+            # explicitly False" → fail-open.
+            settings_json={"auth.self_service_recovery_enabled": "false"},
+        )
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+        assert is_self_service_recovery_disabled(session, user_id=user.id) is False
+
+    def test_multiple_grants_same_workspace_deduped_behaviour(
+        self,
+        session: Session,
+    ) -> None:
+        """Two grants in the same kill-switched workspace still disable
+        the user (the SELECT returns the same ``settings_json`` twice
+        — the helper short-circuits on the first ``False``)."""
+        user = bootstrap_user(session, email="dup@example.com", display_name="Dup")
+        ws_id = _seed_workspace(
+            session,
+            slug="dup-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        # Two distinct grants (a workspace-scope worker + a property-
+        # scope client is valid v1; we fake the second with a worker
+        # grant on NULL scope to stay within the v1 slice — the
+        # kill-switch helper doesn't care about role shape).
+        _seed_role_grant(
+            session, workspace_id=ws_id, user_id=user.id, grant_role="worker"
+        )
+        _seed_role_grant(
+            session, workspace_id=ws_id, user_id=user.id, grant_role="manager"
+        )
+        assert is_self_service_recovery_disabled(session, user_id=user.id) is True
+
+
+class TestRequestRecoveryKillSwitch:
+    """The kill-switch gate is wired into :func:`request_recovery`.
+
+    Covers the full behavioural contract: 202 response (same wire
+    shape), no magic-link nonce, no mailer send, and the
+    ``recovery.disabled_by_workspace`` audit on a fresh UoW.
+    """
+
+    def test_kill_switched_user_no_mail_no_nonce(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+        redirect_default_engine: None,
+    ) -> None:
+        user = bootstrap_user(
+            session, email="ks@example.com", display_name="Kill Switch"
+        )
+        ws_id = _seed_workspace(
+            session,
+            slug="ks-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+        session.commit()
+
+        request_recovery(
+            session,
+            email="ks@example.com",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        # No nonce row, no mail — the whole hit branch was skipped.
+        assert session.scalars(select(MagicLinkNonce)).all() == []
+        assert mailer.sent == []
+
+    def test_kill_switched_user_writes_disabled_audit_on_fresh_uow(
+        self,
+        engine: Engine,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+        redirect_default_engine: None,
+    ) -> None:
+        """The audit lands on a fresh UoW (not the caller's session).
+
+        We commit the caller's session so the user / workspace / grant
+        rows are visible to the fresh UoW, then call
+        :func:`request_recovery`. The kill-switch branch opens its
+        own ``make_uow`` — the audit row lands on the shared engine
+        and we read it back through a sibling session.
+        """
+        user = bootstrap_user(session, email="ksa@example.com", display_name="Audit")
+        ws_id = _seed_workspace(
+            session,
+            slug="ksa-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+        session.commit()
+
+        request_recovery(
+            session,
+            email="ksa@example.com",
+            ip="198.51.100.22",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+
+        # Sibling session so we see rows the fresh UoW committed.
+        factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+        with factory() as reader:
+            rows = reader.scalars(
+                select(AuditLog).where(
+                    AuditLog.action == "recovery.disabled_by_workspace"
+                )
+            ).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.entity_kind == "user"
+        assert row.entity_id == user.id
+        assert isinstance(row.diff, dict)
+        assert row.diff["reason"] == "workspace_kill_switch"
+        assert len(row.diff["email_hash"]) == 64  # sha256 hex
+        assert len(row.diff["ip_hash"]) == 64
+        # No plaintext PII in the audit payload.
+        assert "ksa@example.com" not in str(row.diff)
+        assert "198.51.100.22" not in str(row.diff)
+        # Caller's UoW wrote NO ``recovery.requested`` row — the
+        # kill-switch branch short-circuits before that audit.
+        assert (
+            session.scalars(
+                select(AuditLog).where(AuditLog.action == "recovery.requested")
+            ).all()
+            == []
+        )
+
+    def test_kill_switched_user_does_not_raise(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+        redirect_default_engine: None,
+    ) -> None:
+        """The enumeration-guard contract: 202-on-the-wire requires
+        :func:`request_recovery` to complete without raising on
+        every branch. :func:`request_recovery` is typed ``-> None``,
+        so we assert the call returns (no exception) and leave the
+        domain-state assertions to the sibling "no_mail_no_nonce"
+        case above; strict mypy flags ``assert result is None`` as
+        a no-op when the callee is declared to return ``None``.
+        """
+        user = bootstrap_user(session, email="ret@example.com", display_name="Ret")
+        ws_id = _seed_workspace(
+            session,
+            slug="ret-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+        session.commit()
+
+        request_recovery(
+            session,
+            email="ret@example.com",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+
+    def test_user_with_all_flags_true_takes_happy_path(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """A user whose every workspace carries the flag ``True`` flows
+        through the normal hit branch — magic-link nonce, recovery
+        mail, ``recovery.requested`` audit."""
+        user = bootstrap_user(session, email="happy@example.com", display_name="Happy")
+        ws_id = _seed_workspace(
+            session,
+            slug="happy-on",
+            settings_json={"auth.self_service_recovery_enabled": True},
+        )
+        _seed_role_grant(session, workspace_id=ws_id, user_id=user.id)
+
+        request_recovery(
+            session,
+            email="happy@example.com",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        # Full happy path: nonce + mail + normal audit.
+        assert len(session.scalars(select(MagicLinkNonce)).all()) == 1
+        assert len(mailer.sent) == 1
+        audits = session.scalars(
+            select(AuditLog).where(AuditLog.action == "recovery.requested")
+        ).all()
+        assert len(audits) == 1
+
+    def test_user_with_archived_grant_is_not_blocked(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """Grants whose workspace has been soft-retired don't count.
+
+        §03 "Workspace kill-switch" is clear: only **non-archived**
+        grants feed the most-restrictive-wins decision. The v1
+        ``role_grant`` schema doesn't carry ``revoked_at`` — revocation
+        hard-deletes the row today (see
+        :mod:`app.domain.identity.role_grants`). The forward-compat
+        contract we test here is the behavioural one: a user whose
+        ONLY kill-switched workspace is represented by a deleted grant
+        must flow through the happy path. cd-x1xh (role_grant soft-
+        retire columns) extends the WHERE clause to filter on
+        ``revoked_at IS NULL`` without changing this test.
+        """
+        user = bootstrap_user(session, email="arc@example.com", display_name="Arc")
+        active_ws = _seed_workspace(session, slug="arc-active")
+        archived_ws = _seed_workspace(
+            session,
+            slug="arc-archived",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        # Active grant in the healthy workspace.
+        _seed_role_grant(session, workspace_id=active_ws, user_id=user.id)
+        # Grant in the kill-switched workspace, then "archive" it the
+        # v1 way — delete the row. When cd-x1xh lands ``revoked_at``,
+        # this will become a soft-revoke + WHERE-clause filter; the
+        # assertion stays the same.
+        arc_grant_id = _seed_role_grant(
+            session, workspace_id=archived_ws, user_id=user.id
+        )
+        session.execute(delete(RoleGrant).where(RoleGrant.id == arc_grant_id))
+        session.flush()
+
+        request_recovery(
+            session,
+            email="arc@example.com",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        # Happy path — magic link minted + mailed.
+        assert len(session.scalars(select(MagicLinkNonce)).all()) == 1
+        assert len(mailer.sent) == 1
+        assert (
+            session.scalars(
+                select(AuditLog).where(
+                    AuditLog.action == "recovery.disabled_by_workspace"
+                )
+            ).all()
+            == []
+        )
+
+    def test_unknown_email_still_sends_miss_template(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """The kill-switch gate runs AFTER user lookup; an unknown
+        email never reaches the helper and falls through to the
+        normal miss branch (enumeration guard)."""
+        # Seed a kill-switched workspace so the helper *would* disable
+        # recovery for any user grant-mapped to it — but the inbound
+        # email doesn't match any user, so the gate is never consulted.
+        ws_id = _seed_workspace(
+            session,
+            slug="miss-ws-off",
+            settings_json={"auth.self_service_recovery_enabled": False},
+        )
+        del ws_id  # Seed only; no grants.
+
+        request_recovery(
+            session,
+            email="ghost-miss@example.com",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        # Normal miss: one mail (the no-account notice), zero nonces,
+        # zero disabled-by-workspace audits, one hit=False audit.
+        assert len(mailer.sent) == 1
+        assert session.scalars(select(MagicLinkNonce)).all() == []
+        audits = session.scalars(
+            select(AuditLog).where(AuditLog.action == "recovery.requested")
+        ).all()
+        assert len(audits) == 1
+        assert isinstance(audits[0].diff, dict)
+        assert audits[0].diff["hit"] is False
+        assert (
+            session.scalars(
+                select(AuditLog).where(
+                    AuditLog.action == "recovery.disabled_by_workspace"
+                )
+            ).all()
+            == []
+        )
