@@ -263,6 +263,52 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
     }
   });
 
+  it("task.{completed,skipped} also invalidates the history `tasks` tab", () => {
+    // §14 worker history — a newly wrapped-up task should refresh the
+    // employee's History → Tasks feed without the page having to remount.
+    for (const kind of ["task.completed", "task.skipped"] as const) {
+      const qc = makeClient();
+      const spy = vi.spyOn(qc, "invalidateQueries");
+      INVALIDATIONS[kind](
+        makeEvent(kind, { task: { id: "t1", name: "x" } }),
+        qc,
+      );
+      const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+      expect(called).toEqual(expect.arrayContaining([qk.history("tasks")]));
+    }
+  });
+
+  it("expense.{approved,rejected,reimbursed,decided} also invalidates the history `expenses` tab", () => {
+    for (const kind of [
+      "expense.approved",
+      "expense.rejected",
+      "expense.reimbursed",
+      "expense.decided",
+    ] as const) {
+      const qc = makeClient();
+      const spy = vi.spyOn(qc, "invalidateQueries");
+      INVALIDATIONS[kind](makeEvent(kind, { id: "e1", status: "approved" }), qc);
+      const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+      expect(called).toEqual(
+        expect.arrayContaining([qk.history("expenses")]),
+      );
+    }
+  });
+
+  it("approval.{decided,resolved} also invalidates the history `leaves` + `expenses` tabs", () => {
+    // §14 worker history — an approved leave or expense should surface
+    // in the respective tab of `/history` without a page remount.
+    for (const kind of ["approval.decided", "approval.resolved"] as const) {
+      const qc = makeClient();
+      const spy = vi.spyOn(qc, "invalidateQueries");
+      INVALIDATIONS[kind](makeEvent(kind, { id: "ar1", decision: "approved" }), qc);
+      const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+      expect(called).toEqual(
+        expect.arrayContaining([qk.history("leaves"), qk.history("expenses")]),
+      );
+    }
+  });
+
   it("asset_action.performed invalidates the one asset + the list", () => {
     const qc = makeClient();
     const spy = vi.spyOn(qc, "invalidateQueries");

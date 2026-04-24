@@ -337,6 +337,9 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
+    // §14 worker history — a newly completed occurrence belongs in the
+    // Tasks tab of the `/history` feed.
+    invalidate(qc, qk.history("tasks"));
   },
 
   "task.skipped": (event, qc) => {
@@ -348,6 +351,8 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
+    // §14 worker history — skipped occurrences land in the Tasks tab too.
+    invalidate(qc, qk.history("tasks"));
   },
 
   "task.overdue": (_event, qc) => {
@@ -377,6 +382,12 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
   "approval.decided": (_event, qc) => {
     invalidate(qc, qk.approvals());
     invalidate(qc, qk.dashboard());
+    // §14 worker history — approved leaves surface on the Leaves tab;
+    // approved expenses reach the Expenses tab via the `expense.*`
+    // kinds below, but an approval resolution can be the source event
+    // on some server builds so we invalidate both here defensively.
+    invalidate(qc, qk.history("leaves"));
+    invalidate(qc, qk.history("expenses"));
   },
 
   "approval.resolved": (_event, qc) => {
@@ -385,24 +396,29 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     // emitting either name works unchanged.
     invalidate(qc, qk.approvals());
     invalidate(qc, qk.dashboard());
+    invalidate(qc, qk.history("leaves"));
+    invalidate(qc, qk.history("expenses"));
   },
 
   "expense.approved": (_event, qc) => {
     invalidate(qc, qk.expenses("all"));
     invalidate(qc, qk.expenses("mine"));
     invalidate(qc, qk.dashboard());
+    invalidate(qc, qk.history("expenses"));
   },
 
   "expense.rejected": (_event, qc) => {
     invalidate(qc, qk.expenses("all"));
     invalidate(qc, qk.expenses("mine"));
     invalidate(qc, qk.dashboard());
+    invalidate(qc, qk.history("expenses"));
   },
 
   "expense.reimbursed": (_event, qc) => {
     invalidate(qc, qk.expenses("all"));
     invalidate(qc, qk.expenses("mine"));
     invalidate(qc, qk.dashboard());
+    invalidate(qc, qk.history("expenses"));
   },
 
   "expense.decided": (_event, qc) => {
@@ -411,6 +427,7 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.expenses("all"));
     invalidate(qc, qk.expenses("mine"));
     invalidate(qc, qk.dashboard());
+    invalidate(qc, qk.history("expenses"));
   },
 
   "asset_action.performed": (event, qc) => {
