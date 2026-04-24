@@ -91,14 +91,20 @@ typography:
     letterSpacing: 0
 spacing:
   0: 0
-  1: 4
-  2: 8
-  3: 12
-  4: 16
-  5: 20
-  6: 24
-  7: 32
-  8: 48
+  1: 2
+  2: 4
+  3: 6
+  4: 8
+  5: 10
+  6: 12
+  7: 14
+  8: 16
+  9: 20
+  10: 24
+  11: 32
+  12: 40
+  13: 48
+  14: 56
 rounded:
   tag: 4px
   control: 6px
@@ -286,9 +292,9 @@ down. Always design at **360 px wide first**, then at 720 px
 (tablet / desktop transition), then at 1080 px (manager 3-column
 grid).
 
-- **Spacing scale** (px): `0, 4, 8, 12, 16, 20, 24, 32, 48`.
-  Padding inside cards: 12-16. Padding inside sections: 16-24
-  on phone; 24-32 on desktop. Gap between siblings: 6-12.
+- **Spacing scale** (px): `0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32, 40, 48, 56`.
+  Padding inside cards: 12-20. Padding inside sections: 16-24
+  on phone; 24-48 on desktop. Gap between siblings: 4-16.
   Anything outside the scale needs a justification in the PR.
 - **Container widths.** Phone is edge-to-edge below 720 px (no
   centred letterbox). Desktop manager: three columns
