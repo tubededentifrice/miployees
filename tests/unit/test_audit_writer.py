@@ -166,6 +166,97 @@ class TestDiffDefaulting:
         assert row.diff == {}
 
 
+class TestRedaction:
+    """PII in ``diff`` must never reach persistence.
+
+    The writer funnels ``diff`` through :func:`app.util.redact.redact`
+    before calling :meth:`Session.add`, so the on-disk
+    ``AuditLog.diff`` column holds only the scrubbed form. This is a
+    §15 invariant (``docs/specs/15-security-privacy.md`` §"Audit
+    log") — logs and audit rows share one redaction rule set.
+    """
+
+    def test_email_in_diff_is_redacted(self, session: Session) -> None:
+        row = write_audit(
+            session,
+            _CTX,
+            entity_kind="contact",
+            entity_id="01HWACON",
+            action="updated",
+            diff={
+                "before": {"email": "old@x.com"},
+                "after": {"email": "jean@example.com"},
+            },
+        )
+        # ``email`` is not in the sensitive-key set (it's often a
+        # legitimate audit field), but the free-text regex pass still
+        # scrubs the address value.
+        assert row.diff is not None
+        diff = row.diff
+        assert isinstance(diff, dict)
+        before = diff["before"]
+        after = diff["after"]
+        assert isinstance(before, dict)
+        assert isinstance(after, dict)
+        assert before["email"] == "<redacted:email>"
+        assert after["email"] == "<redacted:email>"
+
+    def test_iban_and_pan_in_diff_are_redacted(self, session: Session) -> None:
+        row = write_audit(
+            session,
+            _CTX,
+            entity_kind="payout_destination",
+            entity_id="01HWAPAY",
+            action="updated",
+            diff={
+                "note": (
+                    "switch IBAN FR1420041010050500013M02606 and card "
+                    "4242424242424242 to new account"
+                ),
+            },
+        )
+        assert row.diff is not None
+        assert isinstance(row.diff, dict)
+        note = row.diff["note"]
+        assert isinstance(note, str)
+        assert "FR1420041010050500013M02606" not in note
+        assert "4242424242424242" not in note
+        assert "<redacted:iban>" in note
+        assert "<redacted:pan>" in note
+
+    def test_sensitive_key_in_diff_is_redacted(self, session: Session) -> None:
+        row = write_audit(
+            session,
+            _CTX,
+            entity_kind="user",
+            entity_id="01HWAUSR",
+            action="credentials_updated",
+            diff={"password": "hunter2-plaintext", "session_id": "sess-abcdef"},
+        )
+        assert row.diff is not None
+        assert isinstance(row.diff, dict)
+        assert "hunter2-plaintext" not in str(row.diff)
+        assert "sess-abcdef" not in str(row.diff)
+
+    def test_list_diff_is_redacted_elementwise(self, session: Session) -> None:
+        row = write_audit(
+            session,
+            _CTX,
+            entity_kind="task_batch",
+            entity_id="01HWABATCH",
+            action="archived",
+            diff=[
+                {"id": "1", "reason": "contact jean@example.com"},
+                {"id": "2", "reason": "no-op"},
+            ],
+        )
+        assert row.diff is not None
+        assert isinstance(row.diff, list)
+        first = row.diff[0]
+        assert isinstance(first, dict)
+        assert "<redacted:email>" in first["reason"]
+
+
 class TestClock:
     """The writer uses ``SystemClock`` by default and accepts overrides."""
 

@@ -186,7 +186,11 @@ class TestMintSessionGreenfield:
             assert force_login.entity_id == result.session_issue.session_id
             assert force_login.workspace_id == workspace.id
             diff = force_login.diff
-            assert diff["email"] == "smoke@dev.local"
+            # ``email`` lands scrubbed: the audit writer funnels every
+            # diff through :func:`app.util.redact.redact`, so raw PII
+            # (including the dev-login email) never touches the log.
+            # See ``docs/specs/15-security-privacy.md`` §"Audit log".
+            assert diff["email"] == "<redacted:email>"
             assert diff["workspace_slug"] == "smoke"
             assert diff["role"] == "owner"
             assert diff["user_created"] is True

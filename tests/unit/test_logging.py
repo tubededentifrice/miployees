@@ -171,7 +171,7 @@ class TestRedactionKeys:
     ) -> None:
         configured_logger.info("auth", extra={"token": "abc"})
         line = _lines(stream)[0]
-        assert line["token"] == "***REDACTED***"
+        assert line["token"] == "<redacted:sensitive-key>"
 
     @pytest.mark.parametrize(
         "key",
@@ -185,7 +185,7 @@ class TestRedactionKeys:
     ) -> None:
         configured_logger.info("m", extra={key: "Bearer xyz"})
         line = _lines(stream)[0]
-        assert line[key] == "***REDACTED***"
+        assert line[key] == "<redacted:sensitive-key>"
 
     @pytest.mark.parametrize(
         "key",
@@ -208,7 +208,7 @@ class TestRedactionKeys:
     ) -> None:
         configured_logger.info("m", extra={key: "value"})
         line = _lines(stream)[0]
-        assert line[key] == "***REDACTED***"
+        assert line[key] == "<redacted:sensitive-key>"
 
     def test_non_sensitive_key_is_preserved(
         self, configured_logger: logging.Logger, stream: io.StringIO
@@ -226,7 +226,7 @@ class TestRedactionValues:
         configured_logger.info("auth Bearer xyz123abc")
         msg = _as_str(_lines(stream)[0]["msg"])
         assert "xyz123abc" not in msg
-        assert "***REDACTED***" in msg
+        assert "<redacted:credential>" in msg
 
     def test_jwt_shape_in_message(
         self, configured_logger: logging.Logger, stream: io.StringIO
@@ -234,7 +234,7 @@ class TestRedactionValues:
         configured_logger.info("got jwt eyJhbG.abc.def here")
         msg = _as_str(_lines(stream)[0]["msg"])
         assert "eyJhbG.abc.def" not in msg
-        assert "***REDACTED***" in msg
+        assert "<redacted:credential>" in msg
 
     def test_64_char_hex_in_message(
         self, configured_logger: logging.Logger, stream: io.StringIO
@@ -243,7 +243,7 @@ class TestRedactionValues:
         configured_logger.info(f"token value {hex_secret} end")
         msg = _as_str(_lines(stream)[0]["msg"])
         assert hex_secret not in msg
-        assert "***REDACTED***" in msg
+        assert "<redacted:credential>" in msg
 
     def test_short_hex_not_redacted(
         self, configured_logger: logging.Logger, stream: io.StringIO
@@ -260,7 +260,7 @@ class TestRedactionValues:
         line = _lines(stream)[0]
         # Either redacted by key (value isn't a sensitive key) or by
         # type. The SecretStr type check must fire regardless.
-        assert line["value"] == "***REDACTED***"
+        assert line["value"] == "<redacted:sensitive-key>"
         assert "hunter2" not in stream.getvalue()
 
     def test_secretstr_under_sensitive_key_still_safe(
@@ -281,7 +281,7 @@ class TestNestedRedaction:
         line = _lines(stream)[0]
         payload = line["payload"]
         assert isinstance(payload, dict)
-        assert payload["Authorization"] == "***REDACTED***"
+        assert payload["Authorization"] == "<redacted:sensitive-key>"
 
     def test_list_values_recurse(
         self, configured_logger: logging.Logger, stream: io.StringIO
@@ -291,20 +291,22 @@ class TestNestedRedaction:
         assert items[0] == "plain"
         second = _as_str(items[1])
         assert "abc123xyz" not in second
-        assert "***REDACTED***" in second
+        assert "<redacted:credential>" in second
 
     def test_deep_nesting_beyond_cap_still_scanned_via_repr(
         self, configured_logger: logging.Logger, stream: io.StringIO
     ) -> None:
-        # depth 3 - past the 2-level cap; the value is repr'd and the
-        # string scan still catches the Bearer.
-        configured_logger.info(
-            "m",
-            extra={"a": {"b": {"c": "Bearer deepnested123"}}},
-        )
+        # Past the walker's recursion cap the value is repr'd and the
+        # string scan still catches the Bearer. The cap is driven by
+        # :data:`app.util.redact._MAX_DEPTH`; we nest well past it so
+        # the repr fallback is exercised regardless of future bumps.
+        nested: object = "Bearer deepnested123"
+        for _ in range(20):
+            nested = {"x": nested}
+        configured_logger.info("m", extra={"a": nested})
         out = stream.getvalue()
         assert "deepnested123" not in out
-        assert "***REDACTED***" in out
+        assert "<redacted:credential>" in out
 
 
 class TestExceptionLogging:

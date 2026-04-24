@@ -15,24 +15,34 @@ dependency graph minimal. The redaction contract is identical: every
 log record passes the :class:`RedactionFilter` before the handler
 formats it.
 
-Redaction depth is capped at **2 nested levels** for dicts / lists /
-tuples in ``extra=`` payloads. Deeper structures are rendered via
-``repr`` and then scanned as a single string — the common log path
-stays predictable under load and the filter cannot become a DoS seam
-via pathological nesting.
+**Single source of truth for redaction rules:** every pattern lives
+in :mod:`app.util.redact`. This module's filter is a thin wrapper
+that invokes :func:`app.util.redact.redact` with
+``scope="log"``. Maintainers adding a new PII regex or key-name
+rule touch one place; the filter picks it up automatically.
+
+Because the logging filter is a hot-path component (every record,
+every process), it retains its existing public API
+(:class:`RedactionFilter`, :class:`JsonFormatter`,
+:func:`setup_logging`, :func:`set_correlation_id`,
+:func:`reset_correlation_id`). Downstream code imports these names
+directly.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 import sys
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from typing import Final, TextIO
 
-from pydantic import SecretStr
+from app.util.redact import (
+    ConsentSet,
+    redact,
+    scrub_string,
+)
 
 __all__ = [
     "JsonFormatter",
@@ -41,33 +51,6 @@ __all__ = [
     "set_correlation_id",
     "setup_logging",
 ]
-
-
-_REDACTED: Final[str] = "***REDACTED***"
-
-# Key-based redaction: any mapping key whose name matches is replaced.
-# Matches substrings so ``x_authorization`` and ``api-key-header`` hit.
-_SENSITIVE_KEY_RE: Final[re.Pattern[str]] = re.compile(
-    r"authorization|auth|token|api[_-]?key|password|cookie|"
-    r"session[_-]?id|secret|passkey|credential",
-    re.IGNORECASE,
-)
-
-# Value-based patterns. Ordering matters: Bearer first (longest, most
-# specific prefix), then JWT (three base64url segments), then generic
-# long-hex / base64url blobs.
-_BEARER_RE: Final[re.Pattern[str]] = re.compile(
-    r"Bearer\s+[A-Za-z0-9._\-]+",
-)
-_JWT_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b",
-)
-_HEX_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b[A-Fa-f0-9]{32,}\b",
-)
-_BASE64URL_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b[A-Za-z0-9_\-]{32,}\b",
-)
 
 # Record attrs injected by ``logging`` itself; ``extra=`` keys land on
 # the LogRecord as plain attributes, so we filter these out when
@@ -129,98 +112,69 @@ def reset_correlation_id(token: Token[str | None]) -> None:
     _CORRELATION_ID.reset(token)
 
 
-def _redact_value(value: object, depth: int = 0) -> object:
-    """Recursively redact ``value`` down to ``depth <= 2``.
-
-    Strings go through the value-regex pass. Mappings get per-key
-    matching plus recursive redaction of children. Lists / tuples
-    recurse element-wise. ``SecretStr`` instances and other unknown
-    types collapse to ``_REDACTED`` / their ``repr`` respectively.
-    """
-    if isinstance(value, SecretStr):
-        return _REDACTED
-    if isinstance(value, str):
-        return _redact_string(value)
-    if isinstance(value, bool) or value is None:
-        # bool is a subclass of int; short-circuit before the int path.
-        return value
-    if isinstance(value, int | float):
-        return value
-    if depth >= 2:
-        # Past the recursion cap, still scan the rendered form so a
-        # deep-nested Bearer token does not slip through.
-        return _redact_string(repr(value))
-    if isinstance(value, dict):
-        return _redact_mapping(value, depth + 1)
-    if isinstance(value, list | tuple):
-        redacted = [_redact_value(item, depth + 1) for item in value]
-        return tuple(redacted) if isinstance(value, tuple) else redacted
-    # Unknown type: render safely via repr and scan as a string.
-    return _redact_string(repr(value))
-
-
-def _redact_mapping(mapping: dict[object, object], depth: int) -> dict[object, object]:
-    redacted: dict[object, object] = {}
-    for key, raw in mapping.items():
-        if isinstance(key, str) and _SENSITIVE_KEY_RE.search(key):
-            redacted[key] = _REDACTED
-            continue
-        redacted[key] = _redact_value(raw, depth)
-    return redacted
-
-
-def _redact_string(value: str) -> str:
-    # Order matters: Bearer is a prefixed shape, so strip it first; JWT
-    # next (its dot-separated form would be swallowed by the generic
-    # base64url pass below); hex before base64url, since 32+ hex chars
-    # are valid base64url too and the hex rule is a useful signal on
-    # its own in reports.
-    redacted = _BEARER_RE.sub(_REDACTED, value)
-    redacted = _JWT_RE.sub(_REDACTED, redacted)
-    redacted = _HEX_RE.sub(_REDACTED, redacted)
-    redacted = _BASE64URL_RE.sub(_REDACTED, redacted)
-    return redacted
-
-
 class RedactionFilter(logging.Filter):
     """Root-handler filter that masks secrets in every record.
 
-    Scans ``record.msg`` (after arg substitution) and any ``extra=``
-    attributes for the patterns in this module. Nested structures are
-    walked to depth 2; deeper values are ``repr``-rendered and scanned
-    as a string — see the module docstring.
+    Delegates the heavy lifting to :func:`app.util.redact.redact`
+    (scope ``"log"``), which owns the canonical regex + key-name
+    rule set. The filter is responsible only for:
+
+    * Materialising :meth:`LogRecord.getMessage` (with the same
+      exception tolerance the old hand-rolled filter had).
+    * Running the message string through
+      :func:`~app.util.redact.scrub_string` so in-message Bearer
+      tokens / JWTs / hex blobs still get caught.
+    * Walking ``extra=`` attributes in place through the central
+      redactor so the JSON formatter sees an already-scrubbed
+      record.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        # 1) Redact the formatted message. We materialise ``getMessage``
-        #    once and overwrite ``msg`` / clear ``args`` so downstream
-        #    formatters (including ours) see the redacted text even if
-        #    they re-format. ``getMessage`` runs ``msg % args`` which can
-        #    raise ``TypeError`` (wrong arg count for ``%s``-style),
-        #    ``ValueError`` (bad conversion spec), ``KeyError`` (missing
-        #    mapping key for ``%(name)s``), or ``IndexError`` (too few
-        #    positional args). None of these should kill logging — fall
-        #    back to the raw template so the record still survives.
+        # 1) Redact the formatted message. ``getMessage`` runs
+        #    ``msg % args`` which can raise ``TypeError`` (wrong arg
+        #    count for ``%s``-style), ``ValueError`` (bad conversion
+        #    spec), ``KeyError`` (missing mapping key for ``%(name)s``),
+        #    or ``IndexError`` (too few positional args). None of
+        #    these should kill logging — fall back to the raw template
+        #    so the record still survives.
         try:
             formatted = record.getMessage()
         except (TypeError, ValueError, KeyError, IndexError):
             formatted = str(record.msg)
-        record.msg = _redact_string(formatted)
+        record.msg = scrub_string(formatted)
         record.args = None
 
         # 2) Redact extra attributes in place. ``extra=`` kwargs land
         #    directly on the record as plain attributes; anything not
         #    in ``_RESERVED_RECORD_ATTRS`` is a caller-supplied key.
+        #    We pass each value through the central redactor with
+        #    ``scope="log"`` so the same rule set applies.
         for attr in list(record.__dict__):
             if attr in _RESERVED_RECORD_ATTRS or attr.startswith("_"):
                 continue
+            # Mimic the mapping-level sensitive-key rule on the flat
+            # ``extra=`` namespace: ``{"token": ...}`` must redact
+            # the value regardless of its shape.
             value = record.__dict__[attr]
-            if isinstance(attr, str) and _SENSITIVE_KEY_RE.search(attr):
-                record.__dict__[attr] = _REDACTED
-                continue
-            record.__dict__[attr] = _redact_value(value)
+            record.__dict__[attr] = _redact_record_attr(attr, value)
 
         return True
+
+
+def _redact_record_attr(attr: str, value: object) -> object:
+    """Redact a single ``extra=`` attribute.
+
+    Wraps the central redactor so the flat record namespace benefits
+    from the same key-name rules as nested dicts: a caller passing
+    ``extra={"token": ...}`` still sees the value replaced. We
+    synthesise a single-key mapping and extract the redacted value.
+    """
+    synthesised = {attr: value}
+    redacted = redact(synthesised, scope="log", consents=ConsentSet.none())
+    if not isinstance(redacted, dict):
+        # redact() preserves dict type, but narrow for mypy.
+        return redacted
+    return redacted[attr]
 
 
 class JsonFormatter(logging.Formatter):

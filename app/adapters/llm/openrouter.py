@@ -39,6 +39,15 @@ API-key handling: :meth:`SecretStr.get_secret_value` is invoked
 builder. The raw string never lands in exception messages, structured
 logs, or the :class:`LLMResponse` payload.
 
+Outbound-payload redaction: every request body is funnelled through
+:func:`app.util.redact.redact` (scope ``"llm"``) before the JSON hits
+the wire. Callers can hand in a workspace-scoped
+:class:`~app.util.redact.ConsentSet` via the ``consents`` kwarg on
+:meth:`complete` / :meth:`chat` / :meth:`ocr` / :meth:`stream_chat`;
+``None`` falls back to the redact-everything default. See
+``docs/specs/11-llm-and-agents.md`` §"Redaction layer" and
+``docs/specs/15-security-privacy.md`` §"Logging and redaction".
+
 See ``docs/specs/11-llm-and-agents.md`` §"Providers", §"Model router"
 and ``docs/specs/01-architecture.md`` §"Adapters/llm".
 """
@@ -57,6 +66,7 @@ from pydantic import SecretStr
 
 from app.adapters.llm.ports import ChatMessage, LLMResponse, LLMUsage
 from app.util.clock import Clock, SystemClock
+from app.util.redact import ConsentSet, redact
 
 __all__ = [
     "LlmProviderError",
@@ -217,14 +227,23 @@ class OpenRouterClient:
         prompt: str,
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        consents: ConsentSet | None = None,
     ) -> LLMResponse:
-        """Single-shot text completion. See :class:`LLMClient.complete`."""
+        """Single-shot text completion. See :class:`LLMClient.complete`.
+
+        ``consents`` is the workspace-scoped consent set that lets
+        specific PII fields pass through the §15 redaction seam. An
+        omitted or ``None`` value defaults to :meth:`ConsentSet.none`
+        — the redact-everything posture that every call site is
+        safe to start from.
+        """
         messages: list[ChatMessage] = [{"role": "user", "content": prompt}]
         return self._chat_completion(
             model_id=model_id,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            consents=consents,
         )
 
     def chat(
@@ -234,22 +253,41 @@ class OpenRouterClient:
         messages: Sequence[ChatMessage],
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        consents: ConsentSet | None = None,
     ) -> LLMResponse:
-        """Multi-turn chat. See :class:`LLMClient.chat`."""
+        """Multi-turn chat. See :class:`LLMClient.chat`.
+
+        See :meth:`complete` for the ``consents`` argument semantics.
+        """
         return self._chat_completion(
             model_id=model_id,
             messages=list(messages),
             max_tokens=max_tokens,
             temperature=temperature,
+            consents=consents,
         )
 
-    def ocr(self, *, model_id: str, image_bytes: bytes) -> str:
+    def ocr(
+        self,
+        *,
+        model_id: str,
+        image_bytes: bytes,
+        consents: ConsentSet | None = None,
+    ) -> str:
         """Vision extract. See :class:`LLMClient.ocr`.
 
         Encodes ``image_bytes`` as a base64 ``data:`` URL and posts it
         through ``chat/completions`` as a multimodal user message —
         the shape OpenRouter documents for vision requests on models
         that carry the ``vision`` capability tag.
+
+        See :meth:`complete` for the ``consents`` argument semantics.
+        The base64 image bytes pass through unchanged — the §15
+        redactor carves multimodal ``{"type": "image_url", ...}``
+        blocks out of the free-text sweep so the opaque data URL
+        survives, while every other key in the surrounding message
+        (text blocks, role, ...) still runs through the regular
+        rules. See :func:`app.util.redact._redact_image_url_block`.
         """
         if not image_bytes:
             raise ValueError("ocr requires non-empty image_bytes")
@@ -270,7 +308,7 @@ class OpenRouterClient:
             temperature=0.0,
             stream=False,
         )
-        response = self._post_with_retry(body)
+        response = self._post_with_retry(_redact_body(body, consents))
         parsed = _parse_completion(response)
         return parsed.text
 
@@ -281,6 +319,7 @@ class OpenRouterClient:
         messages: Sequence[ChatMessage],
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        consents: ConsentSet | None = None,
     ) -> Iterator[str]:
         """Stream chat tokens. See :class:`LLMClient.stream_chat`.
 
@@ -290,6 +329,8 @@ class OpenRouterClient:
         :class:`LlmRateLimited` — the server-sent stream can surface
         rate-limit errors after the initial 200 response, so we check
         the status code before iterating lines.
+
+        See :meth:`complete` for the ``consents`` argument semantics.
         """
         wire_messages: list[_WireMessage] = [
             {"role": m["role"], "content": m["content"]} for m in messages
@@ -301,7 +342,7 @@ class OpenRouterClient:
             temperature=temperature,
             stream=True,
         )
-        return self._stream_request(body)
+        return self._stream_request(_redact_body(body, consents))
 
     # ------------------------------------------------------------------
     # Internal HTTP helpers
@@ -314,6 +355,7 @@ class OpenRouterClient:
         messages: list[ChatMessage],
         max_tokens: int,
         temperature: float,
+        consents: ConsentSet | None,
     ) -> LLMResponse:
         wire_messages: list[_WireMessage] = [
             {"role": m["role"], "content": m["content"]} for m in messages
@@ -325,7 +367,7 @@ class OpenRouterClient:
             temperature=temperature,
             stream=False,
         )
-        response = self._post_with_retry(body)
+        response = self._post_with_retry(_redact_body(body, consents))
         return _parse_completion(response)
 
     def _post_with_retry(self, body: Mapping[str, object]) -> _ChatCompletion:
@@ -577,6 +619,28 @@ def _build_data_url(image_bytes: bytes, *, mime_type: str) -> str:
     """Return a ``data:<mime>;base64,<payload>`` URL for vision requests."""
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
+
+
+def _redact_body(
+    body: Mapping[str, object], consents: ConsentSet | None
+) -> dict[str, object]:
+    """Run the outbound body through the §15 redaction seam.
+
+    Called once per outbound request — the final step before the
+    JSON bytes hit the wire. Passing ``consents=None`` falls back to
+    :meth:`ConsentSet.none`, i.e. redact everything. The function
+    returns a deep copy so the caller's original body (which lives
+    on the call frame) is untouched.
+
+    See ``docs/specs/15-security-privacy.md`` §"Logging and redaction"
+    and ``docs/specs/11-llm-and-agents.md`` §"Redaction layer" for
+    the exact rule set.
+    """
+    effective = consents if consents is not None else ConsentSet.none()
+    redacted = redact(dict(body), scope="llm", consents=effective)
+    if not isinstance(redacted, dict):  # pragma: no cover - defensive
+        raise TypeError("redact() must preserve dict shape on outbound body")
+    return redacted
 
 
 # ---------------------------------------------------------------------------

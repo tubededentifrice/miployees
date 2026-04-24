@@ -7,6 +7,14 @@ it's gone. The writer never calls ``session.commit()``; the
 caller's UoW owns transaction boundaries (§01 "Key runtime
 invariants" #3).
 
+The ``diff`` argument is funnelled through
+:func:`app.util.redact.redact` (scope ``"log"``) before persistence,
+so PII leaked into a ``before_json`` / ``after_json`` payload (e.g.
+an email typed into a task title) cannot survive into the on-disk
+log. Spec: ``docs/specs/15-security-privacy.md`` §"Audit log"
+guarantees that both halves of the diff pass through the same
+redaction filter as the JSON log stream.
+
 See ``docs/specs/01-architecture.md`` §"Key runtime invariants" #3,
 ``docs/specs/02-domain-model.md`` §"audit_log", and
 ``docs/specs/15-security-privacy.md`` §"Audit log".
@@ -14,13 +22,14 @@ See ``docs/specs/01-architecture.md`` §"Key runtime invariants" #3,
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
 from app.adapters.db.audit.models import AuditLog
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
+from app.util.redact import redact
 from app.util.ulid import new_ulid
 
 __all__ = ["write_audit"]
@@ -60,6 +69,27 @@ def write_audit(
     :class:`~app.util.clock.FrozenClock`.
     """
     now = (clock if clock is not None else SystemClock()).now()
+    # Run the diff through the canonical redactor so a stray email,
+    # phone, IBAN, PAN, or credential blob that found its way into
+    # ``before_json`` / ``after_json`` never reaches on-disk storage.
+    # ``None`` keeps the existing ``{}`` default so the column's
+    # NOT NULL contract (§02) holds.
+    redacted_diff: dict[str, Any] | list[Any]
+    if diff is None:
+        redacted_diff = {}
+    else:
+        # ``redact`` preserves container type (dict stays dict, list
+        # stays list); the ``cast`` narrows for mypy. The runtime
+        # ``isinstance`` below is defensive — should a future upstream
+        # change land a different type in ``diff``, we would rather
+        # fail the NOT NULL write than persist something unexpected.
+        scrubbed = redact(diff, scope="log")
+        if isinstance(scrubbed, dict | list):
+            redacted_diff = cast("dict[str, Any] | list[Any]", scrubbed)
+        else:  # pragma: no cover - defensive
+            raise TypeError(
+                f"redacted diff must be dict|list, got {type(scrubbed).__name__}"
+            )
     row = AuditLog(
         id=new_ulid(),
         workspace_id=ctx.workspace_id,
@@ -70,9 +100,7 @@ def write_audit(
         entity_kind=entity_kind,
         entity_id=entity_id,
         action=action,
-        # ``{}`` for ``None`` so the NOT NULL contract (§02) holds
-        # without forcing every caller to invent a payload.
-        diff=diff if diff is not None else {},
+        diff=redacted_diff,
         correlation_id=ctx.audit_correlation_id,
         created_at=now,
     )
