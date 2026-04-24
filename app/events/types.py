@@ -40,6 +40,7 @@ from app.events.registry import Event, EventRole, register
 
 __all__ = [
     "ExpenseApproved",
+    "ExpenseSubmitted",
     "LlmAssignmentChanged",
     "NotificationCreated",
     "ShiftChanged",
@@ -398,6 +399,50 @@ class ExpenseApproved(Event):
 
     expense_id: str
     approved_by: str
+
+
+@register
+class ExpenseSubmitted(Event):
+    """A worker has submitted an expense claim for manager approval (cd-7rfu).
+
+    Fired by :func:`app.domain.expenses.claims.submit_claim` after the
+    audit row lands and the row's state flips from ``draft`` to
+    ``submitted``. The manager-side approval inbox (cd-9guk) listens
+    for this signal to surface the new claim in the queue without
+    polling, and the §10 notification fanout uses it to ping the
+    workspace's expense approvers.
+
+    **Role scope.** Narrowed to ``("manager",)``. A submitted claim
+    is a managerial event — workers see their own claim transition
+    in their personal "My expenses" page (refreshed via the REST
+    response, not SSE), and clients / guests have no business in the
+    workspace expense flow. Narrowing also keeps the payload's
+    ``total_amount_cents`` / ``currency`` figures off worker SSE
+    streams, where another worker peeking at the bus could otherwise
+    learn what their colleagues are spending.
+
+    **Payload posture.** Only foreign-key identifiers and integer
+    money fields — no free text (``vendor``, ``note_md``,
+    ``decision_note_md``). Subscribers that need the rendered
+    description call ``GET /expense_claims/{id}`` under the normal
+    per-row authorisation path. ``submitter_user_id`` carries the
+    actor who submitted (always equal to the engagement's
+    ``user_id`` in v1, since cd-7rfu only ships the self-submit
+    path; manager-on-behalf-of submission is a future capability).
+    """
+
+    name: ClassVar[str] = "expense.submitted"
+    # Submitted claims feed the manager approval inbox. Workers do
+    # not need an SSE signal — they get the new state via the REST
+    # response of their POST /submit. Clients / guests are out of
+    # scope on the expense surface entirely.
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager",)
+
+    claim_id: str
+    work_engagement_id: str
+    submitter_user_id: str
+    currency: str
+    total_amount_cents: int
 
 
 @register
