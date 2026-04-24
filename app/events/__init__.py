@@ -11,6 +11,8 @@ from app.events.registry import (
 )
 from app.events.types import (
     ExpenseApproved,
+    ExpenseReimbursed,
+    ExpenseRejected,
     ExpenseSubmitted,
     LlmAssignmentChanged,
     NotificationCreated,
@@ -30,6 +32,8 @@ __all__ = [
     "EventBus",
     "EventNotFound",
     "ExpenseApproved",
+    "ExpenseReimbursed",
+    "ExpenseRejected",
     "ExpenseSubmitted",
     "LlmAssignmentChanged",
     "NotificationCreated",

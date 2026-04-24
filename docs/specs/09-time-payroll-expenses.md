@@ -978,6 +978,9 @@ expense_claim
 ├── decided_at
 ├── decision_note_md
 ├── reimbursement_destination_id # ULID FK? override; null → use work_engagement default
+├── reimbursed_at                # tstz; wall-clock the manager / operator marked the claim settled. Null until state → reimbursed.
+├── reimbursed_via               # cash|bank|card|other — channel actually used. CHECK-clamped + nullable until state → reimbursed.
+├── reimbursed_by                # ULID FK? user who actioned the settlement. May differ from decided_by_user_id (the approver).
 └── deleted_at
 ```
 
@@ -1029,6 +1032,20 @@ expense_attachment
 
 A claim becomes `reimbursed` when the containing payslip moves to
 `paid`. No separate payment integration.
+
+In addition, a manager (or operator with `expenses.reimburse`) may
+mark an approved claim `reimbursed` directly out of band — a one-off
+cash hand-off, an early bank transfer before period close, or a
+company-card top-up that should land in the audit narrative without
+waiting for the payslip rollup. The transition records:
+
+| field           | notes                                                                |
+|-----------------|----------------------------------------------------------------------|
+| `reimbursed_at` | UTC wall-clock of the transition; defaults to `now`. Optional override accepts a back-stamped value within a small future-skew window. |
+| `reimbursed_via`| `cash | bank | card | other` — the channel actually used. CHECK-clamped at the DB. |
+| `reimbursed_by` | The actor who pushed the funds. May differ from `decided_by_user_id` (the approver) — a manager approves on Friday + an operator settles on Monday is the common shape. |
+
+`expense.reimbursed` fires after the audit row lands.
 
 ### Amount owed to the employee
 

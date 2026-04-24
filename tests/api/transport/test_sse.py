@@ -1148,7 +1148,6 @@ DEFAULT_ROLE_EVENTS_ALLOWLIST: frozenset[str] = frozenset(
         "task.completed",
         "task.overdue",
         "stay.upcoming",
-        "expense.approved",
         "shift.ended",
         "time.shift.changed",
         # ``notification.created`` keeps every role on ``allowed_roles``

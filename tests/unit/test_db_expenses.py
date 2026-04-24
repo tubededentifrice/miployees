@@ -80,6 +80,9 @@ class TestExpenseClaimModel:
         assert claim.decided_at is None
         assert claim.decision_note_md is None
         assert claim.reimbursement_destination_id is None
+        assert claim.reimbursed_at is None
+        assert claim.reimbursed_via is None
+        assert claim.reimbursed_by is None
         assert claim.deleted_at is None
 
     def test_approved_construction_with_snapshots(self) -> None:
@@ -289,6 +292,60 @@ class TestExpenseClaimModel:
             "work_engagement_id",
             "submitted_at",
         ]
+
+    def test_reimbursed_construction_with_snapshot(self) -> None:
+        """A reimbursed claim carries the cd-9guk settlement snapshot."""
+        claim = ExpenseClaim(
+            id="01HWA00000000000000000EXCG",
+            workspace_id="01HWA00000000000000000WSPA",
+            work_engagement_id="01HWA00000000000000000WEGA",
+            submitted_at=_PINNED,
+            vendor="Cabify",
+            purchased_at=_PINNED,
+            currency="EUR",
+            total_amount_cents=2599,
+            category="transport",
+            state="reimbursed",
+            decided_by="01HWA00000000000000000USRM",
+            decided_at=_DECIDED_AT,
+            decision_note_md="OK.",
+            reimbursed_at=_DECIDED_AT,
+            reimbursed_via="bank",
+            reimbursed_by="01HWA00000000000000000USRO",
+            created_at=_PINNED,
+        )
+        assert claim.reimbursed_at == _DECIDED_AT
+        assert claim.reimbursed_via == "bank"
+        # Reimbursed_by may differ from decided_by — the approver and
+        # the settler are independent roles.
+        assert claim.reimbursed_by == "01HWA00000000000000000USRO"
+        assert claim.decided_by == "01HWA00000000000000000USRM"
+
+    def test_reimbursed_via_check_present(self) -> None:
+        """The ``reimbursed_via`` CHECK clamps the v1 enum and admits
+        NULL (the column is null until the transition)."""
+        checks = [
+            c
+            for c in ExpenseClaim.__table_args__
+            if isinstance(c, CheckConstraint)
+            and c.name is not None
+            and str(c.name).endswith("reimbursed_via")
+        ]
+        assert len(checks) == 1
+        sql = str(checks[0].sqltext)
+        # Nullable guard — NULL is the "not yet reimbursed" state.
+        assert "reimbursed_via IS NULL" in sql
+        for via in ("cash", "bank", "card", "other"):
+            assert via in sql, f"{via} missing from reimbursed_via CHECK"
+
+    def test_reimbursed_columns_nullable(self) -> None:
+        """All three reimbursement-snapshot columns are nullable —
+        they're populated only at the ``approved → reimbursed``
+        transition."""
+        cols = ExpenseClaim.__table__.c
+        assert cols.reimbursed_at.nullable is True
+        assert cols.reimbursed_via.nullable is True
+        assert cols.reimbursed_by.nullable is True
 
     def test_total_amount_cents_is_int(self) -> None:
         """Per cd-lbn acceptance: amount stored as integer cents."""

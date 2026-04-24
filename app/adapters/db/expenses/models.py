@@ -164,6 +164,20 @@ _SOURCE_VALUES: tuple[str, ...] = ("ocr", "manual")
 # does not apply to expense attachments.
 _ATTACHMENT_KIND_VALUES: tuple[str, ...] = ("receipt", "invoice", "other")
 
+# Allowed ``expense_claim.reimbursed_via`` values — added in cd-9guk
+# to capture the channel the manager actually used when settling a
+# claim (cash hand-off, bank transfer out of band, company-card top-
+# up, or a misc "other" bucket for edge cases). The §09 §"Reimbursement"
+# spec routes the canonical reimbursement through the payout-period
+# rollup, but the manager flow needs an explicit "I paid this now,
+# how" signal so a one-off cash hand-off, an early bank transfer
+# before period close, or a company-card pre-load is captured for
+# the audit + payslip narrative without standing up the full
+# ``payout_destination`` table (still deferred — see the module
+# docstring's "deviation from cd-lbn's prose" note). Mirrors the
+# ``_STATE_VALUES`` shape so the CHECK clause stays uniform.
+_REIMBURSED_VIA_VALUES: tuple[str, ...] = ("cash", "bank", "card", "other")
+
 
 def _in_clause(values: tuple[str, ...]) -> str:
     """Render a ``col IN ('a', 'b', …)`` CHECK body fragment.
@@ -314,6 +328,22 @@ class ExpenseClaim(Base):
     reimbursement_destination_id: Mapped[str | None] = mapped_column(
         String, nullable=True
     )
+    # cd-9guk reimbursement snapshot — populated when the manager
+    # marks the claim ``reimbursed``. NULL while the claim is still
+    # ``draft`` / ``submitted`` / ``approved`` / ``rejected``. The
+    # three columns move together: ``reimbursed_at`` is the wall-clock
+    # of the transition, ``reimbursed_via`` is the payment channel
+    # (CHECK-clamped to the v1 enum), and ``reimbursed_by`` is a
+    # soft-ref to the user who actioned the settlement. ``decided_by``
+    # already records the *approver* — ``reimbursed_by`` may differ
+    # (a different manager, the operator running treasury, an admin
+    # cleaning up after period close), so the two columns must not be
+    # collapsed.
+    reimbursed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reimbursed_via: Mapped[str | None] = mapped_column(String, nullable=True)
+    reimbursed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -332,6 +362,14 @@ class ExpenseClaim(Base):
         CheckConstraint(
             f"category IN ({_in_clause(_CATEGORY_VALUES)})",
             name="category",
+        ),
+        # ``reimbursed_via`` is nullable until the claim transitions
+        # to ``reimbursed``; once populated it must match the v1 enum.
+        # Mirrors the ``state`` / ``category`` CHECK pattern.
+        CheckConstraint(
+            "reimbursed_via IS NULL "
+            f"OR reimbursed_via IN ({_in_clause(_REIMBURSED_VIA_VALUES)})",
+            name="reimbursed_via",
         ),
         # ISO-4217 codes are exactly 3 characters — cheapest portable
         # guard; the domain layer validates against a known-codes set.

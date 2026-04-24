@@ -40,6 +40,8 @@ from app.events.registry import Event, EventRole, register
 
 __all__ = [
     "ExpenseApproved",
+    "ExpenseReimbursed",
+    "ExpenseRejected",
     "ExpenseSubmitted",
     "LlmAssignmentChanged",
     "NotificationCreated",
@@ -393,12 +395,128 @@ class StayUpcoming(Event):
 
 @register
 class ExpenseApproved(Event):
-    """A submitted expense has been approved by ``approved_by``."""
+    """A submitted expense claim has been approved by a manager (cd-9guk).
+
+    Fired by :func:`app.domain.expenses.approval.approve_claim` after
+    the audit row lands and the row's state flips from ``submitted``
+    to ``approved``. The submitter's "My expenses" view (cd-rift)
+    listens for this so the worker learns of approval the moment
+    the manager taps the button — without polling — and the §10
+    notification fanout queues an in-app + email digest entry. The
+    ``had_edits`` bit lets the client surface the inline-edit chip
+    on the worker's view ("manager adjusted the amount") without
+    re-fetching the audit row.
+
+    **Role scope.** Narrowed to ``("manager", "worker")``. The
+    approval signal must reach both the manager surface (audit
+    timeline, queue invalidation) and the submitting worker's "My
+    expenses" page; clients and guests have no business in the
+    workspace's expense pipeline. Narrowing also keeps the payload
+    off client / guest SSE streams entirely. The submitter's
+    user-id sits on the payload so the worker-side SSE filter can
+    still match the addressee even though the role allowlist
+    already excludes the unwanted surfaces.
+
+    **Payload posture.** Foreign-key identifiers + a single boolean
+    only — no free text (``vendor``, ``decision_note_md``, edit
+    diff). Subscribers needing the rendered view call
+    ``GET /expense_claims/{id}`` under the per-row authz path.
+    ``decided_by_user_id`` is the approver (may differ from the
+    submitter); ``submitter_user_id`` carries the addressee for the
+    worker-side fanout.
+    """
 
     name: ClassVar[str] = "expense.approved"
+    # Approval reaches the manager surface (audit timeline, queue
+    # invalidation) and the submitting worker's "My expenses" page.
+    # Clients / guests have no business in the workspace expense
+    # pipeline; narrowing the tuple keeps the payload off their SSE
+    # streams entirely.
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager", "worker")
 
-    expense_id: str
-    approved_by: str
+    claim_id: str
+    work_engagement_id: str
+    submitter_user_id: str
+    decided_by_user_id: str
+    had_edits: bool
+
+
+@register
+class ExpenseRejected(Event):
+    """A submitted expense claim has been rejected by a manager (cd-9guk).
+
+    Fired by :func:`app.domain.expenses.approval.reject_claim` after
+    the audit row lands and the row's state flips from ``submitted``
+    to ``rejected``. The submitter's "My expenses" view picks this
+    up so the worker sees the decision land without polling; §10
+    notification fanout queues an in-app + email entry pointing at
+    the claim detail (where the rendered ``decision_note_md`` lives
+    behind the per-row authz path).
+
+    **Role scope.** Same narrowing as :class:`ExpenseApproved` —
+    ``("manager", "worker")``. The submitter must learn of the
+    rejection; the manager queue must invalidate; client / guest
+    streams stay quiet.
+
+    **Payload posture.** Free text — the manager's rejection
+    reason — is **deliberately NOT on the wire**. ``reason_md`` is
+    PII-adjacent (a manager may reference a specific receipt detail,
+    a vendor's identity, a personal-spend categorisation) and lives
+    on the claim row behind the per-row authz path. Subscribers
+    that need to render the reason call
+    ``GET /expense_claims/{id}`` under the normal pull surface.
+    """
+
+    name: ClassVar[str] = "expense.rejected"
+    # Same narrowing as ``ExpenseApproved`` — the submitter must
+    # learn of the rejection, the manager queue must invalidate,
+    # and client / guest streams stay quiet.
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager", "worker")
+
+    claim_id: str
+    work_engagement_id: str
+    submitter_user_id: str
+    decided_by_user_id: str
+
+
+@register
+class ExpenseReimbursed(Event):
+    """An approved expense claim has been marked reimbursed (cd-9guk).
+
+    Fired by :func:`app.domain.expenses.approval.mark_reimbursed`
+    after the audit row lands and the row's state flips from
+    ``approved`` to ``reimbursed``. The worker's "My pay" page
+    listens so the running pending-reimbursement total drops the
+    moment the manager (or operator) settles; the §10 notification
+    fanout pushes a "your expense was reimbursed via {channel}"
+    digest entry.
+
+    **Role scope.** Narrowed to ``("manager", "worker")`` —
+    consistent with the approval event family. The reimbursement
+    signal is operationally workspace-internal; clients / guests
+    are out of scope.
+
+    **Payload posture.** ``reimbursed_via`` is a four-value enum
+    (``cash | bank | card | other``) — opaque to non-staff
+    surfaces, safe to surface on the worker timeline. ``reimbursed_by_user_id``
+    carries the actor who marked the claim settled (may differ
+    from the original approver). No free-text channel narrative
+    on the wire — if the manager added a "paid in cash on
+    Tuesday" note, it lives on the audit row, not the SSE
+    payload.
+    """
+
+    name: ClassVar[str] = "expense.reimbursed"
+    # Reimbursement reaches the manager (queue invalidation, audit
+    # timeline) and the submitting worker (running pending total
+    # drops on "My pay"). Clients / guests stay out.
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager", "worker")
+
+    claim_id: str
+    work_engagement_id: str
+    submitter_user_id: str
+    reimbursed_via: Literal["cash", "bank", "card", "other"]
+    reimbursed_by_user_id: str
 
 
 @register

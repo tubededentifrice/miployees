@@ -2,12 +2,28 @@
 
 The v1 surface (cd-7rfu) ships claim CRUD + the draft → submitted →
 cancel state machine in :mod:`app.domain.expenses.claims`. Manager
-approval (cd-9guk) and OCR autofill (cd-95zb) are follow-ups; their
-domain modules will land alongside their Beads tasks.
+approval + reimbursement (cd-9guk) layers the
+``submitted -> approved -> reimbursed`` / ``submitted -> rejected``
+transitions in :mod:`app.domain.expenses.approval`. OCR autofill
+(cd-95zb) is a follow-up.
 
 See ``docs/specs/09-time-payroll-expenses.md`` §"Expense claims".
 """
 
+from app.domain.expenses.approval import (
+    ApprovalEdits,
+    ApprovalPermissionDenied,
+    ClaimNotApprovable,
+    ClaimNotReimbursable,
+    RejectBody,
+    ReimburseBody,
+    ReimbursePermissionDenied,
+    ReimburseVia,
+    approve_claim,
+    list_pending,
+    mark_reimbursed,
+    reject_claim,
+)
 from app.domain.expenses.claims import (
     BlobMimeNotAllowed,
     BlobMissing,
@@ -39,11 +55,15 @@ from app.domain.expenses.claims import (
 )
 
 __all__ = [
+    "ApprovalEdits",
+    "ApprovalPermissionDenied",
     "BlobMimeNotAllowed",
     "BlobMissing",
     "BlobTooLarge",
+    "ClaimNotApprovable",
     "ClaimNotEditable",
     "ClaimNotFound",
+    "ClaimNotReimbursable",
     "ClaimPermissionDenied",
     "ClaimStateTransitionInvalid",
     "CurrencyInvalid",
@@ -56,7 +76,12 @@ __all__ = [
     "PurchaseDateInFuture",
     "ReceiptAttach",
     "ReceiptKind",
+    "RejectBody",
+    "ReimburseBody",
+    "ReimbursePermissionDenied",
+    "ReimburseVia",
     "TooManyAttachments",
+    "approve_claim",
     "attach_receipt",
     "cancel_claim",
     "create_claim",
@@ -64,6 +89,9 @@ __all__ = [
     "get_claim",
     "list_for_user",
     "list_for_workspace",
+    "list_pending",
+    "mark_reimbursed",
+    "reject_claim",
     "submit_claim",
     "update_claim",
 ]
