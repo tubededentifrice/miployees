@@ -734,7 +734,11 @@ GET    /permissions/action_catalog           # read-only; the compile-time catal
 GET    /permissions/resolved                 # ?user_id=…&action_key=…&scope_kind=…&scope_id=…
                                              # returns {effect, source_layer, source_rule_id?, matched_groups[]}
 
-GET    /work_engagements          # ?user_id=…&workspace_id=…
+GET    /work_engagements          # ?user_id=…&active=true|false
+                                   #   `active=true` narrows to
+                                   #   `archived_on IS NULL`;
+                                   #   omitted or `false` returns the
+                                   #   full roster (default).
 GET    /work_engagements/{id}
 PATCH  /work_engagements/{id}
 POST   /work_engagements/{id}/archive

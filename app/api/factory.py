@@ -83,7 +83,13 @@ from app.api.v1.auth import passkey as passkey_module
 from app.api.v1.auth import recovery as recovery_module
 from app.api.v1.auth import signup as signup_module
 from app.api.v1.auth import tokens as tokens_module
+from app.api.v1.user_work_roles import (
+    build_user_work_roles_router,
+    build_users_user_work_roles_router,
+)
 from app.api.v1.users import build_users_router
+from app.api.v1.work_engagements import build_work_engagements_router
+from app.api.v1.work_roles import build_work_roles_router
 from app.auth._throttle import Throttle
 from app.auth.csrf import CSRFMiddleware
 from app.auth.keys import KeyDerivationError, derive_subkey
@@ -438,6 +444,19 @@ def _mount_auth_routers(
     # passkey" flow). Reused verbatim — the router requires a live
     # :class:`WorkspaceContext` which the tenancy middleware installs.
     app.include_router(passkey_module.router, prefix=scoped_prefix)
+
+    # Workspace-scoped identity-adjacent routers (cd-dcfw) — work
+    # engagements, work roles, user_work_roles. Their URLs sit at the
+    # top of the ``/w/<slug>/api/v1/`` tree per spec §12 (they are
+    # NOT nested under the ``/identity`` URL segment; that segment is
+    # reserved for a separate, later surface). Each router tags its
+    # operations ``identity`` + a resource-specific tag so the OpenAPI
+    # schema clusters them under the identity context alongside
+    # ``users`` and ``auth/tokens``.
+    app.include_router(build_work_roles_router(), prefix=scoped_prefix)
+    app.include_router(build_user_work_roles_router(), prefix=scoped_prefix)
+    app.include_router(build_users_user_work_roles_router(), prefix=scoped_prefix)
+    app.include_router(build_work_engagements_router(), prefix=scoped_prefix)
 
 
 def _mount_context_routers(app: FastAPI) -> None:

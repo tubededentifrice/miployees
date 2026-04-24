@@ -400,6 +400,17 @@ ignore_imports = [
     # the tasks + inventory repositories land.
     "app.domain.tasks.completion -> app.adapters.db.tasks.models",
     "app.domain.tasks.completion -> app.adapters.db.inventory.models",
+    # v1 stopgap (cd-dcfw): ``app.domain.identity.work_roles`` /
+    # ``user_work_roles`` / ``work_engagements`` read
+    # :class:`WorkRole` / :class:`UserWorkRole` /
+    # :class:`WorkEngagement` / :class:`UserWorkspace` directly from
+    # ``app.adapters.db.workspace.models``. Same Protocol-seam
+    # pattern as the other ``app.domain.identity`` stopgaps above;
+    # tracked by cd-duv6 (extended scope) — drops once the workspace
+    # repositories land.
+    "app.domain.identity.work_roles -> app.adapters.db.workspace.models",
+    "app.domain.identity.user_work_roles -> app.adapters.db.workspace.models",
+    "app.domain.identity.work_engagements -> app.adapters.db.workspace.models",
 ]
 unmatched_ignore_imports_alerting = "none"
 
