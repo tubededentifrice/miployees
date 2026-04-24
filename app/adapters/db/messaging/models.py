@@ -1,16 +1,20 @@
-"""SQLAlchemy models for messaging + notifications (cd-pjm v1 slice).
+"""SQLAlchemy models for messaging + notifications (cd-pjm + cd-aqwt).
 
 Defines the ``Notification`` / ``PushToken`` / ``DigestRecord`` /
-``ChatChannel`` / ``ChatMessage`` mapped classes.
+``ChatChannel`` / ``ChatMessage`` / ``EmailOptOut`` / ``EmailDelivery``
+mapped classes.
 
-v1 slice per cd-pjm — sufficient to land the messaging + notifications
-substrate the §10 fanout, §12 ``/me/push-tokens`` surface, §23 chat
-gateway, and daily / weekly digest worker all read from. The richer
-surfaces (full ``chat_thread`` model with ``agent_dispatch_state``
-machine, WhatsApp-specific ``chat_channel_binding`` + link-challenge
-rows, per-category ``email_opt_out``, delivery-tracking
-``email_delivery`` ledger) land with follow-ups without breaking
-this migration's public write contract.
+The cd-pjm v1 slice landed the notification / push / digest / chat
+substrate; cd-aqwt extends the package with the per-user per-category
+unsubscribe ledger (``email_opt_out``) and the per-send delivery
+tracker (``email_delivery``). Together these cover the §10 fanout
+opt-out probe, the §12 ``/me/push-tokens`` surface, the §23 chat
+gateway, the daily / weekly digest worker, and the provider
+bounce-reply correlation path. The richer surfaces (full
+``chat_thread`` model with ``agent_dispatch_state`` machine,
+WhatsApp-specific ``chat_channel_binding`` + link-challenge rows)
+land with follow-ups without breaking these migrations' public
+write contract.
 
 Every table carries a ``workspace_id`` column and is registered as
 workspace-scoped via the package's ``__init__``. FK hygiene mirrors
@@ -18,7 +22,8 @@ the rest of the app; see the package docstring for the per-row
 ``ondelete`` rules.
 
 See ``docs/specs/02-domain-model.md`` §"user_push_token",
-``docs/specs/10-messaging-notifications.md`` (consumer contract),
+``docs/specs/10-messaging-notifications.md`` (consumer contract
+incl. §"email_opt_out" and §"Delivery tracking"),
 ``docs/specs/23-chat-gateway.md`` (gateway-inbound semantics).
 """
 
@@ -33,7 +38,9 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +50,8 @@ __all__ = [
     "ChatChannel",
     "ChatMessage",
     "DigestRecord",
+    "EmailDelivery",
+    "EmailOptOut",
     "Notification",
     "PushToken",
 ]
@@ -101,6 +110,35 @@ _CHAT_CHANNEL_SOURCE_VALUES: tuple[str, ...] = (
     "whatsapp",
     "sms",
     "email",
+)
+
+# Allowed ``email_opt_out.source`` values per §10. ``unsubscribe_link``
+# covers the signed one-click link embedded in every opt-outable email;
+# ``profile`` covers the owner / manager / worker toggling the
+# preference on their own ``/me`` page; ``admin`` covers a staff-side
+# override (a support escalation turning the category off on a user's
+# behalf). CHECK clamps the enum so a service-layer typo fails at
+# INSERT time.
+_EMAIL_OPT_OUT_SOURCE_VALUES: tuple[str, ...] = (
+    "unsubscribe_link",
+    "profile",
+    "admin",
+)
+
+# Allowed ``email_delivery.delivery_state`` values per §10.
+# ``queued`` is the initial state at row-insert time (worker picks
+# it up for dispatch); ``sent`` is post-SMTP ``250 OK``; ``delivered``
+# lands when the provider posts back a positive event; ``bounced``
+# when the mailbox rejects; ``failed`` when the adapter exhausts the
+# retry budget. A new state lands via an additive migration — enum
+# widening is portable (CHECK body rewrite via
+# ``batch_alter_table`` on SQLite, direct ALTER on PG).
+_EMAIL_DELIVERY_STATE_VALUES: tuple[str, ...] = (
+    "queued",
+    "sent",
+    "delivered",
+    "bounced",
+    "failed",
 )
 
 
@@ -531,5 +569,220 @@ class ChatMessage(Base):
             "ix_chat_message_workspace_channel",
             "workspace_id",
             "channel_id",
+        ),
+    )
+
+
+class EmailOptOut(Base):
+    """Per-user per-category unsubscribe marker.
+
+    One row per ``(workspace_id, user_id, category)`` triple — the
+    §10 delivery worker consults this table before emitting any
+    opt-outable email. ``category`` lines up with the ``template_key``
+    family on :class:`EmailDelivery`; the taxonomy is maintained in
+    §10 (e.g. ``task_reminder``, ``daily_digest``,
+    ``holiday_schedule_impact``, ``invoice_reminder``). Required
+    categories (magic link, payslip issued, expense decision, issue
+    reported, agent approval pending) are never suppressed even if a
+    row exists — the row is kept for audit but ignored for those
+    templates at the domain layer.
+
+    ``source`` pins how the row was created so audit can trace the
+    opt-out back to the action: ``unsubscribe_link`` (signed footer
+    link), ``profile`` (owner/manager/worker toggling on ``/me``),
+    ``admin`` (support override on the user's behalf).
+
+    FK hygiene: both ``workspace_id`` and ``user_id`` CASCADE —
+    sweeping a workspace or a user sweeps their opt-outs. An
+    archived user is a distinct concern handled in the domain layer.
+    """
+
+    __tablename__ = "email_opt_out"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Category key — matches :class:`EmailDelivery.template_key`
+    # family. Plain ``String`` (no length) per the sibling-table
+    # convention across this package + ``tasks`` / ``instructions`` /
+    # ``places`` / ``payroll`` — new keys land without a migration
+    # (the column is a plain string rather than an enum).
+    category: Mapped[str] = mapped_column(String, nullable=False)
+    opted_out_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # ``unsubscribe_link`` | ``profile`` | ``admin`` per §10. See
+    # ``_EMAIL_OPT_OUT_SOURCE_VALUES`` for the v1 enum body.
+    source: Mapped[str] = mapped_column(String, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            f"source IN ({_in_clause(_EMAIL_OPT_OUT_SOURCE_VALUES)})",
+            name="source",
+        ),
+        # One row per user+category within a workspace — the worker's
+        # pre-send probe consults this triple, and a duplicate row
+        # would be a data bug (two "opted out at" timestamps for the
+        # same preference). The unique index also powers the probe
+        # query cheaply.
+        Index(
+            "uq_email_opt_out_user_category",
+            "workspace_id",
+            "user_id",
+            "category",
+            unique=True,
+        ),
+        # Per-user lookup: "what has this user opted out of?" —
+        # surfaces on ``/me`` and in audit. The composite also carries
+        # the tenant filter on its leading ``workspace_id``.
+        Index(
+            "ix_email_opt_out_workspace_user",
+            "workspace_id",
+            "user_id",
+        ),
+    )
+
+
+class EmailDelivery(Base):
+    """Per-message delivery ledger — the bounce / retry / audit source.
+
+    One row per email the worker queues; ``delivery_state`` walks
+    ``queued → sent → delivered`` on the happy path and
+    ``queued → sent → bounced`` / ``queued → failed`` on the error
+    paths. ``first_error`` snapshots the adapter's first failure
+    message so a support query can answer "why did this bounce?"
+    without replaying the SMTP log; ``retry_count`` drives the §10
+    worker's exponential back-off. ``provider_message_id`` is the
+    SMTP / ESP-issued id the bounce-reply correlator keys on when
+    an inbound bounce notification arrives (see §23 — matched via
+    ``(workspace_id, provider_message_id)``).
+
+    ``to_person_id`` is a **soft reference** — a plain :class:`str`
+    with no FK. §10 reminders can target a ``client_user`` that has
+    not yet been materialised into the :class:`User` table when the
+    email is queued (invoice reminder to a biller's client, stay-
+    upcoming email to an external guest). The row must insert even
+    when the id points at a row that doesn't exist yet; the domain
+    layer resolves the pointer at render time.
+
+    ``context_snapshot_json`` freezes the renderer context at queue
+    time so a replay / audit reads the exact subject + body the
+    recipient saw, even if the underlying task / stay / expense
+    evolves afterwards — matches the :class:`Notification.payload_
+    json` / :class:`ChatMessage.attachments_json` convention.
+
+    FK hygiene: ``workspace_id`` CASCADE — sweeping a workspace
+    sweeps its delivery ledger. No user FK: see ``to_person_id``.
+    """
+
+    __tablename__ = "email_delivery"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Soft reference — no FK. See class docstring for the client_user
+    # rationale (recipient may not yet be in the ``user`` table when
+    # the email is queued).
+    to_person_id: Mapped[str] = mapped_column(String, nullable=False)
+    # Snapshot of the destination address at send time. Stored so a
+    # later profile-edit doesn't retcon the audit trail: the row
+    # answers "who did we actually send this to?" verbatim. RFC 5321
+    # caps addr-spec at 320 chars (64 local + '@' + 255 domain); we
+    # store as plain ``String`` per the sibling-table convention
+    # (validation lives in the domain layer, not the schema).
+    to_email_at_send: Mapped[str] = mapped_column(String, nullable=False)
+    # Renderer template key — lines up with
+    # :class:`EmailOptOut.category` for the opt-out probe and with
+    # the §10 "Emails the system sends" catalogue.
+    template_key: Mapped[str] = mapped_column(String, nullable=False)
+    # Free-form render context at queue time. The outer ``Any`` is
+    # scoped to SQLAlchemy's JSON column type — callers writing a
+    # typed payload should use a TypedDict locally and coerce into
+    # this column. Empty mapping default matches
+    # :class:`Notification.payload_json`.
+    context_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    # Set when the SMTP / ESP dispatch returned success. ``NULL`` on
+    # queued rows and on rows the worker bounced off before the
+    # first dispatch attempt.
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Provider-issued id for bounce-reply correlation. ``NULL`` until
+    # the first dispatch attempt lands; then carries the ESP's
+    # message id (conventionally the RFC 5322 Message-ID header).
+    provider_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Walks ``queued → sent → delivered`` on success,
+    # ``queued → sent → bounced`` / ``queued → failed`` on error.
+    # See ``_EMAIL_DELIVERY_STATE_VALUES``.
+    delivery_state: Mapped[str] = mapped_column(String, nullable=False)
+    # First adapter-level error string, if any. Stored on first
+    # failure and not overwritten on subsequent retries so support can
+    # answer "what went wrong initially?". ``Text`` rather than
+    # ``String`` because SMTP / ESP error bodies can be long and
+    # multi-line (matches sibling ``issue.description_md`` usage).
+    first_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Bumped on each retry attempt. Drives the §10 worker's back-off
+    # schedule; the worker gives up and transitions to ``failed``
+    # once the budget is exhausted.
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Optional reply-tracking token — when set, an inbound bounce
+    # notification that carries this opaque string links back to
+    # the originating ledger row. Separate from
+    # ``provider_message_id`` because some adapters surface only one
+    # or the other (ESP ``Message-ID`` vs custom VERP token).
+    inbound_linkage: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Row-create timestamp — set when the worker queues the email.
+    # NOT NULL and never updated after insert.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            f"delivery_state IN ({_in_clause(_EMAIL_DELIVERY_STATE_VALUES)})",
+            name="delivery_state",
+        ),
+        # Audit hot path: "every email sent to this person, newest
+        # first". Tenant filter rides the leading ``workspace_id``;
+        # ``to_person_id`` carries the equality filter;
+        # ``sent_at`` carries the ordering (and stays NULL-safe on
+        # both backends as a trailing key).
+        Index(
+            "ix_email_delivery_workspace_person_sent",
+            "workspace_id",
+            "to_person_id",
+            "sent_at",
+        ),
+        # Bounce-reply correlator: "find the ledger row this ESP
+        # bounce belongs to". A partial ``IS NOT NULL`` would be
+        # cheaper but is not portably expressible across SQLite + PG
+        # at the Alembic layer without per-dialect ``_where`` kwargs;
+        # the unrestricted index is sufficient for v1 volumes.
+        Index(
+            "ix_email_delivery_workspace_provider_msgid",
+            "workspace_id",
+            "provider_message_id",
+        ),
+        # Retry-scheduler hot path: "pending rows oldest first". The
+        # worker orders by ``sent_at`` within a state bucket (queued
+        # / failed) to emit the longest-waiting row first.
+        Index(
+            "ix_email_delivery_workspace_state_sent",
+            "workspace_id",
+            "delivery_state",
+            "sent_at",
         ),
     )

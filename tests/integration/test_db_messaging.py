@@ -3,19 +3,21 @@
 Covers the post-migration schema shape (tables, FK targets, CHECK
 constraints, indexes), the referential-integrity contract (workspace
 CASCADE sweeps every row; user CASCADE on notification / push_token /
-digest_record; user SET NULL on chat_message author; channel CASCADE
-on chat_message), happy-path round-trip of every model, the unread-
-fanout hot-path query, the chat-scrollback hot-path query, CHECK /
-FK violations, cross-workspace isolation, and tenant-filter behaviour
-(all five tables scoped; SELECT without a :class:`WorkspaceContext`
-raises :class:`TenantFilterMissing`).
+digest_record / email_opt_out; user SET NULL on chat_message author;
+channel CASCADE on chat_message; no user FK on email_delivery —
+soft reference), happy-path round-trip of every model, the unread-
+fanout hot-path query, the chat-scrollback hot-path query, the
+email opt-out pre-send probe, the email delivery state machine,
+CHECK / FK / UNIQUE violations, cross-workspace isolation, and
+tenant-filter behaviour (all seven tables scoped; SELECT without a
+:class:`WorkspaceContext` raises :class:`TenantFilterMissing`).
 
 The sibling ``tests/unit/test_db_messaging.py`` covers pure-Python
 model construction without the migration harness.
 
 See ``docs/specs/02-domain-model.md`` §"user_push_token",
-``docs/specs/10-messaging-notifications.md``, and
-``docs/specs/23-chat-gateway.md``.
+``docs/specs/10-messaging-notifications.md`` (incl. §"email_opt_out"
+and §"Delivery tracking"), and ``docs/specs/23-chat-gateway.md``.
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ from app.adapters.db.messaging.models import (
     ChatChannel,
     ChatMessage,
     DigestRecord,
+    EmailDelivery,
+    EmailOptOut,
     Notification,
     PushToken,
 )
@@ -57,6 +61,8 @@ _MESSAGING_TABLES: tuple[str, ...] = (
     "digest_record",
     "chat_channel",
     "chat_message",
+    "email_opt_out",
+    "email_delivery",
 )
 
 
@@ -129,7 +135,7 @@ def _bootstrap(
 
 
 class TestMigrationShape:
-    """The migration lands all five tables with the correct keys + indexes."""
+    """The migrations land all seven tables with the correct keys + indexes."""
 
     def test_all_tables_exist(self, engine: Engine) -> None:
         tables = set(inspect(engine).get_table_names())
@@ -319,6 +325,107 @@ class TestMigrationShape:
             "created_at",
         ]
         assert "ix_chat_message_workspace_channel" in indexes
+
+    def test_email_opt_out_columns(self, engine: Engine) -> None:
+        cols = {c["name"]: c for c in inspect(engine).get_columns("email_opt_out")}
+        expected = {
+            "id",
+            "workspace_id",
+            "user_id",
+            "category",
+            "opted_out_at",
+            "source",
+        }
+        assert set(cols) == expected
+        for notnull in expected:
+            assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
+
+    def test_email_opt_out_fks(self, engine: Engine) -> None:
+        fks = {
+            tuple(fk["constrained_columns"]): fk
+            for fk in inspect(engine).get_foreign_keys("email_opt_out")
+        }
+        assert fks[("workspace_id",)]["referred_table"] == "workspace"
+        assert fks[("workspace_id",)]["options"].get("ondelete") == "CASCADE"
+        assert fks[("user_id",)]["referred_table"] == "user"
+        assert fks[("user_id",)]["options"].get("ondelete") == "CASCADE"
+
+    def test_email_opt_out_indexes(self, engine: Engine) -> None:
+        """Acceptance: unique triple + non-unique workspace/user index."""
+        indexes = {
+            ix["name"]: ix for ix in inspect(engine).get_indexes("email_opt_out")
+        }
+        assert "uq_email_opt_out_user_category" in indexes
+        uq = indexes["uq_email_opt_out_user_category"]
+        assert uq["column_names"] == ["workspace_id", "user_id", "category"]
+        # SQLite's inspector returns 1/0, PG returns True/False — coerce.
+        assert bool(uq["unique"]) is True
+
+        assert "ix_email_opt_out_workspace_user" in indexes
+        ix = indexes["ix_email_opt_out_workspace_user"]
+        assert ix["column_names"] == ["workspace_id", "user_id"]
+        assert bool(ix["unique"]) is False
+
+    def test_email_delivery_columns(self, engine: Engine) -> None:
+        cols = {c["name"]: c for c in inspect(engine).get_columns("email_delivery")}
+        expected = {
+            "id",
+            "workspace_id",
+            "to_person_id",
+            "to_email_at_send",
+            "template_key",
+            "context_snapshot_json",
+            "sent_at",
+            "provider_message_id",
+            "delivery_state",
+            "first_error",
+            "retry_count",
+            "inbound_linkage",
+            "created_at",
+        }
+        assert set(cols) == expected
+        nullable = {"sent_at", "provider_message_id", "first_error", "inbound_linkage"}
+        for col in nullable:
+            assert cols[col]["nullable"] is True, f"{col} must be NULLABLE"
+        for notnull in expected - nullable:
+            assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
+
+    def test_email_delivery_fks(self, engine: Engine) -> None:
+        """Only the workspace FK exists — ``to_person_id`` is a soft ref."""
+        fks = {
+            tuple(fk["constrained_columns"]): fk
+            for fk in inspect(engine).get_foreign_keys("email_delivery")
+        }
+        # workspace_id CASCADE — present.
+        assert fks[("workspace_id",)]["referred_table"] == "workspace"
+        assert fks[("workspace_id",)]["options"].get("ondelete") == "CASCADE"
+        # to_person_id is the soft ref — no FK per §10 (client_user
+        # rows may not yet exist in ``user`` when the email queues).
+        assert ("to_person_id",) not in fks
+
+    def test_email_delivery_indexes(self, engine: Engine) -> None:
+        """Acceptance: all three documented indexes exist."""
+        indexes = {
+            ix["name"]: ix for ix in inspect(engine).get_indexes("email_delivery")
+        }
+        assert "ix_email_delivery_workspace_person_sent" in indexes
+        assert indexes["ix_email_delivery_workspace_person_sent"]["column_names"] == [
+            "workspace_id",
+            "to_person_id",
+            "sent_at",
+        ]
+
+        assert "ix_email_delivery_workspace_provider_msgid" in indexes
+        assert indexes["ix_email_delivery_workspace_provider_msgid"][
+            "column_names"
+        ] == ["workspace_id", "provider_message_id"]
+
+        assert "ix_email_delivery_workspace_state_sent" in indexes
+        assert indexes["ix_email_delivery_workspace_state_sent"]["column_names"] == [
+            "workspace_id",
+            "delivery_state",
+            "sent_at",
+        ]
 
 
 class TestNotificationCrud:
@@ -1051,11 +1158,620 @@ class TestCascadeOnWorkspaceDelete:
             reset_current(token)
 
 
+class TestEmailOptOutCrud:
+    """Insert + select + unique-index + check round-trip on :class:`EmailOptOut`."""
+
+    def test_round_trip_and_per_user_lookup(self, db_session: Session) -> None:
+        """CRUD happy path: insert, read back, mark another category."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="eoo-crud@example.com",
+            display="EooCrud",
+            slug="eoo-crud-ws",
+            name="EooCrudWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            row_a = EmailOptOut(
+                id="01HWA00000000000000000EOOA",
+                workspace_id=workspace.id,
+                user_id=user.id,
+                category="task_reminder",
+                opted_out_at=_PINNED,
+                source="unsubscribe_link",
+            )
+            row_b = EmailOptOut(
+                id="01HWA00000000000000000EOOB",
+                workspace_id=workspace.id,
+                user_id=user.id,
+                category="daily_digest",
+                opted_out_at=_LATER,
+                source="profile",
+            )
+            db_session.add_all([row_a, row_b])
+            db_session.flush()
+
+            # Per-user lookup — what has this user opted out of?
+            rows = db_session.scalars(
+                select(EmailOptOut)
+                .where(EmailOptOut.workspace_id == workspace.id)
+                .where(EmailOptOut.user_id == user.id)
+                .order_by(EmailOptOut.category)
+            ).all()
+            assert [r.category for r in rows] == ["daily_digest", "task_reminder"]
+
+            # SQLite drops tzinfo on round-trip; compare naive UTC form.
+            reloaded = db_session.get(EmailOptOut, row_a.id)
+            assert reloaded is not None
+            assert reloaded.opted_out_at.replace(tzinfo=UTC) == _PINNED
+            assert reloaded.source == "unsubscribe_link"
+
+            # Pre-send probe: does a row exist for this triple?
+            probe = db_session.scalars(
+                select(EmailOptOut)
+                .where(EmailOptOut.workspace_id == workspace.id)
+                .where(EmailOptOut.user_id == user.id)
+                .where(EmailOptOut.category == "task_reminder")
+            ).all()
+            assert len(probe) == 1
+        finally:
+            reset_current(ctx_token)
+
+    def test_unique_triple_rejects_duplicate(self, db_session: Session) -> None:
+        """Acceptance: unique ``(workspace_id, user_id, category)`` rejects dupe."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="eoo-uq@example.com",
+            display="EooUq",
+            slug="eoo-uq-ws",
+            name="EooUqWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add(
+                EmailOptOut(
+                    id="01HWA00000000000000000EOUA",
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    category="task_reminder",
+                    opted_out_at=_PINNED,
+                    source="unsubscribe_link",
+                )
+            )
+            db_session.flush()
+
+            db_session.add(
+                EmailOptOut(
+                    id="01HWA00000000000000000EOUB",
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    category="task_reminder",  # same triple — must reject
+                    opted_out_at=_LATER,
+                    source="profile",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+            db_session.rollback()
+        finally:
+            reset_current(ctx_token)
+
+    def test_different_category_allowed(self, db_session: Session) -> None:
+        """A different ``category`` bypasses the unique — two rows coexist."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="eoo-diff@example.com",
+            display="EooDiff",
+            slug="eoo-diff-ws",
+            name="EooDiffWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add_all(
+                [
+                    EmailOptOut(
+                        id="01HWA00000000000000000EODA",
+                        workspace_id=workspace.id,
+                        user_id=user.id,
+                        category="task_reminder",
+                        opted_out_at=_PINNED,
+                        source="unsubscribe_link",
+                    ),
+                    EmailOptOut(
+                        id="01HWA00000000000000000EODB",
+                        workspace_id=workspace.id,
+                        user_id=user.id,
+                        category="daily_digest",
+                        opted_out_at=_PINNED,
+                        source="unsubscribe_link",
+                    ),
+                ]
+            )
+            # Both rows land — different category is a new row.
+            db_session.flush()
+        finally:
+            reset_current(ctx_token)
+
+
+class TestEmailDeliveryCrud:
+    """Insert + select + retry round-trip on :class:`EmailDelivery`."""
+
+    def test_round_trip_queued_to_delivered(self, db_session: Session) -> None:
+        """Walk a row from ``queued → sent → delivered`` with context snapshot."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="edl-crud@example.com",
+            display="EdlCrud",
+            slug="edl-crud-ws",
+            name="EdlCrudWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            context = {"task_id": "01HWA00000000000000000TKAA", "title": "Pool"}
+            row = EmailDelivery(
+                id="01HWA00000000000000000EDLA",
+                workspace_id=workspace.id,
+                to_person_id=user.id,
+                to_email_at_send="maria@example.com",
+                template_key="task_reminder",
+                context_snapshot_json=context,
+                delivery_state="queued",
+                retry_count=0,
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            db_session.flush()
+
+            # Worker dispatches the row — state → sent, sent_at populated.
+            loaded = db_session.get(EmailDelivery, row.id)
+            assert loaded is not None
+            loaded.delivery_state = "sent"
+            loaded.sent_at = _LATER
+            loaded.provider_message_id = "esp-msg-42"
+            db_session.flush()
+            db_session.expire_all()
+
+            # ESP webhook confirms delivery.
+            reloaded = db_session.get(EmailDelivery, row.id)
+            assert reloaded is not None
+            reloaded.delivery_state = "delivered"
+            db_session.flush()
+            db_session.expire_all()
+
+            final = db_session.get(EmailDelivery, row.id)
+            assert final is not None
+            assert final.delivery_state == "delivered"
+            assert final.sent_at is not None
+            assert final.sent_at.replace(tzinfo=UTC) == _LATER
+            assert final.provider_message_id == "esp-msg-42"
+            assert final.context_snapshot_json == context
+        finally:
+            reset_current(ctx_token)
+
+    def test_soft_ref_accepts_nonexistent_person(self, db_session: Session) -> None:
+        """``to_person_id`` is a soft reference — no FK means any ULID lands.
+
+        §10 invoice reminders / stay-upcoming emails can target a
+        ``client_user`` that is not yet a :class:`User` row when the
+        email is queued. The column is plain :class:`String`; this
+        test documents that no FK trips on an unknown id.
+        """
+        workspace, user = _bootstrap(
+            db_session,
+            email="edl-soft@example.com",
+            display="EdlSoft",
+            slug="edl-soft-ws",
+            name="EdlSoftWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            row = EmailDelivery(
+                id="01HWA00000000000000000EDSA",
+                workspace_id=workspace.id,
+                # ULID for a client_user that isn't in ``user`` yet.
+                to_person_id="01HWA0000000000000000GHOST",
+                to_email_at_send="guest@example.com",
+                template_key="stay_upcoming",
+                delivery_state="queued",
+                retry_count=0,
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            db_session.flush()
+
+            reloaded = db_session.get(EmailDelivery, row.id)
+            assert reloaded is not None
+            assert reloaded.to_person_id == "01HWA0000000000000000GHOST"
+        finally:
+            reset_current(ctx_token)
+
+    def test_retry_path_records_first_error(self, db_session: Session) -> None:
+        """Retry path: ``first_error`` is stamped once, ``retry_count`` bumps."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="edl-retry@example.com",
+            display="EdlRetry",
+            slug="edl-retry-ws",
+            name="EdlRetryWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            row = EmailDelivery(
+                id="01HWA00000000000000000EDRA",
+                workspace_id=workspace.id,
+                to_person_id=user.id,
+                to_email_at_send="m@example.com",
+                template_key="task_reminder",
+                delivery_state="queued",
+                first_error="smtp: 421 temporary failure",
+                retry_count=1,
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            db_session.flush()
+
+            # Second retry — worker bumps ``retry_count`` but leaves
+            # ``first_error`` untouched (the original reason stays).
+            loaded = db_session.get(EmailDelivery, row.id)
+            assert loaded is not None
+            loaded.retry_count = 2
+            db_session.flush()
+            db_session.expire_all()
+
+            final = db_session.get(EmailDelivery, row.id)
+            assert final is not None
+            assert final.retry_count == 2
+            assert final.first_error == "smtp: 421 temporary failure"
+        finally:
+            reset_current(ctx_token)
+
+
+class TestEmailChecks:
+    """CHECK constraints on :class:`EmailOptOut` / :class:`EmailDelivery`."""
+
+    def test_bogus_opt_out_source_rejected(self, db_session: Session) -> None:
+        """Acceptance: ``email_opt_out.source = 'other'`` rejected."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="bogus-eoos@example.com",
+            display="BogusEoos",
+            slug="bogus-eoos-ws",
+            name="BogusEoosWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add(
+                EmailOptOut(
+                    id="01HWA00000000000000000BEOS",
+                    workspace_id=workspace.id,
+                    user_id=user.id,
+                    category="task_reminder",
+                    opted_out_at=_PINNED,
+                    source="other",  # not in the enum
+                )
+            )
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+            db_session.rollback()
+        finally:
+            reset_current(ctx_token)
+
+    def test_bogus_delivery_state_rejected(self, db_session: Session) -> None:
+        """Acceptance: ``email_delivery.delivery_state = 'retrying'`` rejected."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="bogus-edls@example.com",
+            display="BogusEdls",
+            slug="bogus-edls-ws",
+            name="BogusEdlsWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add(
+                EmailDelivery(
+                    id="01HWA00000000000000000BEDS",
+                    workspace_id=workspace.id,
+                    to_person_id=user.id,
+                    to_email_at_send="m@example.com",
+                    template_key="task_reminder",
+                    delivery_state="retrying",  # not in the enum
+                    retry_count=0,
+                    created_at=_PINNED,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+            db_session.rollback()
+        finally:
+            reset_current(ctx_token)
+
+
+class TestEmailCrossWorkspaceIsolation:
+    """Email opt-out / delivery rows stay scoped to their workspace."""
+
+    def test_opt_out_same_triple_different_workspace_allowed(
+        self, db_session: Session
+    ) -> None:
+        """Two workspaces can each hold an opt-out for the same user+category.
+
+        The unique index is scoped on ``(workspace_id, user_id,
+        category)`` — the leading column is what lets two tenants
+        coexist. Same user can appear in both workspaces via
+        different ``role_grant`` rows (§03), so this is a real shape.
+        """
+        ws_a, user = _bootstrap(
+            db_session,
+            email="eoo-xws@example.com",
+            display="EooXws",
+            slug="eoo-xws-a",
+            name="EooXwsA",
+        )
+        # Second workspace owned by the same user.
+        clock = FrozenClock(_PINNED)
+        ws_b = bootstrap_workspace(
+            db_session,
+            slug="eoo-xws-b",
+            name="EooXwsB",
+            owner_user_id=user.id,
+            clock=clock,
+        )
+
+        token_a = set_current(_ctx_for(ws_a, user.id))
+        try:
+            db_session.add(
+                EmailOptOut(
+                    id="01HWA00000000000000000XOA1",
+                    workspace_id=ws_a.id,
+                    user_id=user.id,
+                    category="task_reminder",
+                    opted_out_at=_PINNED,
+                    source="unsubscribe_link",
+                )
+            )
+            db_session.flush()
+        finally:
+            reset_current(token_a)
+
+        token_b = set_current(_ctx_for(ws_b, user.id))
+        try:
+            db_session.add(
+                EmailOptOut(
+                    id="01HWA00000000000000000XOB1",
+                    workspace_id=ws_b.id,
+                    user_id=user.id,
+                    category="task_reminder",  # same category, different ws
+                    opted_out_at=_PINNED,
+                    source="unsubscribe_link",
+                )
+            )
+            # Both rows land — the unique is per-workspace.
+            db_session.flush()
+
+            b_rows = db_session.scalars(
+                select(EmailOptOut).where(EmailOptOut.workspace_id == ws_b.id)
+            ).all()
+            assert [r.category for r in b_rows] == ["task_reminder"]
+        finally:
+            reset_current(token_b)
+
+    def test_delivery_scoped_per_workspace(self, db_session: Session) -> None:
+        """``EmailDelivery`` rows do not leak across workspaces."""
+        ws_a, user_a = _bootstrap(
+            db_session,
+            email="edl-xws-a@example.com",
+            display="EdlXwsA",
+            slug="edl-xws-a-ws",
+            name="EdlXwsAWS",
+        )
+        ws_b, user_b = _bootstrap(
+            db_session,
+            email="edl-xws-b@example.com",
+            display="EdlXwsB",
+            slug="edl-xws-b-ws",
+            name="EdlXwsBWS",
+        )
+
+        token_a = set_current(_ctx_for(ws_a, user_a.id))
+        try:
+            db_session.add(
+                EmailDelivery(
+                    id="01HWA00000000000000000XDA1",
+                    workspace_id=ws_a.id,
+                    to_person_id=user_a.id,
+                    to_email_at_send="a@example.com",
+                    template_key="task_reminder",
+                    delivery_state="queued",
+                    retry_count=0,
+                    created_at=_PINNED,
+                )
+            )
+            db_session.flush()
+        finally:
+            reset_current(token_a)
+
+        token_b = set_current(_ctx_for(ws_b, user_b.id))
+        try:
+            db_session.add(
+                EmailDelivery(
+                    id="01HWA00000000000000000XDB1",
+                    workspace_id=ws_b.id,
+                    to_person_id=user_b.id,
+                    to_email_at_send="b@example.com",
+                    template_key="task_reminder",
+                    delivery_state="queued",
+                    retry_count=0,
+                    created_at=_PINNED,
+                )
+            )
+            db_session.flush()
+
+            b_rows = db_session.scalars(
+                select(EmailDelivery).where(EmailDelivery.workspace_id == ws_b.id)
+            ).all()
+            assert {r.to_email_at_send for r in b_rows} == {"b@example.com"}
+
+            a_rows = db_session.scalars(
+                select(EmailDelivery).where(EmailDelivery.workspace_id == ws_a.id)
+            ).all()
+            assert {r.to_email_at_send for r in a_rows} == {"a@example.com"}
+        finally:
+            reset_current(token_b)
+
+
+class TestEmailCascadeOnWorkspaceDelete:
+    """Deleting a workspace sweeps ``email_opt_out`` + ``email_delivery`` rows."""
+
+    def test_delete_workspace_cascades_email_rows(self, db_session: Session) -> None:
+        from app.tenancy import tenant_agnostic
+
+        workspace, user = _bootstrap(
+            db_session,
+            email="email-cascade@example.com",
+            display="EmailCascade",
+            slug="email-cascade-ws",
+            name="EmailCascadeWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add_all(
+                [
+                    EmailOptOut(
+                        id="01HWA00000000000000000ECEO",
+                        workspace_id=workspace.id,
+                        user_id=user.id,
+                        category="task_reminder",
+                        opted_out_at=_PINNED,
+                        source="unsubscribe_link",
+                    ),
+                    EmailDelivery(
+                        id="01HWA00000000000000000ECED",
+                        workspace_id=workspace.id,
+                        to_person_id=user.id,
+                        to_email_at_send="m@example.com",
+                        template_key="task_reminder",
+                        delivery_state="queued",
+                        retry_count=0,
+                        created_at=_PINNED,
+                    ),
+                ]
+            )
+            db_session.flush()
+        finally:
+            reset_current(ctx_token)
+
+        loaded_ws = db_session.get(Workspace, workspace.id)
+        assert loaded_ws is not None
+        with tenant_agnostic():
+            db_session.delete(loaded_ws)
+            db_session.flush()
+
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            for model in (EmailOptOut, EmailDelivery):
+                rows = db_session.scalars(
+                    select(model).where(model.workspace_id == workspace.id)
+                ).all()
+                assert rows == [], f"{model.__tablename__} not swept"
+        finally:
+            reset_current(ctx_token)
+
+
+class TestEmailCascadeOnUserDelete:
+    """Deleting a user sweeps ``email_opt_out`` rows (CASCADE).
+
+    ``email_delivery`` has no user FK (``to_person_id`` is a soft
+    reference) so rows survive the user delete — the ledger's audit
+    trail is longer-lived than the user row. This mirrors the
+    ``ChatMessage.author_user_id SET NULL`` rationale but enforced
+    through "no FK at all" rather than a SET NULL rule.
+    """
+
+    def test_delete_user_cascades_opt_outs_but_not_deliveries(
+        self, db_session: Session
+    ) -> None:
+        from app.tenancy import tenant_agnostic
+
+        workspace, owner = _bootstrap(
+            db_session,
+            email="user-cascade-owner@example.com",
+            display="UserCascOwner",
+            slug="user-cascade-ws",
+            name="UserCascWS",
+        )
+        clock = FrozenClock(_PINNED)
+        target = bootstrap_user(
+            db_session,
+            email="user-cascade-target@example.com",
+            display_name="Target",
+            clock=clock,
+        )
+
+        ctx_token = set_current(_ctx_for(workspace, owner.id))
+        try:
+            db_session.add_all(
+                [
+                    EmailOptOut(
+                        id="01HWA00000000000000000UCEO",
+                        workspace_id=workspace.id,
+                        user_id=target.id,
+                        category="task_reminder",
+                        opted_out_at=_PINNED,
+                        source="profile",
+                    ),
+                    EmailDelivery(
+                        id="01HWA00000000000000000UCED",
+                        workspace_id=workspace.id,
+                        to_person_id=target.id,
+                        to_email_at_send="target@example.com",
+                        template_key="task_reminder",
+                        delivery_state="queued",
+                        retry_count=0,
+                        created_at=_PINNED,
+                    ),
+                ]
+            )
+            db_session.flush()
+        finally:
+            reset_current(ctx_token)
+
+        with tenant_agnostic():
+            db_session.delete(target)
+            db_session.flush()
+
+        ctx_token = set_current(_ctx_for(workspace, owner.id))
+        try:
+            db_session.expire_all()
+            # Opt-out: CASCADE — row gone.
+            opt_rows = db_session.scalars(
+                select(EmailOptOut).where(EmailOptOut.workspace_id == workspace.id)
+            ).all()
+            assert opt_rows == []
+
+            # Delivery: no FK on to_person_id — row survives with a
+            # dangling ULID pointer (by design per §10).
+            del_rows = db_session.scalars(
+                select(EmailDelivery).where(EmailDelivery.workspace_id == workspace.id)
+            ).all()
+            assert len(del_rows) == 1
+            assert del_rows[0].to_person_id == target.id
+        finally:
+            reset_current(ctx_token)
+
+
 class TestTenantFilter:
-    """All five messaging tables are workspace-scoped under the filter."""
+    """All seven messaging tables are workspace-scoped under the filter."""
 
     @pytest.mark.parametrize(
-        "model", [Notification, PushToken, DigestRecord, ChatChannel, ChatMessage]
+        "model",
+        [
+            Notification,
+            PushToken,
+            DigestRecord,
+            ChatChannel,
+            ChatMessage,
+            EmailOptOut,
+            EmailDelivery,
+        ],
     )
     def test_read_without_ctx_raises(
         self,
@@ -1064,7 +1780,9 @@ class TestTenantFilter:
         | type[PushToken]
         | type[DigestRecord]
         | type[ChatChannel]
-        | type[ChatMessage],
+        | type[ChatMessage]
+        | type[EmailOptOut]
+        | type[EmailDelivery],
     ) -> None:
         with (
             filtered_factory() as session,
