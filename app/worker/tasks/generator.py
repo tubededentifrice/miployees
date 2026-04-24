@@ -150,9 +150,10 @@ def _noop_assign(
 
     The assignment algorithm (§06 "Assignment algorithm") depends on
     availability precedence, rota composition, and the work-role
-    tables (cd-65kn, cd-8luu). Until those land the generator leaves
-    ``assignee_user_id`` null and the downstream digest surfaces the
-    task as unassigned per §06 step 5.
+    tables (cd-5kv4 landed ``work_role`` + ``user_work_role``; cd-8luu
+    wires the real assignment service). Until cd-8luu lands the
+    generator leaves ``assignee_user_id`` null and the downstream
+    digest surfaces the task as unassigned per §06 step 5.
     """
     _ = session, ctx, occurrence_id
 

@@ -36,7 +36,7 @@ their bundles.
 | workspace_id                   | ULID FK   |                                       |
 | name                           | text      | "Weekly kitchen deep clean"           |
 | description_md                 | text      |                                       |
-| role_id                        | ULID FK?  | default work_role expected to do it; FK deferred until `work_role` table lands (cd-65kn) |
+| role_id                        | ULID FK?  | default work_role expected to do it; soft reference until a follow-up promotes it to a real FK (table landed via cd-5kv4) |
 | duration_minutes               | int       | hint only                             |
 | property_scope                 | enum      | `any | one | listed`                  |
 | listed_property_ids            | ULID[]    |                                       |

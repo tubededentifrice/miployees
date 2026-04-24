@@ -29,7 +29,8 @@ in cd-22e lands here:
   must not orphan the task row, and the domain layer validates
   existence at write time once cd-sn26 widens the area/unit CRUD.
 * ``expected_role_id`` — soft pointer to the ``work_role`` table
-  (§05). No FK; the table does not ship in v1 (cd-65kn lands it).
+  (§05). No FK at v1; cd-5kv4 landed the table, a follow-up may
+  promote the column into a real FK.
 * ``linked_instruction_ids`` — JSON list of instruction ids (§07).
 * ``inventory_consumption_json`` — SKU → qty map (§08).
 * ``is_personal`` — bool, default ``false``. Column default matches

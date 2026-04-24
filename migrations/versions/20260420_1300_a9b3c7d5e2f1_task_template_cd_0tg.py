@@ -20,8 +20,8 @@ Column rationale:
   and the mocks. Added as nullable + backfilled from ``title`` so the
   existing rows remain readable; new writes populate both until a
   follow-up drops ``title``.
-* ``role_id`` — soft reference to the future ``work_role`` table
-  (cd-65kn / §05). Nullable because a template without a pinned role
+* ``role_id`` — soft reference to the ``work_role`` table (landed by
+  cd-5kv4, §05). Nullable because a template without a pinned role
   lets the schedule / ad-hoc creator pick per-occurrence. No FK yet;
   the column is a plain ``String`` until the ``work_role`` table
   lands, matching the ``scope_property_id`` convention on

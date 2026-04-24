@@ -39,13 +39,15 @@ store them verbatim and re-parse on ``preview_occurrences``.
 every user in ``backup_assignee_user_ids`` must hold a
 ``user_work_role`` matching the schedule's ``expected_role_id`` at
 write time; 422 ``backup_invalid_work_role`` otherwise. The
-``user_work_role`` table does not exist yet (cd-65kn); we expose
-an injectable validator hook (:data:`BackupAssigneeValidator`) so
-the service, the router, and cd-65kn can wire the real check in
-without another service-wide refactor. The default validator is a
-no-op — it returns an empty list, mirroring the "hook exists,
-implementation lands with a downstream task" pattern in
-:mod:`app.domain.tasks.templates`.
+``user_work_role`` table lands with cd-5kv4 but the real validator
+— a query that asserts each user holds a matching active
+``user_work_role`` — plugs in with the employees service (cd-dv2).
+We expose an injectable validator hook
+(:data:`BackupAssigneeValidator`) so the service, the router, and
+cd-dv2 can wire the real check in without another service-wide
+refactor. The default validator is a no-op — it returns an empty
+list, mirroring the "hook exists, implementation lands with a
+downstream task" pattern in :mod:`app.domain.tasks.templates`.
 
 **Pause vs active range.** Per §06 "Pause vs active range" a
 non-null ``paused_at`` always wins. :func:`pause` and
@@ -121,16 +123,16 @@ Called with ``(session, ctx, role_id, user_ids)``; returns the
 list of user ids that **do not** hold a matching
 ``user_work_role``. The default validator
 (:func:`_default_validator`) returns an empty list — the
-``user_work_role`` table lands with cd-65kn, at which point the
-real implementation replaces the default. Until then the service
-accepts any user id in the backup list.
+``user_work_role`` table lands with cd-5kv4, and the employees
+service (cd-dv2) replaces the default with a real query. Until
+cd-dv2 the service accepts any user id in the backup list.
 
 Keeping this as an injectable hook rather than a hard-wired
 dependency lets:
 
 * the unit tests assert the 422 branch fires without needing the
   full ``user_work_role`` schema;
-* cd-65kn wire the real check without widening every call site;
+* cd-dv2 wire the real check without widening every call site;
 * the router + CLI inject a context-aware validator that queries
   the actual table when the caller is a real user.
 """
@@ -142,14 +144,17 @@ def _default_validator(
     role_id: str,
     user_ids: Sequence[str],
 ) -> list[str]:
-    """Return an empty list — the real check lands with cd-65kn.
+    """Return an empty list — the real check lands with cd-dv2.
 
-    Until the ``user_work_role`` table exists there is nothing to
-    validate against. Accepting any id is safer than inventing a
-    check that will drift from the eventual schema.
+    The ``user_work_role`` table lands with cd-5kv4, but the real
+    validator query — "every user id holds an active user_work_role
+    matching ``role_id`` in this workspace" — is owned by the
+    employees service (cd-dv2). Accepting any id in the interim is
+    safer than inventing a check that will drift from the eventual
+    domain layer.
     """
     # Unused arguments kept in the signature so the contract stays
-    # stable once cd-65kn lands — flagging them to the linter.
+    # stable once cd-dv2 lands — flagging them to the linter.
     _ = session, ctx, role_id, user_ids
     return []
 

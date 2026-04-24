@@ -32,11 +32,12 @@ steps:
 ## Injectable ports
 
 Real availability / rota / pool semantics depend on tables that are
-not yet in the schema (``user_work_role`` — cd-65kn;
-``property_work_role_assignment``, ``schedule_ruleset``,
+not yet in the schema. The real body plugs in once cd-5kv4
+(``user_work_role`` table) + the downstream availability migrations
+land — ``property_work_role_assignment``, ``schedule_ruleset``,
 ``user_leave``, ``user_availability_override``,
-``user_weekly_availability``, ``public_holiday`` — later follow-
-ups). The service exposes every such touchpoint as an injectable
+``user_weekly_availability``, ``public_holiday``. The service
+exposes every such touchpoint as an injectable
 callable with a default that matches the permissive "tables haven't
 landed" reality:
 
@@ -56,9 +57,9 @@ landed" reality:
   Default :func:`_default_workload` queries the existing
   ``occurrence`` table (which **does** exist).
 
-The injection seam lets cd-65kn and the downstream availability
-migrations plug in real queries without another service-wide
-refactor.
+The injection seam lets cd-5kv4 (work_role table) and the downstream
+availability migrations plug in real queries without another
+service-wide refactor.
 
 ## Public surface
 
@@ -331,10 +332,10 @@ def _empty_pool(
 ) -> Sequence[str]:
     """Default candidate-pool port.
 
-    Returns an empty tuple: without ``user_work_role`` +
-    ``property_work_role_assignment`` (cd-65kn and follow-ups) we
-    cannot build a meaningful pool. Downstream tests inject a
-    deterministic pool to exercise steps 2-4.
+    Returns an empty tuple: ``user_work_role`` lands with cd-5kv4 but
+    ``property_work_role_assignment`` is still pending — without both
+    tables we cannot build a meaningful pool. Downstream tests inject
+    a deterministic pool to exercise steps 2-4.
     """
     _ = session, ctx, expected_role_id, property_id, exclude
     return ()

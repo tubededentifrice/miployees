@@ -614,7 +614,7 @@ class TestCreate:
         assert exc.value.role_id == "role-x"
 
     def test_backup_validator_default_is_noop(self, session: Session) -> None:
-        """Default hook lets any backup id through — validation lands with cd-65kn."""
+        """Default hook lets any backup id through — validation lands with cd-dv2."""
         ws = _bootstrap_workspace(session, slug="create-backup-noop")
         ctx = _ctx(ws, slug="create-backup-noop")
         tpl = _bootstrap_template(session, workspace_id=ws)
