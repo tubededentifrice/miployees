@@ -12,6 +12,7 @@ from app.events.registry import (
 from app.events.types import (
     ExpenseApproved,
     LlmAssignmentChanged,
+    NotificationCreated,
     ShiftChanged,
     ShiftChangedAction,
     ShiftEnded,
@@ -28,6 +29,7 @@ __all__ = [
     "EventNotFound",
     "ExpenseApproved",
     "LlmAssignmentChanged",
+    "NotificationCreated",
     "ShiftChanged",
     "ShiftChangedAction",
     "ShiftEnded",

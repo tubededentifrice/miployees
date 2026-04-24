@@ -1,0 +1,7 @@
+Hi {{ recipient_display_name | default("there") }},
+
+You have a new message in crew.day:
+
+> {{ message_body | default("") }}
+
+[Open in app]({{ deep_link | default("/chat") }})

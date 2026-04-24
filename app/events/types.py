@@ -40,6 +40,7 @@ from app.events.registry import Event, EventRole, register
 __all__ = [
     "ExpenseApproved",
     "LlmAssignmentChanged",
+    "NotificationCreated",
     "ShiftChanged",
     "ShiftChangedAction",
     "ShiftEnded",
@@ -203,6 +204,53 @@ class LlmAssignmentChanged(Event):
     # LLM configuration is admin-only surface; keep off worker /
     # client / guest SSE streams.
     allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager",)
+
+
+@register
+class NotificationCreated(Event):
+    """A :class:`~app.adapters.db.messaging.models.Notification` row has
+    just been persisted for ``actor_user_id``.
+
+    Fired by :class:`~app.domain.messaging.notifications.NotificationService`
+    after the row lands in the caller's Unit of Work, before the
+    email / push fanout — so the client-side cache invalidation races
+    the outbound channels and the unread badge updates the instant
+    the DB row is visible to the reader.
+
+    The event is **user-scoped**: the SSE transport filters the
+    fanout so only the recipient's tabs see it. A manager watching
+    the workspace stream does not receive another user's
+    notifications — notifications are personal in both the domain
+    model and the wire protocol.
+
+    Scope: the full grant-role tuple (``manager``, ``worker``,
+    ``client``, ``guest``), since a notification can land for any
+    role. The user-scope filter carries the real protection;
+    ``allowed_roles`` is only the coarse first pass.
+
+    Payload is kept deliberately narrow: the ``notification_id`` so
+    the client can ``GET /notifications/{id}`` for the rendered
+    subject / body, the ``kind`` so the client can pick an icon
+    without a round-trip, and ``actor_user_id`` for the SSE user-
+    scope filter. Free-text fields (subject, body) are NOT on the
+    wire — the client fetches them over REST under the normal
+    per-row authorisation path.
+    """
+
+    name: ClassVar[str] = "notification.created"
+    # One recipient → one notification. The SSE transport compares
+    # this against the caller's ``WorkspaceContext.actor_id`` and
+    # drops the frame for every other subscriber, including managers
+    # watching the same workspace.
+    user_scoped: ClassVar[bool] = True
+
+    notification_id: str
+    kind: str
+    # Required by the ``user_scoped=True`` contract on the registry
+    # (see :mod:`app.events.registry`). Always equal to the
+    # ``Notification.recipient_user_id`` column — the event is
+    # addressed to the recipient, not to whoever caused it.
+    actor_user_id: str
 
 
 @register

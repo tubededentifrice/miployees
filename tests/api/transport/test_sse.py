@@ -1148,6 +1148,14 @@ DEFAULT_ROLE_EVENTS_ALLOWLIST: frozenset[str] = frozenset(
         "expense.approved",
         "shift.ended",
         "time.shift.changed",
+        # ``notification.created`` keeps every role on ``allowed_roles``
+        # because a notification can legitimately land for any grant
+        # (an owner / manager / worker / client). The real narrowing
+        # is ``user_scoped=True`` — the transport only delivers the
+        # frame to the matching ``actor_user_id``, so a manager
+        # watching the workspace stream does not see another user's
+        # notifications.
+        "notification.created",
     }
 )
 

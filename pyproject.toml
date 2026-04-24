@@ -38,6 +38,13 @@ dependencies = [
     # plaintext after mint; only its argon2id digest is stored, so a
     # DB leak cannot be replayed.
     "argon2-cffi>=23",
+    # Jinja2 for §10 email + push template rendering. The notification
+    # service (cd-y1ge) loads ``<kind>.<channel>.j2`` files from
+    # :mod:`app.domain.messaging.templates`; every email and push
+    # payload is a rendered template. Pinning Jinja2 directly (not via
+    # a transitive dep) makes the dependency explicit and survives a
+    # future dev-tool shake-up that might drop Flask / locust.
+    "jinja2>=3.1",
 ]
 
 # ``crewday`` is the sole console-script entry point. The target is
@@ -322,6 +329,16 @@ ignore_imports = [
     # above); the intermediate edge is therefore whitelisted with the
     # same reasoning. Drops with cd-duv6.
     "app.domain.time.shifts -> app.authz",
+    # v1 stopgap (cd-y1ge): ``app.domain.messaging.notifications``
+    # reads :class:`Notification`, :class:`PushToken`,
+    # :class:`EmailOptOut` from ``app.adapters.db.messaging.models``
+    # and :class:`User` from ``app.adapters.db.identity.models``
+    # (to resolve the recipient's locale for template rendering).
+    # Same Protocol-seam pattern as the other domain stopgaps;
+    # tracked by cd-duv6 (extended scope) — drops once the messaging
+    # repositories land.
+    "app.domain.messaging.notifications -> app.adapters.db.messaging.models",
+    "app.domain.messaging.notifications -> app.adapters.db.identity.models",
 ]
 unmatched_ignore_imports_alerting = "none"
 

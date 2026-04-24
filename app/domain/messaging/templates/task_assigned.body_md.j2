@@ -1,0 +1,12 @@
+Hi {{ recipient_display_name | default("there") }},
+
+You've been assigned a new task: **{{ task_title }}**.
+
+{% if due_at is defined and due_at -%}
+Due {{ due_at }}.
+{% endif -%}
+{% if property_name is defined and property_name -%}
+Property: {{ property_name }}.
+{% endif %}
+
+Open it in crew.day to see the details and mark it done.

@@ -681,6 +681,12 @@ _INVALIDATIONS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
     "expense.approved": (("expenses",),),
     "shift.ended": (("shifts",), ("my-schedule",)),
     "time.shift.changed": (("shifts",), ("my-schedule",)),
+    # Bell-menu unread count + the notification list. Both query keys
+    # are per-recipient; the event is user-scoped so only the
+    # addressee's tabs receive it — the invalidation fires against
+    # their own cache entry and does not waste work on sibling tabs
+    # in other browsers logged into the same workspace.
+    "notification.created": (("notifications", "unread"), ("notifications",)),
 }
 
 
