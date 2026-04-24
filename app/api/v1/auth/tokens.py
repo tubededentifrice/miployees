@@ -6,29 +6,50 @@ requires an authenticated session plus the ``api_tokens.manage``
 action permission on the workspace scope (§05 action catalog —
 default-allow: owners + managers, root-protected-deny).
 
+This router handles the **workspace-pinned** token kinds: the
+original ``scoped`` tokens (cd-c91) and the ``delegated`` tokens
+(cd-i1qe). Personal access tokens are identity-scoped and live at
+the bare host on ``/api/v1/me/tokens`` — see
+:mod:`app.api.v1.auth.me_tokens`.
+
 Routes:
 
-* ``POST /auth/tokens`` ``{label, scopes, expires_at_days?}`` →
-  ``201 {token, key_id, prefix, expires_at}``. The plaintext
-  ``token`` is returned **only on this response**; never again.
-  The router applies the spec's 90-day default TTL (§03
-  "Guardrails") when ``expires_at_days`` is omitted.
+* ``POST /auth/tokens`` → ``201 {token, key_id, prefix, expires_at,
+  kind}``. Two shapes:
+
+  * **Scoped** (default): ``{label, scopes, expires_at_days?}``.
+    ``scopes`` is the flat ``{"action_key": true}`` shape §03 pins;
+    default TTL 90 days (§03 "Guardrails").
+  * **Delegated**: ``{label, delegate: true, expires_at_days?,
+    scopes: {}}``. The session user's id populates
+    ``delegate_for_user_id``; scopes MUST be empty (§03 "Delegated
+    tokens"); default TTL 30 days.
+
+  The plaintext ``token`` is returned **only on this response**;
+  never again.
+
 * ``GET /auth/tokens`` → list of :class:`TokenSummary` projections.
-  Returns both active and revoked rows — the ``/tokens`` UI shows
-  both sections.
+  Returns both active and revoked scoped / delegated rows — the
+  ``/tokens`` UI shows both sections. Personal tokens are excluded
+  per §03.
 * ``DELETE /auth/tokens/{token_id}`` → 204. Flips ``revoked_at``;
-  idempotent for already-revoked rows. An unknown ``token_id``
-  returns 404.
+  idempotent for already-revoked rows. An unknown / foreign /
+  personal ``token_id`` returns 404 (same shape — we don't leak
+  whose tokens exist).
 
 Error shapes:
 
 * 401 ``not_authenticated`` — no session (via the dep chain).
 * 403 ``permission_denied`` — action gate fired.
-* 404 ``token_not_found`` — revoke against an unknown or foreign
-  ``token_id``.
-* 422 ``too_many_tokens`` — 6th mint for the user on this workspace.
-* 422 ``invalid_scopes`` / ``scopes_required`` — malformed or empty
-  scopes body.
+* 404 ``token_not_found`` — revoke against an unknown, foreign, or
+  personal ``token_id``.
+* 422 ``too_many_tokens`` — 6th scoped/delegated mint for the user
+  on this workspace.
+* 422 ``delegated_requires_empty_scopes`` — delegated mint with a
+  non-empty ``scopes`` body.
+* 422 ``me_scope_conflict`` — scoped mint with a ``me:*`` key in
+  ``scopes``.
+* 422 ``invalid_kind`` — body carried an unknown ``kind`` literal.
 
 Handlers are intentionally thin: validate the body, call the domain
 service inside the request's UoW, map typed errors onto HTTP
@@ -51,8 +72,12 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import current_workspace_context, db_session
 from app.auth.tokens import (
+    DELEGATED_DEFAULT_TTL_DAYS,
+    SCOPED_DEFAULT_TTL_DAYS,
     InvalidToken,
     MintedToken,
+    TokenKind,
+    TokenShapeError,
     TokenSummary,
     TooManyTokens,
     list_tokens,
@@ -75,11 +100,6 @@ __all__ = [
 _Ctx = Annotated[WorkspaceContext, Depends(current_workspace_context)]
 _Db = Annotated[Session, Depends(db_session)]
 
-
-# Spec §03 "Guardrails": scoped tokens default to 90 days TTL if
-# ``expires_at`` is omitted. The router materialises that default so
-# the domain service doesn't have to know about HTTP-layer policy.
-_DEFAULT_TTL_DAYS = 90
 
 # Spec §03 "Guardrails": "A workspace-level setting can raise any of
 # them to 'never' but emits a noisy warning in the UI." v1 doesn't
@@ -106,13 +126,26 @@ class MintTokenBody(BaseModel):
     may accept the list shape for symmetry with the spec's JSON
     example; for now the dict form is the internal canonical.
 
-    ``expires_at_days`` overrides the 90-day default; ``None`` means
-    "use the default".
+    ``delegate`` (§03 "Delegated tokens") — when ``true``, the row
+    is minted as a delegated token acting for the session user
+    (``delegate_for_user_id``); ``scopes`` MUST be empty because
+    authority resolves against the delegating user's grants. When
+    ``false`` (default), the row is a classic scoped token.
+
+    ``expires_at_days`` overrides the per-kind default (90 days for
+    scoped, 30 days for delegated); ``None`` means "use the default".
     """
 
     label: str = Field(..., min_length=1, max_length=160)
     scopes: dict[str, Any] = Field(default_factory=dict)
     expires_at_days: int | None = Field(default=None, ge=1, le=_MAX_TTL_DAYS)
+    delegate: bool = Field(
+        default=False,
+        description=(
+            "When true, mint a delegated token whose authority inherits "
+            "the session user's role_grants (§03). Scopes must be empty."
+        ),
+    )
 
 
 class MintTokenResponse(BaseModel):
@@ -122,12 +155,16 @@ class MintTokenResponse(BaseModel):
     surface the "shown only once — copy it now" warning alongside
     this response. :attr:`key_id` and :attr:`prefix` are stable
     identifiers the UI can show on subsequent list / audit views.
+    ``kind`` echoes the domain discriminator so the ``/tokens`` UI
+    can render the right "Copy this once" chrome without a follow-up
+    fetch.
     """
 
     token: str
     key_id: str
     prefix: str
     expires_at: datetime | None
+    kind: TokenKind
 
 
 class TokenSummaryResponse(BaseModel):
@@ -136,7 +173,8 @@ class TokenSummaryResponse(BaseModel):
     Mirrors :class:`app.auth.tokens.TokenSummary` on the wire. The
     ``hash`` column is **not** surfaced — the domain projection
     already omits it (see :class:`app.auth.tokens.TokenSummary`
-    docstring).
+    docstring). ``kind`` and ``delegate_for_user_id`` surface the
+    cd-i1qe discriminator so the UI can flag delegated rows.
     """
 
     key_id: str
@@ -147,6 +185,8 @@ class TokenSummaryResponse(BaseModel):
     last_used_at: datetime | None
     revoked_at: datetime | None
     created_at: datetime
+    kind: TokenKind
+    delegate_for_user_id: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -157,14 +197,18 @@ class TokenSummaryResponse(BaseModel):
 def _resolve_expires_at(body: MintTokenBody, now: datetime) -> datetime:
     """Return the concrete ``expires_at`` for a mint request.
 
-    Applies the spec's 90-day default when the client omits
-    ``expires_at_days``; otherwise clamps against :data:`_MAX_TTL_DAYS`
-    (the Pydantic validator already rejects out-of-range values, so
-    the clamp is defensive against a future schema change).
+    Applies the spec's per-kind default when the client omits
+    ``expires_at_days`` (30 days for delegated, 90 days for scoped);
+    otherwise clamps against :data:`_MAX_TTL_DAYS` (the Pydantic
+    validator already rejects out-of-range values, so the clamp is
+    defensive against a future schema change).
     """
-    days = (
-        body.expires_at_days if body.expires_at_days is not None else _DEFAULT_TTL_DAYS
-    )
+    if body.expires_at_days is not None:
+        days = body.expires_at_days
+    elif body.delegate:
+        days = DELEGATED_DEFAULT_TTL_DAYS
+    else:
+        days = SCOPED_DEFAULT_TTL_DAYS
     return now + timedelta(days=days)
 
 
@@ -184,6 +228,8 @@ def _summary_to_response(summary: TokenSummary) -> TokenSummaryResponse:
         last_used_at=summary.last_used_at,
         revoked_at=summary.revoked_at,
         created_at=summary.created_at,
+        kind=summary.kind,
+        delegate_for_user_id=summary.delegate_for_user_id,
     )
 
 
@@ -218,18 +264,28 @@ def build_tokens_router() -> APIRouter:
         ctx: _Ctx,
         session: _Db,
     ) -> MintTokenResponse:
-        """Create a scoped API token for ``ctx.actor_id`` on this workspace.
+        """Create a scoped or delegated API token on this workspace.
 
-        ``scopes`` can be empty on v1 — callers that need "every
-        allowed action" rely on the default-allow mechanism (§05)
-        and pass an empty dict. A later cd-c91 follow-up may require
-        non-empty scopes per the spec's "narrowest set possible"
-        guidance; validation against the action catalog lives there
-        because the catalog is a handler-layer concern (the domain
-        service must not re-import it).
+        Branches on :attr:`MintTokenBody.delegate`:
+
+        * ``delegate=false`` (default) — scoped token. ``scopes`` is
+          the flat ``{"action_key": true}`` dict. Empty is allowed on
+          v1; a cd-c91 follow-up may require non-empty scopes per
+          the spec's "narrowest set possible" guidance.
+        * ``delegate=true`` — delegated token acting for
+          ``ctx.actor_id``. ``scopes`` MUST be empty (enforced at
+          the domain layer and surfaced as 422
+          ``delegated_requires_empty_scopes``).
+
+        Per-kind shape errors from the domain service collapse into
+        one 422 envelope whose ``error`` code varies by clause —
+        that way the spec's error taxonomy lives in one place and
+        the SPA's form-level messaging keys off the stable codes.
         """
         now = SystemClock().now()
         expires_at = _resolve_expires_at(body, now)
+
+        kind: TokenKind = "delegated" if body.delegate else "scoped"
 
         try:
             result: MintedToken = mint(
@@ -239,6 +295,8 @@ def build_tokens_router() -> APIRouter:
                 label=body.label,
                 scopes=body.scopes,
                 expires_at=expires_at,
+                kind=kind,
+                delegate_for_user_id=(ctx.actor_id if kind == "delegated" else None),
                 now=now,
             )
         except TooManyTokens as exc:
@@ -248,11 +306,29 @@ def build_tokens_router() -> APIRouter:
                 status_code=422,
                 detail={"error": "too_many_tokens", "message": str(exc)},
             ) from exc
+        except TokenShapeError as exc:
+            # Shape errors map to the spec's error codes:
+            # * delegated + non-empty scopes → ``delegated_requires_empty_scopes``
+            # * scoped + me:* key → ``me_scope_conflict``
+            # The domain layer raises a single error type with a
+            # human message; we branch here by inspecting the
+            # request shape rather than reparsing the message.
+            if kind == "delegated" and body.scopes:
+                code = "delegated_requires_empty_scopes"
+            elif kind == "scoped" and any(k.startswith("me.") for k in body.scopes):
+                code = "me_scope_conflict"
+            else:
+                code = "invalid_token_shape"
+            raise HTTPException(
+                status_code=422,
+                detail={"error": code, "message": str(exc)},
+            ) from exc
         return MintTokenResponse(
             token=result.token,
             key_id=result.key_id,
             prefix=result.prefix,
             expires_at=result.expires_at,
+            kind=result.kind,
         )
 
     @api.get(

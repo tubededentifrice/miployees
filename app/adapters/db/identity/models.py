@@ -1,12 +1,14 @@
 """User / PasskeyCredential / Session / ApiToken SQLAlchemy models.
 
 v1 slice — sufficient for magic-link + passkey + session + token
-flows (cd-4zz, cd-8m4, cd-c91, cd-cyq). The richer §02 / §03
+flows (cd-4zz, cd-8m4, cd-c91, cd-cyq, cd-i1qe). The richer §02 / §03
 surface (``full_legal_name``, ``phone_e164``, ``emergency_contact``,
-``agent_approval_mode``, ``delegate_for_user_id`` / ``subject_user_id``
-/ ``kind`` on ``api_token``, observability fields, rotation-pair
-hashes, etc.) lands via follow-ups without breaking this migration's
-public write contract.
+``agent_approval_mode``, observability fields, rotation-pair hashes,
+etc.) lands via follow-ups without breaking this migration's public
+write contract. cd-i1qe added the ``kind`` / ``delegate_for_user_id``
+/ ``subject_user_id`` columns on ``api_token`` so the §03
+"Delegated" / "Personal access" surfaces can mint alongside the
+cd-c91 ``scoped`` rows.
 
 **Email uniqueness — case-insensitive.** SQLite cannot express
 ``LOWER(email) UNIQUE`` portably; PG has ``citext`` but that drags a
@@ -222,9 +224,29 @@ class ApiToken(Base):
     The opaque token value is never stored — only ``hash`` (sha256)
     for verification and ``prefix`` (first 8 chars) for listings.
     ``scope_json`` is the scope set the domain layer consults at
-    request time. ``workspace_id`` is required in the v1 slice;
-    delegated and personal-access-token variants that relax this
-    land alongside cd-c91.
+    request time.
+
+    **Three kinds** (§03 "API tokens"), discriminated by :attr:`kind`:
+
+    * ``scoped`` — the classic workspace-pinned, scope-limited token
+      a manager mints for an external agent (cd-c91 default).
+      :attr:`workspace_id` set, :attr:`delegate_for_user_id` NULL,
+      :attr:`subject_user_id` NULL.
+    * ``delegated`` — inherits the creator's full authority for as
+      long as their account is active; used by embedded agents (§11).
+      :attr:`workspace_id` set, :attr:`delegate_for_user_id` = the
+      creating user's id, :attr:`subject_user_id` NULL.
+    * ``personal`` — personal access token minted by a user for
+      themselves, limited to the ``me:*`` scope family (§03
+      "Personal access tokens"). :attr:`workspace_id` NULL,
+      :attr:`subject_user_id` = the creating user's id,
+      :attr:`delegate_for_user_id` NULL.
+
+    The kind x id-columns invariant is enforced both by
+    :func:`app.auth.tokens.mint` and by the ``ck_api_token_kind_shape``
+    CHECK constraint the cd-i1qe migration lands — a row that
+    violates the shape fails at INSERT time regardless of which
+    codepath wrote it.
     """
 
     __tablename__ = "api_token"
@@ -235,17 +257,49 @@ class ApiToken(Base):
         ForeignKey("user.id", ondelete="CASCADE"),
         nullable=False,
     )
-    workspace_id: Mapped[str] = mapped_column(
+    # Nullable since cd-i1qe so personal access tokens (which have no
+    # workspace pin) can land. The CHECK constraint reasserts the
+    # kind-specific invariant: ``scoped`` / ``delegated`` MUST carry a
+    # workspace_id; ``personal`` MUST NOT.
+    workspace_id: Mapped[str | None] = mapped_column(
         String,
         ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # Three-kind discriminator. The :data:`TOKEN_KINDS` literal below
+    # is the domain vocabulary; the column carries the raw string so
+    # the CHECK constraint + mypy narrowing share a single source.
+    kind: Mapped[str] = mapped_column(
+        String,
         nullable=False,
+        default="scoped",
+        server_default="scoped",
+    )
+    # Populated only when :attr:`kind` == ``'delegated'``. ``SET NULL``
+    # on delete keeps audit-trail joins intact after a user hard-delete
+    # (the service layer already returns 401 for a delegated token
+    # whose user is archived / gone).
+    delegate_for_user_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Populated only when :attr:`kind` == ``'personal'``. Mutually
+    # exclusive with :attr:`delegate_for_user_id` per §03 "Personal
+    # access tokens" — the CHECK constraint enforces the XOR.
+    subject_user_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
     )
     label: Mapped[str] = mapped_column(String, nullable=False)
     # ``scope_json`` is a flat mapping of scope-name → enabled-flag
     # (or a nested policy blob). The outer ``Any`` is scoped to
     # SQLAlchemy's JSON column type — callers writing a typed
     # payload should use a TypedDict locally and coerce into this
-    # column.
+    # column. Delegated tokens carry an empty mapping per §03
+    # (authority resolves against the delegating user's grants, not
+    # the token's scopes); personal tokens carry ``me:*`` keys only.
     scope_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
@@ -265,6 +319,23 @@ class ApiToken(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "kind IN ('scoped', 'delegated', 'personal')",
+            name="ck_api_token_kind",
+        ),
+        CheckConstraint(
+            "("
+            "(kind = 'scoped' AND delegate_for_user_id IS NULL "
+            "AND subject_user_id IS NULL AND workspace_id IS NOT NULL)"
+            " OR "
+            "(kind = 'delegated' AND delegate_for_user_id IS NOT NULL "
+            "AND subject_user_id IS NULL AND workspace_id IS NOT NULL)"
+            " OR "
+            "(kind = 'personal' AND subject_user_id IS NOT NULL "
+            "AND delegate_for_user_id IS NULL AND workspace_id IS NULL)"
+            ")",
+            name="ck_api_token_kind_shape",
+        ),
         Index("ix_api_token_user", "user_id"),
         Index("ix_api_token_workspace", "workspace_id"),
     )

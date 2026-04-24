@@ -20,6 +20,7 @@ See ``docs/specs/03-auth-and-tokens.md`` §"API tokens" and
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -303,3 +304,113 @@ class TestTokensHttpFlow:
         )
         assert r.status_code == 422
         assert r.json()["detail"]["error"] == "too_many_tokens"
+
+
+# ---------------------------------------------------------------------------
+# cd-i1qe — delegated tokens through POST /auth/tokens
+# ---------------------------------------------------------------------------
+
+
+class TestDelegatedTokensHttp:
+    """``delegate: true`` mints a delegated row and the response echoes kind."""
+
+    def test_delegated_mint_returns_kind_and_delegate_fk(
+        self,
+        client: TestClient,
+        session_factory: sessionmaker[Session],
+        seeded_ctx: WorkspaceContext,
+    ) -> None:
+        r = client.post(
+            "/api/v1/auth/tokens",
+            json={
+                "label": "chat-agent",
+                "delegate": True,
+                "scopes": {},
+                "expires_at_days": 30,
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["kind"] == "delegated"
+        key_id = body["key_id"]
+        # The row carries the FK back to the caller.
+        with session_factory() as s:
+            row = s.get(ApiToken, key_id)
+            assert row is not None
+            assert row.kind == "delegated"
+            assert row.delegate_for_user_id == seeded_ctx.actor_id
+            assert row.workspace_id == seeded_ctx.workspace_id
+        # GET /auth/tokens surfaces the row with the discriminator.
+        r_list = client.get("/api/v1/auth/tokens")
+        assert r_list.status_code == 200
+        rows = r_list.json()
+        match = next(row for row in rows if row["key_id"] == key_id)
+        assert match["kind"] == "delegated"
+        assert match["delegate_for_user_id"] == seeded_ctx.actor_id
+
+    def test_delegated_with_nonempty_scopes_is_422(
+        self,
+        client: TestClient,
+    ) -> None:
+        """§03: delegated tokens reject non-empty scopes."""
+        r = client.post(
+            "/api/v1/auth/tokens",
+            json={
+                "label": "bad",
+                "delegate": True,
+                "scopes": {"tasks:read": True},
+                "expires_at_days": 30,
+            },
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"] == "delegated_requires_empty_scopes"
+
+    def test_scoped_with_me_scope_is_422_conflict(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Mixing me:* with a scoped token body is ``me_scope_conflict``."""
+        r = client.post(
+            "/api/v1/auth/tokens",
+            json={
+                "label": "bad",
+                "scopes": {"tasks:read": True, "me.tasks:read": True},
+                "expires_at_days": 30,
+            },
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"] == "me_scope_conflict"
+
+    def test_delegated_default_ttl_is_30_days(
+        self,
+        client: TestClient,
+    ) -> None:
+        """§03 "Guardrails": delegated tokens default to 30 days."""
+        r = client.post(
+            "/api/v1/auth/tokens",
+            json={"label": "agent", "delegate": True, "scopes": {}},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        # The response shape is ISO-8601; parse and compare deltas.
+        expires = datetime.fromisoformat(body["expires_at"])
+        now = datetime.now(tz=expires.tzinfo or UTC)
+        # 30 days ±10s — comfortably inside a window that survives
+        # test-runner clock drift.
+        delta = expires - now
+        assert timedelta(days=29, hours=23) <= delta <= timedelta(days=30, hours=1)
+
+    def test_scoped_default_ttl_is_90_days(
+        self,
+        client: TestClient,
+    ) -> None:
+        r = client.post(
+            "/api/v1/auth/tokens",
+            json={"label": "agent", "scopes": {}},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        expires = datetime.fromisoformat(body["expires_at"])
+        now = datetime.now(tz=expires.tzinfo or UTC)
+        delta = expires - now
+        assert timedelta(days=89, hours=23) <= delta <= timedelta(days=90, hours=1)

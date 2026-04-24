@@ -39,11 +39,16 @@ from app.auth.tokens import (
     InvalidToken,
     MintedToken,
     TokenExpired,
+    TokenKindInvalid,
     TokenRevoked,
+    TokenShapeError,
+    TooManyPersonalTokens,
     TooManyTokens,
+    list_personal_tokens,
     list_tokens,
     mint,
     revoke,
+    revoke_personal,
     verify,
 )
 from app.tenancy import WorkspaceContext, tenant_agnostic
@@ -680,3 +685,554 @@ class TestListTokens:
         self, db_session: Session, ctx: WorkspaceContext
     ) -> None:
         assert list_tokens(db_session, ctx) == []
+
+
+# ---------------------------------------------------------------------------
+# cd-i1qe — delegated tokens
+# ---------------------------------------------------------------------------
+
+
+class TestMintDelegated:
+    """Delegated mint path — workspace-pinned, scope-less, inherits user grants."""
+
+    def test_happy_path_returns_delegated_kind_and_fk(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        result: MintedToken = mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="chat-agent",
+            scopes={},
+            expires_at=_PINNED + timedelta(days=30),
+            kind="delegated",
+            delegate_for_user_id=ctx.actor_id,
+            now=_PINNED,
+        )
+        assert result.kind == "delegated"
+        row = db_session.get(ApiToken, result.key_id)
+        assert row is not None
+        assert row.kind == "delegated"
+        assert row.delegate_for_user_id == ctx.actor_id
+        assert row.subject_user_id is None
+        assert row.workspace_id == ctx.workspace_id
+        assert row.scope_json == {}
+
+    def test_delegated_token_verifies_with_delegate_fk(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        """``verify`` returns kind + delegate_for_user_id on the happy path."""
+        result = mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="chat",
+            scopes={},
+            expires_at=_PINNED + timedelta(days=30),
+            kind="delegated",
+            delegate_for_user_id=ctx.actor_id,
+            now=_PINNED,
+        )
+        verified = verify(db_session, token=result.token, now=_PINNED)
+        assert verified.kind == "delegated"
+        assert verified.delegate_for_user_id == ctx.actor_id
+        assert verified.subject_user_id is None
+        assert verified.workspace_id == ctx.workspace_id
+        # Spec: delegated tokens have empty scopes — authority
+        # resolves against the delegating user's grants at request
+        # time, not against the token itself.
+        assert verified.scopes == {}
+
+    def test_delegated_mint_with_scopes_raises_shape_error(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        with pytest.raises(TokenShapeError):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label="bad",
+                scopes={"tasks:read": True},
+                expires_at=_PINNED + timedelta(days=30),
+                kind="delegated",
+                delegate_for_user_id=ctx.actor_id,
+                now=_PINNED,
+            )
+
+    def test_delegated_mint_without_delegate_fk_raises_shape_error(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        with pytest.raises(TokenShapeError):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label="bad",
+                scopes={},
+                expires_at=_PINNED + timedelta(days=30),
+                kind="delegated",
+                delegate_for_user_id=None,
+                now=_PINNED,
+            )
+
+    def test_delegated_counts_against_workspace_cap(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        """Mixed 4 scoped + 1 delegated → 6th mint (either kind) 422s."""
+        for i in range(4):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label=f"sc-{i}",
+                scopes={},
+                expires_at=_PINNED + timedelta(days=90),
+                now=_PINNED,
+            )
+        mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="delegate",
+            scopes={},
+            expires_at=_PINNED + timedelta(days=30),
+            kind="delegated",
+            delegate_for_user_id=ctx.actor_id,
+            now=_PINNED,
+        )
+        with pytest.raises(TooManyTokens):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label="6th",
+                scopes={},
+                expires_at=_PINNED + timedelta(days=30),
+                kind="delegated",
+                delegate_for_user_id=ctx.actor_id,
+                now=_PINNED,
+            )
+
+    def test_audit_row_carries_kind_and_delegate_fk(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        result = mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="audit-del",
+            scopes={},
+            expires_at=_PINNED + timedelta(days=30),
+            kind="delegated",
+            delegate_for_user_id=ctx.actor_id,
+            now=_PINNED,
+        )
+        audits = db_session.scalars(
+            select(AuditLog)
+            .where(AuditLog.action == "api_token.minted")
+            .where(AuditLog.entity_id == result.key_id)
+        ).all()
+        assert len(audits) == 1
+        row = audits[0]
+        assert isinstance(row.diff, dict)
+        assert row.diff["kind"] == "delegated"
+        assert row.diff["delegate_for_user_id"] == ctx.actor_id
+
+
+# ---------------------------------------------------------------------------
+# cd-i1qe — personal access tokens (PATs)
+# ---------------------------------------------------------------------------
+
+
+class TestMintPersonal:
+    """PAT mint path — identity-scoped, ``me:*`` scopes, workspace NULL."""
+
+    def test_happy_path_returns_personal_kind_and_workspace_null(
+        self, db_session: Session, user: object
+    ) -> None:
+        """PATs carry workspace_id=NULL, subject_user_id populated."""
+        user_id = user.id  # type: ignore[attr-defined]
+        result: MintedToken = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="kitchen-printer",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        assert result.kind == "personal"
+        row = db_session.get(ApiToken, result.key_id)
+        assert row is not None
+        assert row.kind == "personal"
+        assert row.workspace_id is None
+        assert row.subject_user_id == user_id
+        assert row.delegate_for_user_id is None
+
+    def test_personal_token_verifies_with_null_workspace(
+        self, db_session: Session, user: object
+    ) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        result = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.bookings:read": True, "me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        verified = verify(db_session, token=result.token, now=_PINNED)
+        assert verified.kind == "personal"
+        assert verified.workspace_id is None
+        assert verified.subject_user_id == user_id
+        assert verified.delegate_for_user_id is None
+        assert verified.scopes == {
+            "me.bookings:read": True,
+            "me.tasks:read": True,
+        }
+
+    def test_personal_mint_with_workspace_ctx_raises_shape_error(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        with pytest.raises(TokenShapeError):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label="bad",
+                scopes={"me.tasks:read": True},
+                expires_at=_PINNED + timedelta(days=90),
+                kind="personal",
+                subject_user_id=ctx.actor_id,
+                now=_PINNED,
+            )
+
+    def test_personal_mint_with_workspace_scope_raises_shape_error(
+        self, db_session: Session, user: object
+    ) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        with pytest.raises(TokenShapeError):
+            mint(
+                db_session,
+                None,
+                user_id=user_id,
+                label="bad",
+                scopes={"tasks:read": True},  # workspace scope!
+                expires_at=_PINNED + timedelta(days=90),
+                kind="personal",
+                subject_user_id=user_id,
+                now=_PINNED,
+            )
+
+    def test_personal_mint_without_scopes_raises_shape_error(
+        self, db_session: Session, user: object
+    ) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        with pytest.raises(TokenShapeError):
+            mint(
+                db_session,
+                None,
+                user_id=user_id,
+                label="bad",
+                scopes={},
+                expires_at=_PINNED + timedelta(days=90),
+                kind="personal",
+                subject_user_id=user_id,
+                now=_PINNED,
+            )
+
+    def test_sixth_personal_token_raises_too_many_personal(
+        self, db_session: Session, user: object
+    ) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        for i in range(5):
+            mint(
+                db_session,
+                None,
+                user_id=user_id,
+                label=f"pat-{i}",
+                scopes={"me.tasks:read": True},
+                expires_at=_PINNED + timedelta(days=90),
+                kind="personal",
+                subject_user_id=user_id,
+                now=_PINNED,
+            )
+        with pytest.raises(TooManyPersonalTokens):
+            mint(
+                db_session,
+                None,
+                user_id=user_id,
+                label="6th",
+                scopes={"me.tasks:read": True},
+                expires_at=_PINNED + timedelta(days=90),
+                kind="personal",
+                subject_user_id=user_id,
+                now=_PINNED,
+            )
+
+    def test_personal_does_not_count_against_workspace_cap(
+        self,
+        db_session: Session,
+        ctx: WorkspaceContext,
+        user: object,
+    ) -> None:
+        """5 PATs + 5 workspace tokens all coexist — separate caps."""
+        user_id = user.id  # type: ignore[attr-defined]
+        for i in range(5):
+            mint(
+                db_session,
+                None,
+                user_id=user_id,
+                label=f"pat-{i}",
+                scopes={"me.tasks:read": True},
+                expires_at=_PINNED + timedelta(days=90),
+                kind="personal",
+                subject_user_id=user_id,
+                now=_PINNED,
+            )
+        # 5 workspace tokens still fit.
+        for i in range(5):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label=f"ws-{i}",
+                scopes={},
+                expires_at=_PINNED + timedelta(days=90),
+                now=_PINNED,
+            )
+        # 6th workspace token now 422s, but PAT cap is independent.
+        with pytest.raises(TooManyTokens):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label="over",
+                scopes={},
+                expires_at=_PINNED + timedelta(days=90),
+                now=_PINNED,
+            )
+
+
+# ---------------------------------------------------------------------------
+# cd-i1qe — list / revoke seam narrowing
+# ---------------------------------------------------------------------------
+
+
+class TestListPersonal:
+    """``list_personal_tokens`` returns only PATs for the subject."""
+
+    def test_includes_only_personal_tokens(
+        self,
+        db_session: Session,
+        ctx: WorkspaceContext,
+        user: object,
+    ) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        # 1 PAT + 1 scoped + 1 delegated for the same user.
+        pat = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="scoped",
+            scopes={"tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            now=_PINNED,
+        )
+        mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="delegated",
+            scopes={},
+            expires_at=_PINNED + timedelta(days=30),
+            kind="delegated",
+            delegate_for_user_id=ctx.actor_id,
+            now=_PINNED,
+        )
+        summaries = list_personal_tokens(db_session, subject_user_id=user_id)
+        key_ids = {s.key_id for s in summaries}
+        assert key_ids == {pat.key_id}
+        assert summaries[0].kind == "personal"
+
+    def test_workspace_list_excludes_personal_tokens(
+        self,
+        db_session: Session,
+        ctx: WorkspaceContext,
+        user: object,
+    ) -> None:
+        """``list_tokens`` (workspace view) never surfaces PATs."""
+        user_id = user.id  # type: ignore[attr-defined]
+        # 1 PAT + 1 scoped — only the scoped row should appear.
+        mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        scoped = mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="scoped",
+            scopes={"tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            now=_PINNED,
+        )
+        summaries = list_tokens(db_session, ctx)
+        key_ids = {s.key_id for s in summaries}
+        assert key_ids == {scoped.key_id}
+
+
+class TestRevokePersonal:
+    """``revoke_personal`` is subject-scoped and refuses workspace tokens."""
+
+    def test_revokes_own_pat(self, db_session: Session, user: object) -> None:
+        user_id = user.id  # type: ignore[attr-defined]
+        result = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        revoke_personal(
+            db_session,
+            token_id=result.key_id,
+            subject_user_id=user_id,
+            now=_PINNED + timedelta(hours=1),
+        )
+        row = db_session.get(ApiToken, result.key_id)
+        assert row is not None
+        assert row.revoked_at is not None
+        # Re-verify now fails with TokenRevoked.
+        with pytest.raises(TokenRevoked):
+            verify(db_session, token=result.token, now=_PINNED + timedelta(hours=2))
+
+    def test_revoke_another_users_pat_raises_invalid(
+        self, db_session: Session, user: object
+    ) -> None:
+        """Subject B cannot revoke subject A's PAT."""
+        user_a_id = user.id  # type: ignore[attr-defined]
+        result = mint(
+            db_session,
+            None,
+            user_id=user_a_id,
+            label="a-pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_a_id,
+            now=_PINNED,
+        )
+        # Pass a different user id — the row shouldn't match.
+        other_id = new_ulid()
+        with pytest.raises(InvalidToken):
+            revoke_personal(
+                db_session,
+                token_id=result.key_id,
+                subject_user_id=other_id,
+                now=_PINNED,
+            )
+
+    def test_revoke_personal_on_workspace_token_raises_invalid(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        """``revoke_personal`` refuses a workspace-scoped token id."""
+        result = mint(
+            db_session,
+            ctx,
+            user_id=ctx.actor_id,
+            label="scoped",
+            scopes={},
+            expires_at=_PINNED + timedelta(days=90),
+            now=_PINNED,
+        )
+        with pytest.raises(InvalidToken):
+            revoke_personal(
+                db_session,
+                token_id=result.key_id,
+                subject_user_id=ctx.actor_id,
+                now=_PINNED,
+            )
+
+    def test_workspace_revoke_on_personal_token_raises_invalid(
+        self,
+        db_session: Session,
+        ctx: WorkspaceContext,
+        user: object,
+    ) -> None:
+        """``revoke`` (workspace) refuses to touch a PAT row."""
+        user_id = user.id  # type: ignore[attr-defined]
+        result = mint(
+            db_session,
+            None,
+            user_id=user_id,
+            label="pat",
+            scopes={"me.tasks:read": True},
+            expires_at=_PINNED + timedelta(days=90),
+            kind="personal",
+            subject_user_id=user_id,
+            now=_PINNED,
+        )
+        with pytest.raises(InvalidToken):
+            revoke(db_session, ctx, token_id=result.key_id, now=_PINNED)
+
+
+class TestKindValidation:
+    """Domain vocabulary guards."""
+
+    def test_unknown_kind_raises_token_kind_invalid(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        with pytest.raises(TokenKindInvalid):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label="bad",
+                scopes={},
+                expires_at=_PINNED + timedelta(days=90),
+                kind="scopped",  # type: ignore[arg-type]
+                now=_PINNED,
+            )
+
+    def test_scoped_mint_with_me_scope_raises_shape_error(
+        self, db_session: Session, ctx: WorkspaceContext
+    ) -> None:
+        """Mixing a me:* scope into a scoped token is refused."""
+        with pytest.raises(TokenShapeError):
+            mint(
+                db_session,
+                ctx,
+                user_id=ctx.actor_id,
+                label="mix",
+                scopes={"tasks:read": True, "me.tasks:read": True},
+                expires_at=_PINNED + timedelta(days=90),
+                now=_PINNED,
+            )

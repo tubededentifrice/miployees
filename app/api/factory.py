@@ -74,6 +74,7 @@ from app.api.v1.auth import invite as invite_module
 from app.api.v1.auth import logout as logout_module
 from app.api.v1.auth import magic as magic_module
 from app.api.v1.auth import me as me_module
+from app.api.v1.auth import me_tokens as me_tokens_module
 from app.api.v1.auth import passkey as passkey_module
 from app.api.v1.auth import recovery as recovery_module
 from app.api.v1.auth import signup as signup_module
@@ -305,6 +306,13 @@ def _mount_auth_routers(
     # /auth/me — SPA identity-bootstrap probe. Mounted unconditionally
     # (no SMTP dependency) because every authenticated SPA load hits it.
     app.include_router(me_module.build_me_router(), prefix=bare_prefix)
+    # /me/tokens — identity-scoped personal-access-token CRUD (§03).
+    # Bare-host because PATs live outside any workspace; the router
+    # reads the session cookie itself, matching ``/auth/me``.
+    app.include_router(
+        me_tokens_module.build_me_tokens_router(),
+        prefix=bare_prefix,
+    )
     # /auth/logout — session-teardown ceremony invoked by the SPA's
     # :mod:`useAuth.logout`. Mounted alongside /auth/me because both
     # are bare-host, tenant-agnostic, and hit on every authenticated

@@ -160,10 +160,16 @@ class TestMigrationShape:
 
     def test_api_token_columns(self, engine: Engine) -> None:
         cols = {c["name"]: c for c in inspect(engine).get_columns("api_token")}
+        # cd-i1qe added ``kind`` / ``delegate_for_user_id`` /
+        # ``subject_user_id``; see §03 "API tokens" for the shape
+        # invariant the three columns encode.
         expected = {
             "id",
             "user_id",
             "workspace_id",
+            "kind",
+            "delegate_for_user_id",
+            "subject_user_id",
             "label",
             "scope_json",
             "prefix",
@@ -174,6 +180,11 @@ class TestMigrationShape:
             "created_at",
         }
         assert set(cols) == expected
+        # ``workspace_id`` widened to nullable so PAT rows can land.
+        assert cols["workspace_id"]["nullable"] is True
+        assert cols["kind"]["nullable"] is False
+        assert cols["delegate_for_user_id"]["nullable"] is True
+        assert cols["subject_user_id"]["nullable"] is True
 
     def test_api_token_hash_unique(self, engine: Engine) -> None:
         unique_cols: list[list[str]] = [
@@ -195,15 +206,32 @@ class TestMigrationShape:
         assert indexes["ix_api_token_workspace"]["column_names"] == ["workspace_id"]
 
     def test_user_cascade_foreign_keys(self, engine: Engine) -> None:
-        """Every user-scoped table CASCADE-deletes on ``user``."""
+        """Every user-scoped table CASCADE-deletes on the *owning* user FK.
+
+        ``api_token`` carries three FKs to ``user`` since cd-i1qe:
+
+        * ``user_id`` — the creator; CASCADE on delete (archiving the
+          user hard-deletes every token they ever minted).
+        * ``delegate_for_user_id`` — populated on delegated rows only;
+          SET NULL on delete (the row's audit trail survives the
+          delegating user's deletion, the service layer already
+          returns 401 for a delegated token whose user is gone).
+        * ``subject_user_id`` — populated on PATs only; SET NULL on
+          delete for the same forensic reason.
+
+        The invariant here is: every user-scoped table has exactly
+        one *creator* FK that CASCADEs. Additional SET-NULL FKs that
+        exist for audit preservation are allowed.
+        """
         for table in ("passkey_credential", "session", "api_token"):
-            fks = [
+            cascade_fks = [
                 fk
                 for fk in inspect(engine).get_foreign_keys(table)
                 if fk["referred_table"] == "user"
+                and fk["options"].get("ondelete") == "CASCADE"
             ]
-            assert len(fks) == 1, f"{table} missing user FK"
-            assert fks[0]["options"].get("ondelete") == "CASCADE"
+            assert len(cascade_fks) == 1, f"{table} missing its creator CASCADE user FK"
+            assert cascade_fks[0]["constrained_columns"] == ["user_id"]
 
     def test_workspace_cascade_foreign_keys(self, engine: Engine) -> None:
         """Session and api_token CASCADE on ``workspace`` too."""
@@ -410,6 +438,213 @@ class TestApiTokenHashUnique:
         with pytest.raises(IntegrityError):
             db_session.flush()
         db_session.rollback()
+
+
+class TestApiTokenKindShapeConstraint:
+    """cd-i1qe ``ck_api_token_kind_shape`` blocks malformed rows at the DB layer.
+
+    The service layer (:mod:`app.auth.tokens`) enforces the same
+    invariant, but the DB CHECK is belt-and-braces: a future caller
+    that bypasses the service seam (raw SQL, bulk insert) still can't
+    write a shape-violating row. Every branch of the XOR is exercised
+    here so a future edit to the constraint catches a drift even if
+    the service test didn't move.
+    """
+
+    def _make_prereqs(self, db_session: SaSession) -> tuple[str, str]:
+        """Seed a user + workspace; return ``(user_id, workspace_id)``."""
+        clock = FrozenClock(_PINNED)
+        user = bootstrap_user(
+            db_session,
+            email="shape@example.com",
+            display_name="Shape",
+            clock=clock,
+        )
+        ws = bootstrap_workspace(
+            db_session,
+            slug="shape-ws",
+            name="ShapeWS",
+            owner_user_id=user.id,
+            clock=clock,
+        )
+        return user.id, ws.id
+
+    def test_scoped_without_workspace_id_is_rejected(
+        self, db_session: SaSession
+    ) -> None:
+        user_id, _ws_id = self._make_prereqs(db_session)
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP1",
+                user_id=user_id,
+                workspace_id=None,  # scoped MUST carry a workspace
+                kind="scoped",
+                label="bad",
+                scope_json={},
+                prefix="pre",
+                hash="h1",
+                created_at=_PINNED,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_delegated_without_delegate_fk_is_rejected(
+        self, db_session: SaSession
+    ) -> None:
+        user_id, ws_id = self._make_prereqs(db_session)
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP2",
+                user_id=user_id,
+                workspace_id=ws_id,
+                kind="delegated",
+                delegate_for_user_id=None,  # delegated MUST carry it
+                label="bad",
+                scope_json={},
+                prefix="pre",
+                hash="h2",
+                created_at=_PINNED,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_delegated_without_workspace_is_rejected(
+        self, db_session: SaSession
+    ) -> None:
+        user_id, _ws_id = self._make_prereqs(db_session)
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP3",
+                user_id=user_id,
+                workspace_id=None,  # delegated MUST carry a workspace
+                kind="delegated",
+                delegate_for_user_id=user_id,
+                label="bad",
+                scope_json={},
+                prefix="pre",
+                hash="h3",
+                created_at=_PINNED,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_personal_with_workspace_is_rejected(self, db_session: SaSession) -> None:
+        user_id, ws_id = self._make_prereqs(db_session)
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP4",
+                user_id=user_id,
+                workspace_id=ws_id,  # personal MUST NOT carry a workspace
+                kind="personal",
+                subject_user_id=user_id,
+                label="bad",
+                scope_json={"me.tasks:read": True},
+                prefix="pre",
+                hash="h4",
+                created_at=_PINNED,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_personal_with_delegate_fk_is_rejected(self, db_session: SaSession) -> None:
+        user_id, _ws_id = self._make_prereqs(db_session)
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP5",
+                user_id=user_id,
+                workspace_id=None,
+                kind="personal",
+                subject_user_id=user_id,
+                delegate_for_user_id=user_id,  # mutually exclusive with subject
+                label="bad",
+                scope_json={"me.tasks:read": True},
+                prefix="pre",
+                hash="h5",
+                created_at=_PINNED,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_unknown_kind_is_rejected(self, db_session: SaSession) -> None:
+        """``ck_api_token_kind`` allowlist refuses a typo'd kind."""
+        user_id, ws_id = self._make_prereqs(db_session)
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP6",
+                user_id=user_id,
+                workspace_id=ws_id,
+                kind="scopped",  # typo
+                label="bad",
+                scope_json={},
+                prefix="pre",
+                hash="h6",
+                created_at=_PINNED,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db_session.flush()
+        db_session.rollback()
+
+    def test_valid_shapes_land(self, db_session: SaSession) -> None:
+        """Happy path: one row per kind survives the CHECK."""
+        user_id, ws_id = self._make_prereqs(db_session)
+        # scoped
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP7",
+                user_id=user_id,
+                workspace_id=ws_id,
+                kind="scoped",
+                label="ok-sc",
+                scope_json={"tasks:read": True},
+                prefix="ps",
+                hash="ok1",
+                created_at=_PINNED,
+            )
+        )
+        db_session.flush()
+        # delegated
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP8",
+                user_id=user_id,
+                workspace_id=ws_id,
+                kind="delegated",
+                delegate_for_user_id=user_id,
+                label="ok-dl",
+                scope_json={},
+                prefix="pd",
+                hash="ok2",
+                created_at=_PINNED,
+            )
+        )
+        db_session.flush()
+        # personal
+        db_session.add(
+            ApiToken(
+                id="01HWA00000000000000000SHP9",
+                user_id=user_id,
+                workspace_id=None,
+                kind="personal",
+                subject_user_id=user_id,
+                label="ok-pat",
+                scope_json={"me.tasks:read": True},
+                prefix="pp",
+                hash="ok3",
+                created_at=_PINNED,
+            )
+        )
+        db_session.flush()
 
 
 class TestCascadeOnUserDelete:

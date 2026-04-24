@@ -1,11 +1,27 @@
 """API-token domain service — mint, verify, list, revoke.
 
 Pure domain code. **No FastAPI coupling.** The HTTP router
-(:mod:`app.api.v1.auth.tokens`) owns status-code mapping + request
-parsing; this module owns row lifecycle + argon2id verification +
-audit writes. The caller's UoW owns the transaction boundary (§01
-"Key runtime invariants" #3) — this module never calls
-``session.commit()``.
+(:mod:`app.api.v1.auth.tokens`, :mod:`app.api.v1.auth.me_tokens`)
+owns status-code mapping + request parsing; this module owns row
+lifecycle + argon2id verification + audit writes. The caller's UoW
+owns the transaction boundary (§01 "Key runtime invariants" #3) —
+this module never calls ``session.commit()``.
+
+**Three token kinds** (§03 "API tokens"):
+
+* ``scoped`` — workspace-pinned, scope-limited, long-lived. The
+  cd-c91 default. :func:`mint` requires ``workspace_id`` and a
+  non-empty ``scopes`` dict.
+* ``delegated`` — workspace-pinned but scope-less: authority
+  inherits from the delegating user's :class:`RoleGrant` rows (§11
+  embedded agents). :func:`mint` requires
+  ``delegate_for_user_id`` + ``workspace_id`` and refuses non-empty
+  ``scopes``; default TTL 30 days.
+* ``personal`` — PAT minted by a user for themselves, ``me:*``
+  scopes only, **no workspace** (§03 "Personal access tokens").
+  :func:`mint` refuses ``workspace_id`` for this kind, requires
+  ``subject_user_id``, and validates every scope key starts with
+  ``me.`` (the router re-validates against the action catalog).
 
 **Token shape** (§03 "API tokens / Creation"):
 
@@ -74,7 +90,7 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error, VerifyMismatchError
@@ -88,19 +104,36 @@ from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
 
 __all__ = [
+    "DELEGATED_DEFAULT_TTL_DAYS",
+    "PERSONAL_DEFAULT_TTL_DAYS",
+    "PERSONAL_SCOPE_PREFIX",
+    "SCOPED_DEFAULT_TTL_DAYS",
     "InvalidToken",
     "MintedToken",
     "TokenExpired",
+    "TokenKind",
+    "TokenKindInvalid",
     "TokenMintFailed",
     "TokenRevoked",
+    "TokenShapeError",
     "TokenSummary",
+    "TooManyPersonalTokens",
     "TooManyTokens",
     "VerifiedToken",
+    "list_personal_tokens",
     "list_tokens",
     "mint",
     "revoke",
+    "revoke_personal",
     "verify",
 ]
+
+
+# ``TokenKind`` is the domain vocabulary for §03's three-way
+# discriminator. Defined as a ``Literal`` so callers get compile-time
+# validation and the DB CHECK constraint + the service layer share a
+# single source of truth for the allowed values.
+TokenKind = Literal["scoped", "delegated", "personal"]
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +165,35 @@ _PREFIX_CHARS: Final[int] = 8
 # (§03 "Additional passkeys") — one mental model for the end user,
 # same "revoke one to add one" UX shape. Note: this is the per-user
 # cap, not the §03 workspace-wide 50-token cap, which is a separate
-# guardrail (tracked for follow-up under cd-c91 if needed).
+# guardrail (tracked for follow-up under cd-c91 if needed). Applies
+# to ``scoped`` + ``delegated`` tokens on the same workspace;
+# ``personal`` tokens carry their own per-subject 5-token cap below.
 _MAX_ACTIVE_TOKENS_PER_USER: Final[int] = 5
+
+# Per-subject personal-access-token cap (§03 "Personal access tokens"
+# guardrails). Separate from the workspace-scoped cap above because
+# PATs live at the identity scope — a user with 5 scoped tokens on a
+# workspace can still hold 5 PATs.
+_MAX_PERSONAL_TOKENS_PER_USER: Final[int] = 5
+
+# Default TTLs per kind. The router still owns the HTTP-surface
+# default (so the 201 response carries the expected ``expires_at``),
+# but the service layer mirrors the constant so direct callers (CLI,
+# worker) don't have to import the router module for a policy value.
+# §03 "Guardrails": "Scoped tokens default to 90 days TTL if
+# ``expires_at_days`` is omitted; delegated tokens default to 30 days;
+# personal access tokens default to 90 days."
+SCOPED_DEFAULT_TTL_DAYS: Final[int] = 90
+DELEGATED_DEFAULT_TTL_DAYS: Final[int] = 30
+PERSONAL_DEFAULT_TTL_DAYS: Final[int] = 90
+
+# Scope-key prefix every PAT scope MUST carry. §03 "Personal access
+# tokens" pins the ``me:*`` family: ``me.tasks:read``,
+# ``me.bookings:read``, etc. The dot separator between ``me`` and the
+# resource narrows the family in a way that can't be confused with a
+# workspace scope (``tasks:read``) — mixing the two on the same
+# token is a 422 ``me_scope_conflict``.
+PERSONAL_SCOPE_PREFIX: Final[str] = "me."
 
 # ``last_used_at`` write debounce. A heavily-used token (an agent
 # polling every few seconds) would otherwise hammer its row's PK
@@ -170,12 +230,17 @@ class MintedToken:
     retrieve the plaintext again — only :attr:`ApiToken.hash` remains
     in the database, so a lost token forces the user to mint a new
     one.
+
+    ``kind`` echoes the domain discriminator so the caller can render
+    the right UI chrome ("Delegated as Alice", "Personal") without a
+    follow-up fetch.
     """
 
     token: str
     key_id: str
     prefix: str
     expires_at: datetime | None
+    kind: TokenKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +253,15 @@ class TokenSummary:
     **omitted** — the list surface never needs it, and leaving it
     off the projection makes it structurally impossible for a router
     to return the digest by mistake.
+
+    ``kind`` + ``delegate_for_user_id`` + ``subject_user_id`` surface
+    the cd-i1qe discriminator so the ``/tokens`` UI (workspace view)
+    can flag "delegated as Alice" rows and the ``/me`` UI (personal
+    view) can list PATs without rejoining :class:`User` or reparsing
+    the token. The list endpoints narrow by kind where appropriate
+    (manager /tokens surface omits personal; /me surface omits
+    scoped / delegated); the projection is shared so both routers
+    read the same shape.
     """
 
     key_id: str
@@ -198,6 +272,9 @@ class TokenSummary:
     last_used_at: datetime | None
     revoked_at: datetime | None
     created_at: datetime
+    kind: TokenKind
+    delegate_for_user_id: str | None
+    subject_user_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,12 +287,24 @@ class VerifiedToken:
     seam to gate the action. ``key_id`` is echoed into audit so every
     write made through this token is traceable back to one row on the
     ``/tokens`` page.
+
+    ``workspace_id`` is **nullable** because ``personal`` tokens live
+    at the identity scope (no workspace pin). The router-level gate
+    in the workspace-scoped tree must reject a ``workspace_id is None``
+    verify result as ``404 workspace_out_of_scope`` — the domain
+    service returns the raw shape and lets the caller decide how to
+    surface the mismatch. ``kind`` is echoed so the caller can branch
+    on the three families (e.g. delegated → walk the user's grants,
+    scoped → walk ``scopes``, personal → narrow to subject).
     """
 
     user_id: str
-    workspace_id: str
+    workspace_id: str | None
     scopes: Mapping[str, Any]
     key_id: str
+    kind: TokenKind
+    delegate_for_user_id: str | None
+    subject_user_id: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +358,46 @@ class TooManyTokens(ValueError):
     the 5-token cap in the message so the UI can surface "revoke
     one to add another" without hard-coding the number. The count
     is computed inside the mint transaction so concurrent creates
-    cannot both land a 6th row.
+    cannot both land a 6th row. Applies to ``scoped`` + ``delegated``
+    tokens on the same workspace; ``personal`` tokens get their own
+    :class:`TooManyPersonalTokens`.
+    """
+
+
+class TooManyPersonalTokens(ValueError):
+    """User already holds :data:`_MAX_PERSONAL_TOKENS_PER_USER` live PATs.
+
+    422-equivalent — §03 "Personal access tokens" guardrails pin the
+    per-user cap at 5, separate from the workspace-scoped cap. The
+    HTTP layer maps to ``too_many_personal_tokens`` per spec.
+    """
+
+
+class TokenKindInvalid(ValueError):
+    """Caller asked to mint a kind outside :data:`TokenKind`.
+
+    422-equivalent. Raised before any DB work so a typo in a CLI
+    never reaches argon2.
+    """
+
+
+class TokenShapeError(ValueError):
+    """Mint arguments violate a per-kind invariant (§03 "API tokens").
+
+    Shape violations that map to 422 validation errors at the HTTP
+    layer:
+
+    * ``scoped`` without a workspace, or with ``delegate_for_user_id``
+      / ``subject_user_id`` populated;
+    * ``delegated`` without a ``delegate_for_user_id``, or with
+      non-empty scopes;
+    * ``personal`` with a ``workspace_id``, or with a scope key
+      outside the ``me:*`` family, or with an empty scope dict.
+
+    The router maps each case to its spec-specific error code
+    (``me_scope_conflict`` / ``scopes_required`` / ``kind_conflict``);
+    the service layer collapses them into one error type with a
+    human message so the router owns the code taxonomy in one place.
     """
 
 
@@ -325,10 +453,10 @@ def _parse(token: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def _count_active(
+def _count_active_workspace(
     session: Session, *, user_id: str, workspace_id: str, now: datetime
 ) -> int:
-    """Return the number of live (unrevoked, unexpired) tokens for the user.
+    """Return the number of live ``scoped`` + ``delegated`` tokens on a workspace.
 
     Runs under :func:`tenant_agnostic` because ``api_token`` isn't a
     workspace-scoped table in the ORM filter sense (see
@@ -341,6 +469,14 @@ def _count_active(
     count against the cap because they're effectively inert; a user
     with 5 dead tokens gathering dust on their /tokens page would
     otherwise be stuck.
+
+    ``personal`` tokens are **excluded** by the ``kind != 'personal'``
+    predicate — they get their own per-subject cap via
+    :func:`_count_active_personal`. The workspace CAP is about
+    "how many workspace-scoped authorities has this user minted
+    here"; a PAT doesn't live on this workspace, so counting it
+    would over-restrict a user that happens to hold a workspace
+    grant + some PATs.
     """
     # justification: api_token is identity-scoped; the ORM tenant
     # filter has no predicate registered for this table and would
@@ -353,6 +489,7 @@ def _count_active(
                 ApiToken.user_id == user_id,
                 ApiToken.workspace_id == workspace_id,
                 ApiToken.revoked_at.is_(None),
+                ApiToken.kind != "personal",
             )
         )
         # Expiry gate: ``expires_at IS NULL`` (no-expiry tokens, via
@@ -361,6 +498,30 @@ def _count_active(
         # SQLAlchemy's ``func.coalesce`` would require a fallback
         # sentinel that outlives real timestamps, which is harder to
         # reason about than the two-branch OR.
+        stmt = stmt.where((ApiToken.expires_at.is_(None)) | (ApiToken.expires_at > now))
+        return session.scalar(stmt) or 0
+
+
+def _count_active_personal(
+    session: Session, *, subject_user_id: str, now: datetime
+) -> int:
+    """Return the number of live PATs for a given subject user.
+
+    Per-subject cap (§03 "Personal access tokens" guardrails): 5
+    PATs per user, separate from the workspace-scoped cap. "Live"
+    follows the same rule as :func:`_count_active_workspace`
+    (``revoked_at IS NULL`` and unexpired).
+    """
+    with tenant_agnostic():
+        stmt = (
+            select(func.count())
+            .select_from(ApiToken)
+            .where(
+                ApiToken.subject_user_id == subject_user_id,
+                ApiToken.kind == "personal",
+                ApiToken.revoked_at.is_(None),
+            )
+        )
         stmt = stmt.where((ApiToken.expires_at.is_(None)) | (ApiToken.expires_at > now))
         return session.scalar(stmt) or 0
 
@@ -404,6 +565,25 @@ def _maybe_bump_last_used(row: ApiToken, *, now: datetime) -> bool:
     return False
 
 
+def _narrow_kind(value: str) -> TokenKind:
+    """Narrow a raw DB string to the :data:`TokenKind` literal.
+
+    The CHECK constraint guarantees only the three allowed values
+    ever land on disk; the narrow is defensive against a future
+    hand-edited row and gives mypy the specific literal type the
+    projection + verify return shapes depend on. A truly unknown
+    value raises :class:`TokenKindInvalid` so the caller sees a
+    domain error instead of a silent collapse.
+    """
+    if value == "scoped":
+        return "scoped"
+    if value == "delegated":
+        return "delegated"
+    if value == "personal":
+        return "personal"
+    raise TokenKindInvalid(f"unknown token kind {value!r}")
+
+
 def _project(row: ApiToken) -> TokenSummary:
     """Project an :class:`ApiToken` ORM row onto the public summary.
 
@@ -419,6 +599,9 @@ def _project(row: ApiToken) -> TokenSummary:
         last_used_at=row.last_used_at,
         revoked_at=row.revoked_at,
         created_at=row.created_at,
+        kind=_narrow_kind(row.kind),
+        delegate_for_user_id=row.delegate_for_user_id,
+        subject_user_id=row.subject_user_id,
     )
 
 
@@ -427,14 +610,77 @@ def _project(row: ApiToken) -> TokenSummary:
 # ---------------------------------------------------------------------------
 
 
+def _validate_scoped_shape(
+    *, scopes: Mapping[str, Any], ctx: WorkspaceContext | None
+) -> None:
+    """Raise :class:`TokenShapeError` if a scoped-token mint is malformed."""
+    if ctx is None:
+        raise TokenShapeError("scoped tokens require a WorkspaceContext")
+    for key in scopes:
+        if key.startswith(PERSONAL_SCOPE_PREFIX):
+            # §03 "Personal access tokens": mixing me:* with workspace
+            # scopes is a hard error, flagged as ``me_scope_conflict``
+            # at the router.
+            raise TokenShapeError(f"scoped token must not carry me:* scope {key!r}")
+
+
+def _validate_delegated_shape(
+    *,
+    scopes: Mapping[str, Any],
+    ctx: WorkspaceContext | None,
+    delegate_for_user_id: str | None,
+) -> None:
+    """Raise :class:`TokenShapeError` if a delegated-token mint is malformed."""
+    if ctx is None:
+        raise TokenShapeError("delegated tokens require a WorkspaceContext")
+    if delegate_for_user_id is None:
+        raise TokenShapeError(
+            "delegated tokens require delegate_for_user_id (the session user's id)"
+        )
+    if scopes:
+        # §03 "Delegated tokens": "scopes: empty. Permission checks
+        # resolve against the delegating user's role_grants." A
+        # non-empty scopes dict would give the agent a narrower
+        # authority than the spec reserves; reject to keep the
+        # invariant obvious to callers.
+        raise TokenShapeError("delegated tokens must have empty scopes")
+
+
+def _validate_personal_shape(
+    *,
+    scopes: Mapping[str, Any],
+    ctx: WorkspaceContext | None,
+    subject_user_id: str | None,
+) -> None:
+    """Raise :class:`TokenShapeError` if a PAT mint is malformed."""
+    if ctx is not None:
+        raise TokenShapeError(
+            "personal access tokens are identity-scoped; pass ctx=None"
+        )
+    if subject_user_id is None:
+        raise TokenShapeError(
+            "personal access tokens require subject_user_id (the session user's id)"
+        )
+    if not scopes:
+        raise TokenShapeError("personal access tokens require at least one me:* scope")
+    for key in scopes:
+        if not key.startswith(PERSONAL_SCOPE_PREFIX):
+            raise TokenShapeError(
+                f"personal access tokens accept only me:* scopes — got {key!r}"
+            )
+
+
 def mint(
     session: Session,
-    ctx: WorkspaceContext,
+    ctx: WorkspaceContext | None,
     *,
     user_id: str,
     label: str,
     scopes: Mapping[str, Any],
     expires_at: datetime | None,
+    kind: TokenKind = "scoped",
+    delegate_for_user_id: str | None = None,
+    subject_user_id: str | None = None,
     now: datetime | None = None,
     clock: Clock | None = None,
 ) -> MintedToken:
@@ -446,38 +692,91 @@ def mint(
     ever appears — the caller surfaces it in the HTTP response and
     never again.
 
+    **Per-kind contract** (§03 "API tokens"):
+
+    * ``kind='scoped'`` (default) — pass a live :class:`WorkspaceContext`
+      and a ``scopes`` dict of workspace-level action keys. Do NOT
+      pass ``delegate_for_user_id`` / ``subject_user_id``.
+    * ``kind='delegated'`` — pass a live :class:`WorkspaceContext`
+      AND ``delegate_for_user_id`` (the session user's id). ``scopes``
+      MUST be empty (delegated tokens inherit the user's grants per
+      §03 "Delegated tokens").
+    * ``kind='personal'`` — pass ``ctx=None`` AND ``subject_user_id``
+      (the session user's id). ``scopes`` MUST be non-empty and every
+      key MUST start with ``me.`` (the ``me:*`` scope family,
+      §03 "Personal access tokens"). The resulting row carries
+      ``workspace_id=NULL``.
+
     Raises:
 
-    * :class:`TooManyTokens` when the user already holds
-      :data:`_MAX_ACTIVE_TOKENS_PER_USER` live tokens on this
-      workspace. The count is computed inside the mint transaction
-      so two concurrent creates cannot both land a 6th row.
-    * :class:`TokenMintFailed` on structural failures (argon2
-      refused, RNG refused). Rare enough to bubble as 500.
+    * :class:`TokenKindInvalid` — ``kind`` is outside :data:`TokenKind`.
+    * :class:`TokenShapeError` — per-kind input shape invariant
+      violated (missing / extra fields, ``me:*`` vs workspace scope
+      mixing, empty scope set on PAT, non-empty scope set on delegated).
+    * :class:`TooManyTokens` — scoped / delegated cap of 5 live tokens
+      per user per workspace tripped. Count is workspace-scoped so PAT
+      holders can still mint workspace tokens.
+    * :class:`TooManyPersonalTokens` — per-user PAT cap of 5 tripped.
+    * :class:`TokenMintFailed` — structural failure (argon2 refused,
+      RNG refused). Rare enough to bubble as 500.
 
-    ``scopes`` is a ``{"action_key": true}`` mapping for v1 per
-    the task spec. The service does not re-validate keys against
-    the action catalog — validation happens at the router layer
-    (where the full catalog is imported). The domain service treats
-    ``scope_json`` as opaque at mint time; the verify-side authority
-    check is the single source of truth.
+    The audit row lands with ``kind`` stamped into its diff so the
+    ``/tokens`` page can filter (§03 "per-token audit log view") and
+    the downstream owner-revoke path can walk delegated tokens per
+    delegating-user without re-joining.
     """
     resolved_now = now if now is not None else _now(clock)
 
-    # Enforce the per-user cap BEFORE generating secrets / hashing —
-    # no point burning argon2 cycles on a request that's about to
-    # be rejected.
-    active = _count_active(
-        session,
-        user_id=user_id,
-        workspace_id=ctx.workspace_id,
-        now=resolved_now,
-    )
-    if active >= _MAX_ACTIVE_TOKENS_PER_USER:
-        raise TooManyTokens(
-            f"user {user_id!r} already has {active} active tokens "
-            f"(max {_MAX_ACTIVE_TOKENS_PER_USER})"
+    # Narrow to the domain literal before any DB work so a CLI typo
+    # (``kind='scopped'``) fails cheap and clear.
+    if kind not in ("scoped", "delegated", "personal"):
+        raise TokenKindInvalid(f"unknown token kind {kind!r}")
+
+    # Per-kind input-shape validation. Each branch raises
+    # :class:`TokenShapeError` with a human message the router
+    # translates into the spec's error taxonomy (``me_scope_conflict``,
+    # ``scopes_required``, etc.).
+    if kind == "scoped":
+        _validate_scoped_shape(scopes=scopes, ctx=ctx)
+    elif kind == "delegated":
+        _validate_delegated_shape(
+            scopes=scopes, ctx=ctx, delegate_for_user_id=delegate_for_user_id
         )
+    else:
+        _validate_personal_shape(
+            scopes=scopes, ctx=ctx, subject_user_id=subject_user_id
+        )
+
+    # Cap enforcement — distinct quotas per kind. Run BEFORE hashing
+    # so a rejected request doesn't burn an argon2 cycle.
+    if kind in ("scoped", "delegated"):
+        # ``ctx`` is guaranteed non-None here by the shape validators
+        # above; mypy needs the explicit narrowing so the attribute
+        # access below type-checks.
+        assert ctx is not None
+        active = _count_active_workspace(
+            session,
+            user_id=user_id,
+            workspace_id=ctx.workspace_id,
+            now=resolved_now,
+        )
+        if active >= _MAX_ACTIVE_TOKENS_PER_USER:
+            raise TooManyTokens(
+                f"user {user_id!r} already has {active} active workspace tokens "
+                f"(max {_MAX_ACTIVE_TOKENS_PER_USER})"
+            )
+    else:
+        assert subject_user_id is not None
+        active_pat = _count_active_personal(
+            session,
+            subject_user_id=subject_user_id,
+            now=resolved_now,
+        )
+        if active_pat >= _MAX_PERSONAL_TOKENS_PER_USER:
+            raise TooManyPersonalTokens(
+                f"user {subject_user_id!r} already has {active_pat} active personal "
+                f"tokens (max {_MAX_PERSONAL_TOKENS_PER_USER})"
+            )
 
     key_id = new_ulid(clock=clock)
     secret = _generate_secret()
@@ -495,10 +794,14 @@ def mint(
     except Argon2Error as exc:
         raise TokenMintFailed(f"argon2id hash failed: {exc}") from exc
 
+    workspace_id: str | None = ctx.workspace_id if ctx is not None else None
     row = ApiToken(
         id=key_id,
         user_id=user_id,
-        workspace_id=ctx.workspace_id,
+        workspace_id=workspace_id,
+        kind=kind,
+        delegate_for_user_id=delegate_for_user_id if kind == "delegated" else None,
+        subject_user_id=subject_user_id if kind == "personal" else None,
         label=label,
         scope_json=dict(scopes),
         prefix=prefix,
@@ -515,29 +818,54 @@ def mint(
         session.add(row)
         session.flush()
 
-    write_audit(
-        session,
-        ctx,
-        entity_kind="api_token",
-        entity_id=key_id,
-        action="api_token.minted",
-        diff={
-            "token_id": key_id,
-            "user_id": user_id,
-            "workspace_id": ctx.workspace_id,
-            "label": label,
-            "prefix": prefix,
-            "scopes": sorted(scopes.keys()),
-            "expires_at": expires_at.isoformat() if expires_at is not None else None,
-        },
-        clock=clock,
-    )
+    # Audit for workspace-scoped tokens lands on the workspace's
+    # audit log via ``ctx``. PAT mints currently write NO audit row
+    # (see the ``else`` branch below) — a known §03 gap tracked as
+    # cd-t2su and **blocking on any prod release**.
+    if ctx is not None:
+        write_audit(
+            session,
+            ctx,
+            entity_kind="api_token",
+            entity_id=key_id,
+            action="api_token.minted",
+            diff={
+                "token_id": key_id,
+                "user_id": user_id,
+                "workspace_id": ctx.workspace_id,
+                "label": label,
+                "prefix": prefix,
+                "scopes": sorted(scopes.keys()),
+                "expires_at": (
+                    expires_at.isoformat() if expires_at is not None else None
+                ),
+                "kind": kind,
+                "delegate_for_user_id": (
+                    delegate_for_user_id if kind == "delegated" else None
+                ),
+            },
+            clock=clock,
+        )
+    else:
+        # PATs are identity-scoped (workspace_id = NULL). The current
+        # :func:`app.audit.write_audit` seam requires a live
+        # :class:`WorkspaceContext` and writes a workspace-scoped
+        # ``audit_log`` row — neither fits a PAT. Wiring a
+        # tenant-agnostic audit seam (``audit_log`` with
+        # ``workspace_id = NULL`` and ``actor_id = subject_user_id``)
+        # is the right fix and is tracked as **cd-t2su**. Shipping
+        # without the seam means every PAT mint / revoke currently
+        # skips the audit trail §03 requires for "every enrollment,
+        # login, rotation, and revocation". This is an explicit,
+        # known gap and must block any prod release.
+        pass
 
     return MintedToken(
         token=f"{_TOKEN_PREFIX}{key_id}_{secret}",
         key_id=key_id,
         prefix=prefix,
         expires_at=expires_at,
+        kind=kind,
     )
 
 
@@ -552,28 +880,60 @@ def list_tokens(
     *,
     user_id: str | None = None,
 ) -> list[TokenSummary]:
-    """Return every token on the caller's workspace, most recent first.
+    """Return every ``scoped`` / ``delegated`` token on the caller's workspace.
 
-    ``user_id`` narrows to one subject when set — useful for the
-    per-user ``/me/tokens`` panel (§14) once PATs land. Workspace
-    managers call with ``user_id=None`` to audit every token in the
-    workspace. Either way the listing includes both active and
-    revoked rows: the UI needs the revoked-history tail to show
-    "tokens you've decommissioned".
+    ``user_id`` narrows to one subject when set. Workspace managers
+    call with ``user_id=None`` to audit every workspace token; the
+    list includes both active and revoked rows (the UI shows the
+    revoked-history tail).
+
+    **Personal access tokens are deliberately excluded** — §03 "PATs
+    are not listed on the workspace-wide /tokens admin page". A
+    manager's audit view should not surface "every worker's printer
+    script"; PATs are governed by the subject user on ``/me``. Use
+    :func:`list_personal_tokens` for the subject-side listing.
 
     The projection intentionally omits the hash column — see
     :class:`TokenSummary` docstring for why.
     """
     # justification: api_token is identity-scoped; reuse of the
-    # tenant-agnostic gate mirrors ``_count_active``.
+    # tenant-agnostic gate mirrors ``_count_active_workspace``.
     with tenant_agnostic():
         stmt = (
             select(ApiToken)
-            .where(ApiToken.workspace_id == ctx.workspace_id)
+            .where(
+                ApiToken.workspace_id == ctx.workspace_id,
+                ApiToken.kind != "personal",
+            )
             .order_by(ApiToken.created_at.desc())
         )
         if user_id is not None:
             stmt = stmt.where(ApiToken.user_id == user_id)
+        rows = list(session.scalars(stmt).all())
+    return [_project(row) for row in rows]
+
+
+def list_personal_tokens(
+    session: Session,
+    *,
+    subject_user_id: str,
+) -> list[TokenSummary]:
+    """Return every PAT (active + revoked) for a given subject user.
+
+    Identity-scoped — no :class:`WorkspaceContext` needed because
+    PATs live outside any workspace. The ``/me`` "Personal access
+    tokens" panel (§14, cd-i1qe-me-panel follow-up) reads through
+    this surface.
+    """
+    with tenant_agnostic():
+        stmt = (
+            select(ApiToken)
+            .where(
+                ApiToken.subject_user_id == subject_user_id,
+                ApiToken.kind == "personal",
+            )
+            .order_by(ApiToken.created_at.desc())
+        )
         rows = list(session.scalars(stmt).all())
     return [_project(row) for row in rows]
 
@@ -591,18 +951,27 @@ def revoke(
     now: datetime | None = None,
     clock: Clock | None = None,
 ) -> None:
-    """Flip a token's ``revoked_at`` to ``now``. Idempotent on an already-revoked row.
+    """Revoke a ``scoped`` / ``delegated`` token on the caller's workspace.
 
-    The row is **not** deleted — keeping it preserves the link
-    target for existing audit rows that reference this token_id
-    (§03 "per-token audit log view"). A revoked row still appears
-    on the /tokens page in the "decommissioned" section.
+    Idempotent on an already-revoked row. The row is **not** deleted —
+    keeping it preserves the link target for existing audit rows
+    that reference this token_id (§03 "per-token audit log view").
+    A revoked row still appears on the /tokens page in the
+    "decommissioned" section.
+
+    **Personal access tokens are refused here.** §03 "Revocation":
+    "Personal access tokens are revocable only by their subject
+    user or via a cascade" — a manager on the workspace /tokens
+    page cannot revoke a worker's PAT directly. A PAT token_id
+    surfaced on this router therefore collapses to
+    :class:`InvalidToken` (404), same shape as "unknown token";
+    the router maps it to ``token_not_found``.
 
     Raises:
 
     * :class:`InvalidToken` — no row with this id on the caller's
-      workspace. The router maps this to 404 (management context);
-      the Bearer-auth path uses :func:`verify`, not :func:`revoke`.
+      workspace, OR the row is a PAT (which isn't workspace-managed).
+      Both map to 404 at the router.
 
     A second call with the same ``token_id`` lands no state change
     but still writes an ``api_token.revoked_noop`` audit row so the
@@ -615,13 +984,11 @@ def revoke(
     with tenant_agnostic():
         row = session.get(ApiToken, token_id)
 
-    # Fail-closed on cross-workspace access: a manager on workspace A
-    # must not be able to revoke tokens on workspace B even if they
-    # guess the token_id. Raising :class:`InvalidToken` for "row
-    # belongs to a different workspace" collapses it to the same 404
-    # shape as "row not found" at the HTTP layer, so the API doesn't
-    # leak whether a foreign token exists.
-    if row is None or row.workspace_id != ctx.workspace_id:
+    # Fail-closed on cross-workspace access, unknown ids, AND
+    # personal tokens (which live outside any workspace). All three
+    # collapse into the same 404 shape at the HTTP layer so the API
+    # doesn't leak which of the three actually happened.
+    if row is None or row.kind == "personal" or row.workspace_id != ctx.workspace_id:
         raise InvalidToken(f"token {token_id!r} not found on this workspace")
 
     if row.revoked_at is not None:
@@ -657,9 +1024,50 @@ def revoke(
             "user_id": row.user_id,
             "workspace_id": row.workspace_id,
             "at": resolved_now.isoformat(),
+            "kind": row.kind,
         },
         clock=clock,
     )
+
+
+def revoke_personal(
+    session: Session,
+    *,
+    token_id: str,
+    subject_user_id: str,
+    now: datetime | None = None,
+    clock: Clock | None = None,
+) -> None:
+    """Revoke a PAT owned by ``subject_user_id``. Identity-scoped.
+
+    §03 "Personal access tokens are revocable only by their subject
+    user" — the caller passes the session user's id and the row is
+    only revoked if it matches. A mismatch, a workspace token, or an
+    unknown id all collapse into :class:`InvalidToken` (404) so the
+    API doesn't leak whose tokens exist.
+
+    Idempotent on an already-revoked row, matching the workspace-
+    side :func:`revoke` shape. No audit row is written in v1 because
+    the workspace-audit seam is the only audit surface implemented;
+    a tenant-agnostic audit for PATs is tracked as **cd-t2su** and
+    **blocks any prod release** — §03 requires an audit row for
+    every revocation event.
+    """
+    resolved_now = now if now is not None else _now(clock)
+
+    with tenant_agnostic():
+        row = session.get(ApiToken, token_id)
+
+    if row is None or row.kind != "personal" or row.subject_user_id != subject_user_id:
+        raise InvalidToken(f"personal token {token_id!r} not found for this user")
+
+    if row.revoked_at is not None:
+        # Idempotent no-op.
+        return
+
+    with tenant_agnostic():
+        row.revoked_at = resolved_now
+        session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +1110,18 @@ def verify(
     is enforced at the router seam). Keeping the match at the
     router keeps the domain service usable from contexts that don't
     yet have a tenancy middleware (CLI, worker).
+
+    .. note:: **Delegator / subject liveness gap (cd-et6y).** §03
+       "Delegated tokens" requires a 401 when the delegating user
+       is archived, globally deactivated, or has lost every
+       non-revoked grant; §03 "Personal access tokens" carries the
+       same rule against the subject user. This function does NOT
+       implement that check today — :class:`User` does not yet
+       carry an ``archived_at`` column (landing under cd-65kn /
+       the Users identity hardening follow-up). Until cd-et6y is
+       closed a delegated token continues to verify after the
+       user is archived; this is a known spec gap and is a
+       **blocker on any prod release**.
     """
     resolved_now = now if now is not None else _now(clock)
 
@@ -743,4 +1163,7 @@ def verify(
         workspace_id=row.workspace_id,
         scopes=dict(row.scope_json),
         key_id=row.id,
+        kind=_narrow_kind(row.kind),
+        delegate_for_user_id=row.delegate_for_user_id,
+        subject_user_id=row.subject_user_id,
     )
