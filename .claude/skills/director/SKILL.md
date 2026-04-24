@@ -200,10 +200,10 @@ prompt: |
   Acceptance criteria: see bd-042
 ```
 
-**Selfreview delegations must explicitly instruct autofix mode AND
-the no-commit override** — selfreview SKILL defaults to commit+close
-in standalone autofix; the director flow needs neither (the commiter
-handles both atomically in step 4).
+**Selfreview delegations instruct autofix mode.** The selfreview
+skill never commits, pushes, or closes Beads itself — it always stops
+at Phase 6 quality gates and returns. The commiter handles Beads
+closure and the bundled commit atomically in step 4.
 
 ```
 subagent_type: "general-purpose"
@@ -217,8 +217,8 @@ prompt: |
     - No plan mode, no user prompt.
     - Fix every BUGS / MISSING / RISKY finding in place.
     - Run the repo's quality gates (lint, type, affected tests).
-    - **Do NOT commit. Do NOT `bd close`.** Stop at Phase 6 and return —
-      the commiter will close both tasks and ship the bundled commit.
+    - Stop at Phase 6 and return — the commiter will close both tasks
+      and ship the bundled commit.
 ```
 
 ### Frontend work — load `/frontend-design:frontend-design`

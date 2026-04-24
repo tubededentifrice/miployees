@@ -23,14 +23,10 @@ before the work ships.
   by claiming a Beads task labelled `selfreview`, or by an explicit
   hands-off request.
 
-Autofix has two sub-modes for the final phase:
-
-- **Standalone (default)** — also closes the Beads task, commits,
-  and pushes (Phase 7).
-- **Director-invoked** — stops at quality gates (Phase 6). The
-  caller's prompt will say *"do not commit, do not `bd close`"*; the
-  director's `commiter` subagent closes both tasks and ships the
-  bundled commit atomically. **Skip Phase 7 entirely** and return.
+Selfreview never commits, pushes, or closes Beads tasks itself. It
+stops after Phase 6 quality gates and returns. The caller (director
+or the user) routes the result to the `commiter` subagent, which
+closes both tasks and ships the bundled commit atomically.
 
 Autofix never creates another selfreview task for its own findings —
 that would infinite-loop the beads pairing rule.
@@ -54,8 +50,7 @@ that would infinite-loop the beads pairing rule.
 ## Workflow (autofix mode)
 
 Same numbering as interactive — autofix skips phase 2 (plan mode) and
-phase 5 (ask user). Phase 7 runs **only in standalone autofix**;
-director-invoked autofix stops after phase 6.
+phase 5 (ask user), and stops after phase 6.
 
 ```
 1. GATHER CHANGES         (git diff, git log, bd show <main-task>)
@@ -69,15 +64,11 @@ director-invoked autofix stops after phase 6.
 5. —  skipped in autofix — do not ask the user
    ↓
 6. FIX + QUALITY GATES    (every BUGS/MISSING/RISKY; then run repo's lint/format/type/tests)
-   ↓
-7. CLOSE + COMMIT + PUSH  (STANDALONE ONLY — skip when director-invoked)
 ```
 
 **Empty findings are a valid outcome.** Phase 6 still runs the quality
-gates (they must be green). Standalone autofix still proceeds to
-Phase 7 (the underlying main-task work isn't on `main` yet and the
-selfreview Beads task must be closed). Director-invoked autofix
-returns after Phase 6 — the commiter handles closure and commit.
+gates (they must be green). Return after Phase 6 — the caller's
+`commiter` subagent handles Beads closure and the bundled commit.
 
 ## Phase 1: Gather changes
 
@@ -263,7 +254,8 @@ If the user wants details, walk through findings one at a time.
 **Autofix mode**: apply fixes for every BUGS, MISSING, and RISKY
 finding. Skip NITPICKS unless trivially safe. Do not ask the user.
 If findings is empty, there is nothing to fix here — proceed to the
-quality gates and commit the underlying main-task work anyway.
+quality gates and return; the caller will commit the underlying
+main-task work.
 
 ### Quality gates (both modes)
 
@@ -293,78 +285,14 @@ pnpm -C <web-dir> typecheck
 pnpm -C <web-dir> test
 ```
 
-When green, move on: interactive mode hands the fixes to the user
-for review; autofix mode continues to Phase 7.
+When green, return. Interactive mode hands the fixes to the user for
+review; autofix mode returns to the caller (director or user), who
+routes the result to the `commiter` subagent for Beads closure and
+the bundled commit.
 
-## Phase 7: Close Beads, commit, push, verify (standalone autofix only)
-
-> **Skip this phase entirely when invoked by the director.** The
-> director's prompt will instruct *"do not commit, do not `bd close`"*.
-> Stop after Phase 6 quality gates and return — the `commiter` subagent
-> will close both tasks and ship the bundled commit atomically.
-
-**Order matters.** `bd close` + `bd sync` must run *before* `git add`
-so the `.beads/*.jsonl` delta ships inside the same commit as the
-code. Don't push before committing. Don't commit before closing.
-
-```bash
-# 7.1 — Close the selfreview Beads task
-bd close <selfreview-task-id> --reason "Autofix self-review complete"
-
-# 7.2 — Optional: add a comment with the findings summary
-bd comments add <selfreview-task-id> "Autofix complete. Findings: <summary>."
-
-# 7.3 — Sync .beads/*.jsonl to the worktree
-bd sync
-
-# 7.4 — Stage the in-scope work PLUS .beads/
-git add <in-scope paths under the main task> .beads
-
-# 7.5 — Commit (Conventional Commits, signed-off, HEREDOC)
-git commit -s -m "$(cat <<'EOF'
-<type>(<scope>): <subject> (<main-task-id>, <selfreview-task-id>)
-
-<1-4 lines: what landed, notable self-review findings or "no findings".>
-
-Refs: docs/specs/<section>.md §"<section title>"
-EOF
-)"
-
-# 7.6 — Push to origin
-git push
-
-# If the push is rejected as non-fast-forward:
-git pull --rebase origin main
-git push
-```
-
-### Rules for the commit
-
-- **Conventional Commits** type (`feat`, `fix`, `chore`, `docs`,
-  `refactor`, `test`, `sec`, `perf`, `build`, `ci`) + scope + short
-  subject.
-- **Signed-off**: `git commit -s` (never skip).
-- **HEREDOC** for multi-line messages so the body survives shell
-  quoting.
-- Reference both Beads task IDs (main + selfreview) in the title so
-  `git log | grep <id>` finds the landing commit.
-- Stage only in-scope files plus `.beads/` — never `git add -A` /
-  `git add .`.
-- Never `--amend`, never `--no-verify`, never force-push.
-
-### 7.7 — Verify
-
-```bash
-git log --oneline -3              # confirm the commit landed
-bd show <selfreview-task-id>      # confirm CLOSED
-git status                        # confirm clean worktree
-```
-
-Report all three outputs back to the caller.
-
-Do NOT create a new self-review task for the fixes you just applied —
-that would infinite-loop with the beads skill pairing rule. The autofix
-commit ships as-is.
+Do NOT commit, push, or close Beads tasks from this skill — and do
+NOT create a new self-review task for the fixes you just applied
+(that would infinite-loop with the beads skill pairing rule).
 
 ## Tips
 
