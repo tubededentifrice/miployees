@@ -294,6 +294,69 @@ def test_shift_ended_rejects_naive_ended_at() -> None:
 
 
 # ---------------------------------------------------------------------------
+# TaskUnassigned.reason — identifier-shape guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "candidate_pool_empty",
+        "primary_and_backups_unavailable",
+        "manager_cleared",
+        "redundant",
+        "x",
+        "a1_b2",
+    ],
+)
+def test_task_unassigned_accepts_identifier_shaped_reasons(reason: str) -> None:
+    from app.events.types import TaskUnassigned
+
+    TaskUnassigned(
+        workspace_id="ws_1",
+        actor_id="user_1",
+        correlation_id="corr_1",
+        occurred_at=_utc(),
+        task_id="task_1",
+        reason=reason,
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Manager cleared",  # space — free text
+        "pool_empty.",  # trailing punctuation
+        "Free-form note",  # sentence with hyphen + space
+        "Pool.Empty",  # dotted
+        "",  # empty string
+        "1leading_digit",  # starts with a digit
+        "UPPER_CASE",  # uppercase
+        "guest wanted it",  # sentence
+        "x" * 65,  # over the 64-char cap
+        "manager@example.com",  # email shape must be rejected
+    ],
+)
+def test_task_unassigned_rejects_free_text_reasons(reason: str) -> None:
+    """The reason field fans out to every grant role via SSE, so it
+    must be a short opaque code the client can switch on — never free
+    text a manager typed. The validator rejects anything that isn't
+    identifier-shaped so the PII posture is enforced at publish time.
+    """
+    from app.events.types import TaskUnassigned
+
+    with pytest.raises(ValidationError):
+        TaskUnassigned(
+            workspace_id="ws_1",
+            actor_id="user_1",
+            correlation_id="corr_1",
+            occurred_at=_utc(),
+            task_id="task_1",
+            reason=reason,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Bus
 # ---------------------------------------------------------------------------
 

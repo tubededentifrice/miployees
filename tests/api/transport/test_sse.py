@@ -1142,6 +1142,9 @@ DEFAULT_ROLE_EVENTS_ALLOWLIST: frozenset[str] = frozenset(
     {
         "task.created",
         "task.assigned",
+        "task.reassigned",
+        "task.unassigned",
+        "task.primary_unavailable",
         "task.completed",
         "task.overdue",
         "stay.upcoming",

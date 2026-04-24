@@ -30,8 +30,9 @@ review conversation. See ``docs/specs/01-architecture.md``
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
-from typing import ClassVar, Literal
+from typing import ClassVar, Final, Literal
 
 from pydantic import field_validator
 
@@ -49,6 +50,9 @@ __all__ = [
     "TaskCompleted",
     "TaskCreated",
     "TaskOverdue",
+    "TaskPrimaryUnavailable",
+    "TaskReassigned",
+    "TaskUnassigned",
 ]
 
 
@@ -56,6 +60,37 @@ __all__ = [
 # module-level ``Literal`` alias so domain callers + tests can import
 # it alongside the event class without re-declaring the union.
 ShiftChangedAction = Literal["opened", "closed", "edited"]
+
+
+# Regex constraining short "reason code" fields on events that fan out
+# to every grant role via SSE. The shape mirrors an identifier
+# (``[a-z][a-z0-9_]*``) so callers cannot slip a free-text explanation
+# (a manager's note, a guest-visible message) into an event that
+# reaches worker / client / guest subscribers. The 64-char cap is well
+# above the longest legitimate value we emit today
+# (``primary_and_backups_unavailable`` is 31) and leaves headroom for
+# future compound codes without ever approaching sentence-length text.
+_REASON_CODE_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _require_reason_code(value: str) -> str:
+    """Guard for "reason code" fields — enforces the identifier shape.
+
+    The ``task.unassigned`` event (and any future sibling that ships
+    a caller-supplied reason) fans out to every workspace grant role,
+    so the field must be a short opaque code the client can switch
+    on — never free text typed by a human. A failing value raises at
+    publish time so a careless caller learns loudly instead of
+    leaking the text downstream.
+    """
+    if not _REASON_CODE_RE.match(value):
+        raise ValueError(
+            "reason must be a short identifier-shaped code matching "
+            f"{_REASON_CODE_RE.pattern!r} (lowercase letters, digits, "
+            "underscores; <= 64 chars). Free-text reasons are rejected "
+            "to keep the event safe to fan out to every grant role."
+        )
+    return value
 
 
 def _require_aware_utc(value: datetime) -> datetime:
@@ -103,6 +138,92 @@ class TaskAssigned(Event):
 
     task_id: str
     assigned_to: str
+
+
+@register
+class TaskReassigned(Event):
+    """A task occurrence's assignee was changed via an explicit move.
+
+    Fired by :func:`app.domain.tasks.assignment.reassign_task` when an
+    owner, manager, or agent pins the task to a different user than
+    the current assignee. ``previous_user_id`` carries the user the
+    task was moved **from** (``None`` if the task was unassigned), and
+    ``new_user_id`` the user it was moved **to**. Subscribers that
+    need the delta can read both fields without walking the audit log.
+
+    Distinct from :class:`TaskAssigned`, which fires on the first
+    assignment (creation-time or auto-resolved). The two events carry
+    different semantics on the UI — a reassignment surfaces a
+    "moved from X to Y" toast, an assignment a "now on Y" chip — so
+    the frontend dispatcher maps them to separate invalidations.
+    """
+
+    name: ClassVar[str] = "task.reassigned"
+
+    task_id: str
+    previous_user_id: str | None
+    new_user_id: str
+
+
+@register
+class TaskUnassigned(Event):
+    """A task occurrence has no assignee (either explicitly cleared or
+    auto-assignment found zero candidates from scratch).
+
+    Fired by :func:`app.domain.tasks.assignment.assign_task` when the
+    algorithm runs without a :class:`Schedule.default_assignee` and
+    the candidate pool is empty (§06 "Assignment algorithm" step 5,
+    "candidate pool was empty from the start" branch), and by
+    :func:`app.domain.tasks.assignment.unassign_task` when a manager
+    or agent explicitly clears the assignee.
+
+    Companion to :class:`TaskPrimaryUnavailable`, which fires when
+    step 1 was attempted (schedule had a listed primary or backup)
+    but none of them passed availability + rota — the two events are
+    mutually exclusive on any one auto-assignment run.
+
+    ``reason`` is a short identifier-shaped code the caller supplies
+    (``"candidate_pool_empty"``, ``"manager_cleared"``, …). The code
+    is constrained to ``[a-z][a-z0-9_]{0,63}`` at publish time so a
+    careless caller cannot slip free text (a manager's note, a
+    guest-visible message) into an event that fans out to every
+    grant role via SSE — callers translate the code to UI copy in
+    the client's toast / digest reducers.
+    """
+
+    name: ClassVar[str] = "task.unassigned"
+
+    task_id: str
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_code(cls, value: str) -> str:
+        return _require_reason_code(value)
+
+
+@register
+class TaskPrimaryUnavailable(Event):
+    """Schedule's primary + every backup failed availability; pool also empty.
+
+    Fired by :func:`app.domain.tasks.assignment.assign_task` when the
+    algorithm attempted step 1 (the schedule carried a primary or
+    backup list) but none of those users was available AND the
+    candidate pool was also empty (§06 "Assignment algorithm" step 5,
+    "step 1 was attempted but no listed user was available" branch).
+
+    The manager's daily digest surfaces this as a "primary
+    unavailable" alert — the owner can decide whether to add backups,
+    override, or accept the unassigned state before the SLA breach.
+    The ``candidate_count`` field carries how many pool candidates
+    were considered after the primary/backup walk (``0`` for this
+    event, by definition — the pool was empty too).
+    """
+
+    name: ClassVar[str] = "task.primary_unavailable"
+
+    task_id: str
+    candidate_count: int
 
 
 @register
