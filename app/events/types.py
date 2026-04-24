@@ -35,10 +35,11 @@ from typing import ClassVar, Literal
 
 from pydantic import field_validator
 
-from app.events.registry import Event, register
+from app.events.registry import Event, EventRole, register
 
 __all__ = [
     "ExpenseApproved",
+    "LlmAssignmentChanged",
     "ShiftChanged",
     "ShiftChangedAction",
     "ShiftEnded",
@@ -166,6 +167,42 @@ class ShiftEnded(Event):
     @classmethod
     def _ended_at_is_utc(cls, value: datetime) -> datetime:
         return _require_aware_utc(value)
+
+
+@register
+class LlmAssignmentChanged(Event):
+    """A workspace's LLM model assignments or capability inheritance changed.
+
+    Fired whenever an admin mutates the ``model_assignment`` or
+    ``llm_capability_inheritance`` table for a workspace (create,
+    update, delete, reorder, enable/disable). The §11 router
+    (:mod:`app.domain.llm.router`) listens on this event to drop its
+    30s in-process resolver cache for the affected workspace so the
+    next ``resolve_model`` call observes the new chain without
+    waiting for the TTL to expire.
+
+    Scope: ``("manager",)``. LLM configuration is admin-only surface;
+    workers, clients, and guests neither see nor care about the
+    ``/admin/llm`` graph. Narrowing the role tuple also keeps the
+    event off client-bound SSE streams where its arrival would be an
+    information-leak about the workspace's internal configuration
+    (which providers / models are wired up, how often they change).
+
+    Spec §12 names the adjacent deployment-scope SSE event
+    ``admin.llm.assignment_updated`` that fans out on
+    ``/admin/events``. The workspace-scoped event here is a
+    separate, sibling signal: the deployment-admin edit the
+    former announces can trigger the latter on every affected
+    workspace, but the two events have different scopes
+    (deployment vs workspace) and different subscribers (deployment
+    admin console vs per-workspace caches) so they are not the same
+    event on the bus.
+    """
+
+    name: ClassVar[str] = "llm.assignment.changed"
+    # LLM configuration is admin-only surface; keep off worker /
+    # client / guest SSE streams.
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager",)
 
 
 @register
