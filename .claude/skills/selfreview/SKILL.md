@@ -14,27 +14,26 @@ Run after completing any non-trivial coding or spec-editing task. The
 goal is to catch bugs, missing edge cases, and unintended consequences
 before the work ships.
 
-## Two modes
+## Modes
 
-The skill runs in one of two modes:
+- **Interactive (default)** — enter plan mode, report findings, ask
+  the user how to triage, then fix.
+- **Autofix** — fix every BUGS/MISSING/RISKY directly. No plan mode,
+  no user prompt. Triggered by `/selfreview autofix` (or `--autofix`),
+  by claiming a Beads task labelled `selfreview`, or by an explicit
+  hands-off request.
 
-- **Interactive mode (default)** — full workflow below: enter plan mode,
-  report findings, ask the user how to triage, then fix.
-- **Autofix mode** — used when the self-review is itself a Beads task
-  paired with a main task (see
-  [`.claude/skills/beads/SKILL.md`](../beads/SKILL.md)). Skip plan mode,
-  skip user triage, fix every BUGS / MISSING / RISKY finding directly,
-  commit, push, close the task.
+Autofix has two sub-modes for the final phase:
 
-Use autofix mode when any of these is true:
+- **Standalone (default)** — also closes the Beads task, commits,
+  and pushes (Phase 7).
+- **Director-invoked** — stops at quality gates (Phase 6). The
+  caller's prompt will say *"do not commit, do not `bd close`"*; the
+  director's `commiter` subagent closes both tasks and ships the
+  bundled commit atomically. **Skip Phase 7 entirely** and return.
 
-- The user invokes the skill as `/selfreview autofix` (or `--autofix`).
-- The current claimed Beads task has the `selfreview` label.
-- The user explicitly asks for a hands-off self-review.
-
-**Autofix mode never creates another self-review task or Beads issue for
-its own findings** — that would infinite-loop against the beads skill
-pairing rule.
+Autofix never creates another selfreview task for its own findings —
+that would infinite-loop the beads pairing rule.
 
 ## Workflow (interactive mode)
 
@@ -54,9 +53,9 @@ pairing rule.
 
 ## Workflow (autofix mode)
 
-The phase numbering mirrors interactive mode — autofix just skips
-phases 2 (plan mode) and 5 (ask user), and Phase 7 replaces the
-interactive hand-off with a full close-commit-push sequence.
+Same numbering as interactive — autofix skips phase 2 (plan mode) and
+phase 5 (ask user). Phase 7 runs **only in standalone autofix**;
+director-invoked autofix stops after phase 6.
 
 ```
 1. GATHER CHANGES         (git diff, git log, bd show <main-task>)
@@ -71,19 +70,14 @@ interactive hand-off with a full close-commit-push sequence.
    ↓
 6. FIX + QUALITY GATES    (every BUGS/MISSING/RISKY; then run repo's lint/format/type/tests)
    ↓
-7. CLOSE + COMMIT + PUSH  (bd close → bd sync → git add → git commit -s → git push → verify)
+7. CLOSE + COMMIT + PUSH  (STANDALONE ONLY — skip when director-invoked)
 ```
 
-**Order inside Phase 7 matters** — close Beads and `bd sync` BEFORE
-`git add`, so the `.beads/*.jsonl` delta ships inside the same commit
-as the code. See the Phase 7 (autofix) section below for the exact
-commands.
-
-**Empty findings are a valid outcome.** If the review surfaces nothing
-worth fixing, Phase 6 still runs the quality gates (they must be green)
-and Phase 7 still commits + pushes the underlying main-task work — it
-isn't on `main` yet, and the selfreview Beads task must be closed
-regardless.
+**Empty findings are a valid outcome.** Phase 6 still runs the quality
+gates (they must be green). Standalone autofix still proceeds to
+Phase 7 (the underlying main-task work isn't on `main` yet and the
+selfreview Beads task must be closed). Director-invoked autofix
+returns after Phase 6 — the commiter handles closure and commit.
 
 ## Phase 1: Gather changes
 
@@ -302,7 +296,12 @@ pnpm -C <web-dir> test
 When green, move on: interactive mode hands the fixes to the user
 for review; autofix mode continues to Phase 7.
 
-## Phase 7: Close Beads, commit, push, verify (autofix mode only)
+## Phase 7: Close Beads, commit, push, verify (standalone autofix only)
+
+> **Skip this phase entirely when invoked by the director.** The
+> director's prompt will instruct *"do not commit, do not `bd close`"*.
+> Stop after Phase 6 quality gates and return — the `commiter` subagent
+> will close both tasks and ship the bundled commit atomically.
 
 **Order matters.** `bd close` + `bd sync` must run *before* `git add`
 so the `.beads/*.jsonl` delta ships inside the same commit as the
