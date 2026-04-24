@@ -22,14 +22,31 @@ You are the **Director**, the planning and coordination agent.
 
 **Implement every ready Beads task. Sequentially. Do not stop early.**
 
-After each main task finishes, its paired **selfreview** Beads task
-must run immediately (they're linked as blocker dependencies — running
-main tasks in parallel would break the review coupling). Then commit.
-Then check `bd ready` again: closing a task often unblocks new ones.
+**One main task at a time — never run main tasks in parallel.** Each
+main task is coupled to its selfreview; parallel implementation
+breaks that coupling (reviews would batch, context bleeds across
+changes, and failures can't be attributed cleanly).
+
+Pick the next task with **`bv --robot-triage --format toon`** (or
+`--format json` if you prefer; toon is denser). This is the
+prioritised queue — most important first — and replaces raw
+`bd ready` for task selection.
+
+**Triage does not return paired selfreview tasks.** For every main
+task you pick, locate its paired selfreview (search Beads for one
+that blocks / is blocked by the main task, e.g.
+`bd list --status open | rg -i selfreview`). If none exists, create
+one via `/beads` **before** closing the main task. The selfreview
+(and any fixes it turns up) must run immediately after the main
+task's implementation — never batch reviews.
+
+After each main+selfreview pair finishes, commit, then re-run
+`bv --robot-triage --format toon`: closing a task often unblocks new
+ones.
 
 You only stop when:
 
-- `bd ready` returns nothing, **or**
+- `bv --robot-triage` returns no actionable items, **or**
 - a non-obvious decision with long-lasting impact appears — in that
   case use `AskUserQuestion` with enough context and a clear
   recommendation for the user to decide.
@@ -48,19 +65,18 @@ editing rules".
 ## Per-task workflow
 
 ```
-DIRECTOR: pick next ready task from `bd ready`
+DIRECTOR: pick top task from `bv --robot-triage --format toon`
     │
     ▼
-1. CODER (implement + run MODULE tests only)
+1. DIRECTOR: locate (or create via `/beads`) the paired
+   selfreview task — triage doesn't return it
+    │
+    ▼
+2. CODER (implement + run MODULE tests only)
     │       delegated via subagent to keep director context clean
     │
     ▼
-2. DIRECTOR: close the main Beads task (`bd close <id>`)
-    │
-    ▼
-3. Does the main task have a paired selfreview Beads task?
-    ├── NO  → DIRECTOR creates one via `/beads`, then proceed
-    └── YES → proceed
+3. DIRECTOR: close the main Beads task (`bd close <id>`)
     │
     ▼
 4. CODER runs the selfreview task (skeptical pass on the changes)
@@ -74,7 +90,8 @@ DIRECTOR: pick next ready task from `bd ready`
 6. COMMITER (git add + bd sync + commit + push)
     │
     ▼
-7. DIRECTOR: `bd ready` again — loop to step 1 until empty
+7. DIRECTOR: `bv --robot-triage --format toon` again —
+   loop to step 1 until empty
 ```
 
 **No separate Reviewer or Documenter agents.** The review step is
@@ -105,7 +122,7 @@ pytest
 **Always specify the `Test path`** in every delegation (main or
 selfreview) so the subagent knows what to run.
 
-**When `bd ready` is empty**, the Director runs the full suite once:
+**When triage is empty**, the Director runs the full suite once:
 
 ```bash
 pytest -x -q
@@ -196,12 +213,17 @@ Before delegating implementation:
 ## Beads workflow
 
 ```bash
-bd ready                              # what's unblocked?
+bv --robot-triage --format toon       # prioritised queue (top = next)
+                                      # also: --format json, or BV_OUTPUT_FORMAT
+                                      # NB: selfreview tasks are NOT returned —
+                                      # find or create the pair for each main task
 bd show <id>                          # full context
 bd update <id> --claim                # claim it (in_progress)
 # … implement …
 bd close <id>                         # done
 bd sync                               # export jsonl (push only if asked)
 ```
+
+Fall back to `bd ready` only if `bv` is unavailable.
 
 See [`../beads/SKILL.md`](../beads/SKILL.md) for task quality standards.
