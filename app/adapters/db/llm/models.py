@@ -55,12 +55,15 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
     String,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,6 +73,7 @@ __all__ = [
     "AgentToken",
     "ApprovalRequest",
     "BudgetLedger",
+    "LlmCapabilityInheritance",
     "LlmUsage",
     "ModelAssignment",
 ]
@@ -136,11 +140,21 @@ def _in_clause(values: tuple[str, ...]) -> str:
 class ModelAssignment(Base):
     """Capability → model binding for a workspace.
 
-    One row per ``(workspace_id, capability)`` — a workspace cannot
-    bind two different models to the same capability at the same
-    time. Reassignment is an UPDATE on the existing row; deletion
-    reverts the capability to the deployment-level default pulled
-    from the §11 assignment chain.
+    A capability may carry **many** assignments, forming a priority-
+    ordered fallback chain — the §11 resolver walks the chain on
+    retryable failures (provider 5xx, 429, timeout, provider content
+    refusal, transport error). Lower ``priority`` is tried first; 0 is
+    the primary. The cd-cm5 v1 slice pinned one row per
+    ``(workspace_id, capability)``; cd-u84y replaces that with the
+    composite ``(workspace_id, capability, priority)`` shape the
+    §11-pinned resolver and the v1 `LLMAssignment` API surface both
+    depend on.
+
+    Reassigning the primary is an UPDATE on the ``priority=0`` row (or
+    an insert-then-reorder through the bulk reorder API); deletion
+    reverts the capability to the deployment-level default pulled from
+    the §11 assignment chain and, failing that, the inheritance parent
+    in :class:`LlmCapabilityInheritance`.
 
     ``capability`` is a plain :class:`~sqlalchemy.String` because
     the §11 capability catalogue (``receipt_ocr``, ``nl_task_intake``,
@@ -161,6 +175,24 @@ class ModelAssignment(Base):
     service layer resolves at call time. A FK is deferred until the
     deployment-scope ``llm_model`` table lands so the migration
     timeline does not break.
+
+    Per-call tuning columns (``max_tokens`` / ``temperature`` /
+    ``extra_api_params``) match the spec's ``llm_assignment`` shape
+    (§11 "Model assignment"). ``max_tokens`` / ``temperature`` are
+    nullable so a NULL means "inherit the model default";
+    ``extra_api_params`` is a JSON blob the adapter merges last over
+    the provider-model defaults.
+
+    ``required_capabilities`` is a JSON list copied from the §11
+    capability catalogue entry on save — the admin UI warns when an
+    operator binds a model that lacks a required sub-capability
+    (``vision``, ``json_mode``, …). Empty list = no constraints.
+
+    ``enabled`` lets an operator hold an assignment in the chain
+    without activating it; the §11 resolver skips disabled rows. When
+    every assignment for a capability is disabled, the resolver falls
+    through to :class:`LlmCapabilityInheritance` and then raises
+    ``CapabilityUnassignedError`` (§11 "Capability inheritance").
 
     FK hygiene: ``workspace_id`` CASCADE — sweeping a workspace
     sweeps its assignments.
@@ -183,18 +215,76 @@ class ModelAssignment(Base):
     # Provider name (denormalised). Short string; the enum is open
     # in practice because new providers land as pure data rows.
     provider: Mapped[str] = mapped_column(String, nullable=False)
+    # Lower = tried first; 0 = primary. CHECK ``>= 0`` is sanity — a
+    # negative priority would silently sort ahead of the primary and
+    # break every downstream reorder invariant.
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # ``False`` hides the row from the §11 resolver without removing
+    # it from the chain — the admin UI renders a disabled row as
+    # "paused". Every assignment disabled → resolver raises
+    # ``CapabilityUnassignedError`` (§11 "Failure modes"). The ORM
+    # ``default=True`` covers the Python-side insert path; the
+    # ``server_default=true()`` mirrors the migration's ``sa.true()``
+    # so ``Base.metadata.create_all()`` (dev scratch paths) and the
+    # alembic autogenerate loop agree on the DDL — and so raw SQL
+    # inserts that bypass the ORM still land ``TRUE`` on PG / ``1`` on
+    # SQLite without a dialect-specific literal.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+    )
+    # Per-call caps. Both nullable = inherit the provider-model /
+    # model default.
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Extra provider-layer params (``top_p``, ``frequency_penalty``,
+    # tool / function-call hints, …). Merged last over the provider-
+    # model defaults at call time. Empty mapping default matches the
+    # ``agent_token.scope_json`` / ``approval_request.action_json``
+    # pattern — the bare-string ``server_default`` round-trips on
+    # SQLite + PG without a dialect-specific literal.
+    extra_api_params: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    # Required sub-capability tags the model must expose
+    # (``vision``, ``json_mode``, …). Copied from the §11 capability
+    # catalogue on save. Empty list = no constraints.
+    required_capabilities: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
 
     __table_args__ = (
-        # Unique: one assignment per ``(workspace_id, capability)``.
-        # Reassignment updates the existing row.
+        # Defensive CHECK: ``priority`` is a sort key; a negative
+        # would silently sort ahead of the primary and break every
+        # reorder invariant. The reorder API keeps priorities dense
+        # (0, 1, 2, …); this guard survives a buggy direct-insert
+        # path the API doesn't own.
+        CheckConstraint("priority >= 0", name="priority_non_negative"),
+        # Sorted scan: ``(workspace_id, capability, priority)`` backs
+        # the §11 resolver's "enabled assignments for this capability,
+        # in priority order" query. Non-unique — multiple assignments
+        # per ``(workspace, capability)`` is the whole point of this
+        # slice. The composite's leading ``workspace_id`` carries the
+        # tenant filter; per-capability lookup still rides the same
+        # index's ``(workspace_id, capability)`` prefix.
         Index(
-            "uq_model_assignment_workspace_capability",
+            "ix_model_assignment_workspace_capability_priority",
             "workspace_id",
             "capability",
-            unique=True,
+            "priority",
         ),
     )
 
@@ -530,6 +620,76 @@ class BudgetLedger(Base):
             "workspace_id",
             "period_start",
             "period_end",
+            unique=True,
+        ),
+    )
+
+
+class LlmCapabilityInheritance(Base):
+    """Parent-child fallback edge between two capabilities.
+
+    When the §11 resolver finds no enabled :class:`ModelAssignment`
+    for a child capability in the active workspace, it walks one hop
+    up this edge to the parent and replays the resolver against the
+    parent's chain. v1 seeds one edge per deployment
+    (``chat.admin → chat.manager``); operators introduce surgical
+    ties as sub-capabilities appear.
+
+    Modelled on fj2's ``LLMUseCaseInheritance``. Scoped per-workspace
+    so a deployment operator's default edges do not leak into an
+    operator's per-workspace overrides — the service layer composes
+    the workspace edge over the deployment seed at read time.
+
+    Constraints:
+
+    * CHECK ``capability <> inherits_from`` — a self-loop is an
+      obvious data bug. Multi-hop cycle detection is a write-path
+      concern: the admin / API layer that writes this table rejects
+      ``422 capability_inheritance_cycle`` before the insert reaches
+      the DB.
+    * Unique ``(workspace_id, capability)`` — one edge per child per
+      workspace. The child has either a single parent or none.
+
+    FK hygiene: ``workspace_id`` CASCADE — sweeping a workspace
+    sweeps its override edges.
+    """
+
+    __tablename__ = "llm_capability_inheritance"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Child capability — the one that falls through when its own
+    # chain is exhausted. Same open-enum rationale as
+    # :attr:`ModelAssignment.capability`.
+    capability: Mapped[str] = mapped_column(String, nullable=False)
+    # Parent capability — replayed against this row's chain. Must also
+    # be a key in the §11 capability catalogue; enforcement lives at
+    # the service layer (a CHECK body would force a migration on every
+    # capability addition).
+    inherits_from: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        # A self-loop is an obvious data bug — the child would inherit
+        # from itself and the resolver would spin. Multi-hop cycle
+        # detection lives at the write-path (API / admin layer).
+        CheckConstraint(
+            "capability <> inherits_from",
+            name="no_self_loop",
+        ),
+        # Unique: one inheritance edge per child per workspace. A
+        # second edge for the same child would force the resolver to
+        # pick a parent at random.
+        Index(
+            "uq_llm_capability_inheritance_workspace_capability",
+            "workspace_id",
+            "capability",
             unique=True,
         ),
     )

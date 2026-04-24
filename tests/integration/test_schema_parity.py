@@ -97,6 +97,14 @@ def _fingerprint(engine: Engine) -> dict[str, Any]:
       We union the two into a single ``uniques`` set of column
       tuples, and a single ``indexes_non_unique`` set of column
       tuples, so the comparison is symmetric.
+    * CHECK constraint *bodies* are compared by name only — SQLite
+      stores the original expression text, PG canonicalises it
+      (``'ok'::text`` vs ``'ok'``, redundant parens, operator
+      normalisation), so body-level equality would fight the
+      dialects. Constraint *names* are deterministic under the
+      shared :mod:`app.adapters.db.base` naming convention, so a
+      missing / extra CHECK on one side is the diff we want to
+      catch; a bodies-equal / names-equal state is the invariant.
     """
     insp = inspect(engine)
     tables: dict[str, Any] = {}
@@ -140,12 +148,23 @@ def _fingerprint(engine: Engine) -> dict[str, Any]:
         uniques = sorted(uniques_from_constraints | uniques_from_indexes)
         indexes = sorted(non_unique_indexes)
 
+        # CHECK constraints by name (see docstring for why names, not
+        # bodies). Sorted so order-of-reflection differences between
+        # the two inspectors don't fight us; ``name`` can be None on
+        # anonymous constraints — fall back to the sqltext snippet so
+        # two anonymous constraints on the same table still compare.
+        checks = sorted(
+            ck.get("name") or str(ck.get("sqltext", ""))
+            for ck in insp.get_check_constraints(name)
+        )
+
         tables[name] = {
             "columns": columns,
             "pk": pk_cols,
             "fks": fks,
             "indexes": indexes,
             "uniques": uniques,
+            "checks": checks,
         }
     return tables
 

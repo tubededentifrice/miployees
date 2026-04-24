@@ -21,6 +21,7 @@ from app.adapters.db.llm import (
     AgentToken,
     ApprovalRequest,
     BudgetLedger,
+    LlmCapabilityInheritance,
     LlmUsage,
     ModelAssignment,
 )
@@ -31,7 +32,7 @@ _LATER = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
 
 
 class TestModelAssignmentModel:
-    """The ``ModelAssignment`` mapped class constructs from the v1 slice."""
+    """The ``ModelAssignment`` mapped class carries the cd-u84y slice."""
 
     def test_minimal_construction(self) -> None:
         row = ModelAssignment(
@@ -49,22 +50,129 @@ class TestModelAssignmentModel:
         assert row.provider == "openrouter"
         assert row.created_at == _PINNED
 
+    def test_full_construction(self) -> None:
+        """cd-u84y columns carry through a full construction."""
+        extra = {"top_p": 0.9, "frequency_penalty": 0.0}
+        req_caps = ["vision", "json_mode"]
+        row = ModelAssignment(
+            id="01HWA00000000000000000MAFA",
+            workspace_id="01HWA00000000000000000WSPA",
+            capability="staff_chat",
+            model_id="01HWA00000000000000000MDLA",
+            provider="openrouter",
+            priority=2,
+            enabled=False,
+            max_tokens=4096,
+            temperature=0.2,
+            extra_api_params=extra,
+            required_capabilities=req_caps,
+            created_at=_PINNED,
+        )
+        assert row.priority == 2
+        assert row.enabled is False
+        assert row.max_tokens == 4096
+        assert row.temperature == 0.2
+        assert row.extra_api_params == extra
+        assert row.required_capabilities == req_caps
+
     def test_tablename(self) -> None:
         assert ModelAssignment.__tablename__ == "model_assignment"
 
-    def test_unique_workspace_capability_index_present(self) -> None:
-        """Acceptance: unique ``(workspace_id, capability)`` index.
+    def test_priority_index_present(self) -> None:
+        """cd-u84y: composite ``(workspace_id, capability, priority)`` index.
 
-        One model per capability per workspace — reassigning updates
-        the existing row rather than inserting a new one. Duplicate
-        rows would be a data bug the service layer could otherwise
-        race into.
+        Replaces the cd-cm5 unique index on ``(workspace_id,
+        capability)``. Non-unique — a capability may carry many
+        assignments (the §11 fallback chain). The index backs the
+        resolver's sorted scan; the leading ``workspace_id`` carries
+        the tenant filter and the ``(workspace_id, capability)`` prefix
+        still serves per-capability lookup.
         """
         indexes = [i for i in ModelAssignment.__table_args__ if isinstance(i, Index)]
         names = [i.name for i in indexes]
-        assert "uq_model_assignment_workspace_capability" in names
+        assert "ix_model_assignment_workspace_capability_priority" in names
         target = next(
-            i for i in indexes if i.name == "uq_model_assignment_workspace_capability"
+            i
+            for i in indexes
+            if i.name == "ix_model_assignment_workspace_capability_priority"
+        )
+        assert target.unique is False
+        assert [c.name for c in target.columns] == [
+            "workspace_id",
+            "capability",
+            "priority",
+        ]
+
+    def test_old_unique_index_removed(self) -> None:
+        """The cd-cm5 unique index no longer lands on the model.
+
+        Guards against a future refactor silently re-introducing the
+        one-row-per-capability rule the §11 resolver's fallback chain
+        depends on being absent.
+        """
+        names = [i.name for i in ModelAssignment.__table_args__ if isinstance(i, Index)]
+        assert "uq_model_assignment_workspace_capability" not in names
+
+    def test_priority_check_present(self) -> None:
+        """CHECK ``priority >= 0`` clamps the sort key to non-negative."""
+        checks = [
+            c
+            for c in ModelAssignment.__table_args__
+            if isinstance(c, CheckConstraint)
+            and c.name is not None
+            and str(c.name).endswith("priority_non_negative")
+        ]
+        assert len(checks) == 1
+        sql = str(checks[0].sqltext)
+        assert "priority" in sql
+        assert ">=" in sql or ">= 0" in sql
+
+
+class TestLlmCapabilityInheritanceModel:
+    """cd-u84y: the parent-child fallback edge table."""
+
+    def test_minimal_construction(self) -> None:
+        row = LlmCapabilityInheritance(
+            id="01HWA00000000000000000LCIA",
+            workspace_id="01HWA00000000000000000WSPA",
+            capability="chat.admin",
+            inherits_from="chat.manager",
+            created_at=_PINNED,
+        )
+        assert row.id == "01HWA00000000000000000LCIA"
+        assert row.workspace_id == "01HWA00000000000000000WSPA"
+        assert row.capability == "chat.admin"
+        assert row.inherits_from == "chat.manager"
+        assert row.created_at == _PINNED
+
+    def test_tablename(self) -> None:
+        assert LlmCapabilityInheritance.__tablename__ == "llm_capability_inheritance"
+
+    def test_no_self_loop_check_present(self) -> None:
+        """CHECK ``capability <> inherits_from`` rejects the obvious self-loop."""
+        checks = [
+            c
+            for c in LlmCapabilityInheritance.__table_args__
+            if isinstance(c, CheckConstraint)
+            and c.name is not None
+            and str(c.name).endswith("no_self_loop")
+        ]
+        assert len(checks) == 1
+        sql = str(checks[0].sqltext)
+        assert "capability" in sql
+        assert "inherits_from" in sql
+
+    def test_unique_workspace_capability_index_present(self) -> None:
+        """Unique ``(workspace_id, capability)`` — one parent per child per ws."""
+        indexes = [
+            i for i in LlmCapabilityInheritance.__table_args__ if isinstance(i, Index)
+        ]
+        names = [i.name for i in indexes]
+        assert "uq_llm_capability_inheritance_workspace_capability" in names
+        target = next(
+            i
+            for i in indexes
+            if i.name == "uq_llm_capability_inheritance_workspace_capability"
         )
         assert target.unique is True
         assert [c.name for c in target.columns] == ["workspace_id", "capability"]
@@ -434,6 +542,7 @@ class TestPackageReExports:
         assert ApprovalRequest is llm_models.ApprovalRequest
         assert LlmUsage is llm_models.LlmUsage
         assert BudgetLedger is llm_models.BudgetLedger
+        assert LlmCapabilityInheritance is llm_models.LlmCapabilityInheritance
 
 
 class TestRegistryIntent:
@@ -455,6 +564,7 @@ class TestRegistryIntent:
         "approval_request",
         "llm_usage",
         "budget_ledger",
+        "llm_capability_inheritance",
     )
 
     def test_every_llm_table_is_registered(self) -> None:

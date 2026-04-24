@@ -21,8 +21,11 @@ See ``docs/specs/02-domain-model.md`` §"LLM",
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine, inspect, select
@@ -34,6 +37,7 @@ from app.adapters.db.llm.models import (
     AgentToken,
     ApprovalRequest,
     BudgetLedger,
+    LlmCapabilityInheritance,
     LlmUsage,
     ModelAssignment,
 )
@@ -59,6 +63,7 @@ _LLM_TABLES: tuple[str, ...] = (
     "approval_request",
     "llm_usage",
     "budget_ledger",
+    "llm_capability_inheritance",
 )
 
 
@@ -138,6 +143,12 @@ class TestMigrationShape:
             assert table in tables, f"{table} missing from schema"
 
     def test_model_assignment_columns(self, engine: Engine) -> None:
+        """cd-u84y: ``model_assignment`` carries the full v1 tuning shape.
+
+        Includes the priority / enabled / tuning columns the §11
+        resolver depends on; ``max_tokens`` and ``temperature`` are
+        nullable (NULL = inherit the provider-model default).
+        """
         cols = {c["name"]: c for c in inspect(engine).get_columns("model_assignment")}
         expected = {
             "id",
@@ -145,10 +156,19 @@ class TestMigrationShape:
             "capability",
             "model_id",
             "provider",
+            "priority",
+            "enabled",
+            "max_tokens",
+            "temperature",
+            "extra_api_params",
+            "required_capabilities",
             "created_at",
         }
         assert set(cols) == expected
-        for notnull in expected:
+        nullable = {"max_tokens", "temperature"}
+        for col in nullable:
+            assert cols[col]["nullable"] is True, f"{col} must be NULLABLE"
+        for notnull in expected - nullable:
             assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
 
     def test_model_assignment_fks(self, engine: Engine) -> None:
@@ -162,15 +182,28 @@ class TestMigrationShape:
         # docstring (``llm_model`` registry lands later).
         assert ("model_id",) not in fks
 
-    def test_model_assignment_unique_index(self, engine: Engine) -> None:
+    def test_model_assignment_priority_index(self, engine: Engine) -> None:
+        """cd-u84y: non-unique ``(workspace_id, capability, priority)`` index.
+
+        Replaces the cd-cm5 unique ``(workspace_id, capability)`` index.
+        The non-uniqueness is the feature: the §11 router's fallback
+        chain is multiple rows per capability, ordered by priority.
+        Leading ``workspace_id`` carries the tenant filter; per-
+        capability lookup rides the ``(workspace_id, capability)``
+        prefix of the same index.
+        """
         indexes = {
             ix["name"]: ix for ix in inspect(engine).get_indexes("model_assignment")
         }
-        assert "uq_model_assignment_workspace_capability" in indexes
-        uq = indexes["uq_model_assignment_workspace_capability"]
-        assert uq["column_names"] == ["workspace_id", "capability"]
+        assert "ix_model_assignment_workspace_capability_priority" in indexes
+        ix = indexes["ix_model_assignment_workspace_capability_priority"]
+        assert ix["column_names"] == ["workspace_id", "capability", "priority"]
         # SQLite's inspector returns 1/0, PG returns True/False — coerce.
-        assert bool(uq["unique"]) is True
+        assert bool(ix["unique"]) is False
+        # The cd-cm5 unique index is gone — guard against re-introducing
+        # the "one row per capability" rule the resolver relies on being
+        # absent.
+        assert "uq_model_assignment_workspace_capability" not in indexes
 
     def test_agent_token_columns(self, engine: Engine) -> None:
         cols = {c["name"]: c for c in inspect(engine).get_columns("agent_token")}
@@ -353,6 +386,43 @@ class TestMigrationShape:
         ]
         assert bool(uq["unique"]) is True
 
+    def test_llm_capability_inheritance_columns(self, engine: Engine) -> None:
+        """cd-u84y: ``llm_capability_inheritance`` shape."""
+        cols = {
+            c["name"]: c
+            for c in inspect(engine).get_columns("llm_capability_inheritance")
+        }
+        expected = {
+            "id",
+            "workspace_id",
+            "capability",
+            "inherits_from",
+            "created_at",
+        }
+        assert set(cols) == expected
+        for notnull in expected:
+            assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
+
+    def test_llm_capability_inheritance_fks(self, engine: Engine) -> None:
+        """``workspace_id`` CASCADE — sweeping a workspace sweeps its edges."""
+        fks = {
+            tuple(fk["constrained_columns"]): fk
+            for fk in inspect(engine).get_foreign_keys("llm_capability_inheritance")
+        }
+        assert fks[("workspace_id",)]["referred_table"] == "workspace"
+        assert fks[("workspace_id",)]["options"].get("ondelete") == "CASCADE"
+
+    def test_llm_capability_inheritance_unique_index(self, engine: Engine) -> None:
+        """Unique ``(workspace_id, capability)`` — one parent per child per ws."""
+        indexes = {
+            ix["name"]: ix
+            for ix in inspect(engine).get_indexes("llm_capability_inheritance")
+        }
+        assert "uq_llm_capability_inheritance_workspace_capability" in indexes
+        uq = indexes["uq_llm_capability_inheritance_workspace_capability"]
+        assert uq["column_names"] == ["workspace_id", "capability"]
+        assert bool(uq["unique"]) is True
+
 
 class TestModelAssignmentCrud:
     """Insert + select + update round-trip on :class:`ModelAssignment`."""
@@ -388,44 +458,178 @@ class TestModelAssignmentCrud:
         finally:
             reset_current(ctx_token)
 
-    def test_unique_workspace_capability_rejects_duplicate(
+    def test_same_capability_different_priority_coexist(
         self, db_session: Session
     ) -> None:
-        """Acceptance: unique ``(workspace_id, capability)`` rejects dupe."""
+        """cd-u84y acceptance: two rows with same ``(workspace_id,
+        capability)`` but different ``priority`` coexist.
+
+        This is the regression test the §11 resolver's fallback chain
+        depends on: a primary (``priority=0``) and a fallback
+        (``priority=1``) for the same capability in the same workspace
+        are both valid rows, ordered by priority at read time.
+        """
         workspace, user = _bootstrap(
             db_session,
-            email="ma-uq@example.com",
-            display="MaUq",
-            slug="ma-uq-ws",
-            name="MaUqWS",
+            email="ma-prio@example.com",
+            display="MaPrio",
+            slug="ma-prio-ws",
+            name="MaPrioWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add_all(
+                [
+                    ModelAssignment(
+                        id="01HWA00000000000000000MAPA",
+                        workspace_id=workspace.id,
+                        capability="staff_chat",
+                        model_id="01HWA00000000000000000MDLA",
+                        provider="openrouter",
+                        priority=0,
+                        created_at=_PINNED,
+                    ),
+                    ModelAssignment(
+                        id="01HWA00000000000000000MAPB",
+                        workspace_id=workspace.id,
+                        capability="staff_chat",  # same (workspace, capability)
+                        model_id="01HWA00000000000000000MDLB",
+                        provider="openrouter",
+                        priority=1,
+                        created_at=_LATER,
+                    ),
+                ]
+            )
+            # Both rows land — no unique constraint collides.
+            db_session.flush()
+
+            chain = db_session.scalars(
+                select(ModelAssignment)
+                .where(ModelAssignment.workspace_id == workspace.id)
+                .where(ModelAssignment.capability == "staff_chat")
+                .order_by(ModelAssignment.priority.asc())
+            ).all()
+            assert [r.priority for r in chain] == [0, 1]
+            assert [r.model_id for r in chain] == [
+                "01HWA00000000000000000MDLA",
+                "01HWA00000000000000000MDLB",
+            ]
+        finally:
+            reset_current(ctx_token)
+
+    def test_defaults_on_bare_insert(self, db_session: Session) -> None:
+        """cd-u84y acceptance: ``priority=0``, ``enabled=True``,
+        ``extra_api_params={}``, ``required_capabilities=[]`` on the
+        hydrated ORM row after a bare insert.
+        """
+        workspace, user = _bootstrap(
+            db_session,
+            email="ma-def@example.com",
+            display="MaDef",
+            slug="ma-def-ws",
+            name="MaDefWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            # Construct without the cd-u84y tuning fields — the Python-
+            # side ORM defaults kick on insert; the migration's
+            # ``server_default`` backstops raw SQL.
+            row = ModelAssignment(
+                id="01HWA00000000000000000MADF",
+                workspace_id=workspace.id,
+                capability="staff_chat",
+                model_id="01HWA00000000000000000MDLA",
+                provider="openrouter",
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            db_session.flush()
+            db_session.expire_all()
+
+            reloaded = db_session.get(ModelAssignment, row.id)
+            assert reloaded is not None
+            assert reloaded.priority == 0
+            assert reloaded.enabled is True
+            assert reloaded.extra_api_params == {}
+            assert reloaded.required_capabilities == []
+            # Tuning fields stay NULL when the caller doesn't set them.
+            assert reloaded.max_tokens is None
+            assert reloaded.temperature is None
+        finally:
+            reset_current(ctx_token)
+
+    def test_negative_priority_rejected(self, db_session: Session) -> None:
+        """CHECK ``priority >= 0`` rejects a negative sort key.
+
+        A negative would silently sort ahead of the primary and break
+        every downstream reorder invariant. The defensive CHECK covers
+        a buggy direct-insert path the API doesn't own.
+        """
+        workspace, user = _bootstrap(
+            db_session,
+            email="ma-neg@example.com",
+            display="MaNeg",
+            slug="ma-neg-ws",
+            name="MaNegWS",
         )
         ctx_token = set_current(_ctx_for(workspace, user.id))
         try:
             db_session.add(
                 ModelAssignment(
-                    id="01HWA00000000000000000MAUA",
+                    id="01HWA00000000000000000MANG",
                     workspace_id=workspace.id,
                     capability="staff_chat",
                     model_id="01HWA00000000000000000MDLA",
                     provider="openrouter",
+                    priority=-1,
                     created_at=_PINNED,
-                )
-            )
-            db_session.flush()
-
-            db_session.add(
-                ModelAssignment(
-                    id="01HWA00000000000000000MAUB",
-                    workspace_id=workspace.id,
-                    capability="staff_chat",  # same (workspace, capability)
-                    model_id="01HWA00000000000000000MDLB",
-                    provider="openrouter",
-                    created_at=_LATER,
                 )
             )
             with pytest.raises(IntegrityError):
                 db_session.flush()
             db_session.rollback()
+        finally:
+            reset_current(ctx_token)
+
+    def test_tuning_fields_round_trip(self, db_session: Session) -> None:
+        """cd-u84y tuning fields round-trip through a flush / reload."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="ma-tune@example.com",
+            display="MaTune",
+            slug="ma-tune-ws",
+            name="MaTuneWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            extra = {"top_p": 0.95, "tool_choice": "auto"}
+            req_caps = ["vision", "json_mode"]
+            row = ModelAssignment(
+                id="01HWA00000000000000000MATU",
+                workspace_id=workspace.id,
+                capability="documents.ocr",
+                model_id="01HWA00000000000000000MDLA",
+                provider="openrouter",
+                priority=3,
+                enabled=False,
+                max_tokens=8192,
+                temperature=0.15,
+                extra_api_params=extra,
+                required_capabilities=req_caps,
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            db_session.flush()
+            db_session.expire_all()
+
+            reloaded = db_session.get(ModelAssignment, row.id)
+            assert reloaded is not None
+            assert reloaded.priority == 3
+            assert reloaded.enabled is False
+            assert reloaded.max_tokens == 8192
+            assert reloaded.temperature == 0.15
+            assert reloaded.extra_api_params == extra
+            assert reloaded.required_capabilities == req_caps
         finally:
             reset_current(ctx_token)
 
@@ -1396,6 +1600,213 @@ class TestApprovalRequestUserSetNull:
             reset_current(ctx_token)
 
 
+class TestLlmCapabilityInheritanceCrud:
+    """cd-u84y: insert + select + constraint coverage on the edge table."""
+
+    def test_round_trip(self, db_session: Session) -> None:
+        """Insert + reload a parent-child edge."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="lci-crud@example.com",
+            display="LciCrud",
+            slug="lci-crud-ws",
+            name="LciCrudWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            row = LlmCapabilityInheritance(
+                id="01HWA00000000000000000LCIA",
+                workspace_id=workspace.id,
+                capability="chat.admin",
+                inherits_from="chat.manager",
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            db_session.flush()
+
+            loaded = db_session.get(LlmCapabilityInheritance, row.id)
+            assert loaded is not None
+            assert loaded.capability == "chat.admin"
+            assert loaded.inherits_from == "chat.manager"
+        finally:
+            reset_current(ctx_token)
+
+    def test_unique_workspace_capability_rejects_duplicate(
+        self, db_session: Session
+    ) -> None:
+        """cd-u84y acceptance: a second edge on the same child is rejected.
+
+        Uniqueness on ``(workspace_id, capability)`` — a child has one
+        parent or none. A duplicate would force the resolver to pick
+        at random.
+        """
+        workspace, user = _bootstrap(
+            db_session,
+            email="lci-uq@example.com",
+            display="LciUq",
+            slug="lci-uq-ws",
+            name="LciUqWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add(
+                LlmCapabilityInheritance(
+                    id="01HWA00000000000000000LCUA",
+                    workspace_id=workspace.id,
+                    capability="chat.admin",
+                    inherits_from="chat.manager",
+                    created_at=_PINNED,
+                )
+            )
+            db_session.flush()
+
+            db_session.add(
+                LlmCapabilityInheritance(
+                    id="01HWA00000000000000000LCUB",
+                    workspace_id=workspace.id,
+                    capability="chat.admin",  # same child, same ws
+                    inherits_from="chat.owner",  # different parent
+                    created_at=_LATER,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+            db_session.rollback()
+        finally:
+            reset_current(ctx_token)
+
+    def test_self_loop_rejected(self, db_session: Session) -> None:
+        """cd-u84y acceptance: CHECK ``capability <> inherits_from`` rejects."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="lci-loop@example.com",
+            display="LciLoop",
+            slug="lci-loop-ws",
+            name="LciLoopWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add(
+                LlmCapabilityInheritance(
+                    id="01HWA00000000000000000LCLP",
+                    workspace_id=workspace.id,
+                    # Self-loop — CHECK must reject.
+                    capability="chat.admin",
+                    inherits_from="chat.admin",
+                    created_at=_PINNED,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+            db_session.rollback()
+        finally:
+            reset_current(ctx_token)
+
+    def test_different_children_coexist(self, db_session: Session) -> None:
+        """Different child capabilities inherit from the same parent."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="lci-diff@example.com",
+            display="LciDiff",
+            slug="lci-diff-ws",
+            name="LciDiffWS",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add_all(
+                [
+                    LlmCapabilityInheritance(
+                        id="01HWA00000000000000000LCD1",
+                        workspace_id=workspace.id,
+                        capability="chat.admin",
+                        inherits_from="chat.manager",
+                        created_at=_PINNED,
+                    ),
+                    LlmCapabilityInheritance(
+                        id="01HWA00000000000000000LCD2",
+                        workspace_id=workspace.id,
+                        capability="chat.owner",
+                        inherits_from="chat.manager",
+                        created_at=_PINNED,
+                    ),
+                ]
+            )
+            db_session.flush()
+
+            rows = db_session.scalars(
+                select(LlmCapabilityInheritance)
+                .where(LlmCapabilityInheritance.workspace_id == workspace.id)
+                .order_by(LlmCapabilityInheritance.capability)
+            ).all()
+            assert [r.capability for r in rows] == ["chat.admin", "chat.owner"]
+            assert all(r.inherits_from == "chat.manager" for r in rows)
+        finally:
+            reset_current(ctx_token)
+
+    def test_cross_workspace_isolation(self, db_session: Session) -> None:
+        """cd-u84y acceptance: a row in workspace A is invisible under
+        a workspace-B context.
+
+        Mirrors the sibling LLM-layer cross-workspace isolation tests —
+        the tenant filter auto-injects ``workspace_id``, and the same
+        ``(capability, inherits_from)`` pair can coexist across
+        workspaces without colliding.
+        """
+        ws_a, user = _bootstrap(
+            db_session,
+            email="lci-xws@example.com",
+            display="LciXws",
+            slug="lci-xws-a",
+            name="LciXwsA",
+        )
+        clock = FrozenClock(_PINNED)
+        ws_b = bootstrap_workspace(
+            db_session,
+            slug="lci-xws-b",
+            name="LciXwsB",
+            owner_user_id=user.id,
+            clock=clock,
+        )
+
+        token_a = set_current(_ctx_for(ws_a, user.id))
+        try:
+            db_session.add(
+                LlmCapabilityInheritance(
+                    id="01HWA00000000000000000LCXA",
+                    workspace_id=ws_a.id,
+                    capability="chat.admin",
+                    inherits_from="chat.manager",
+                    created_at=_PINNED,
+                )
+            )
+            db_session.flush()
+        finally:
+            reset_current(token_a)
+
+        token_b = set_current(_ctx_for(ws_b, user.id))
+        try:
+            # Same child / parent pair lands cleanly in the sibling ws.
+            db_session.add(
+                LlmCapabilityInheritance(
+                    id="01HWA00000000000000000LCXB",
+                    workspace_id=ws_b.id,
+                    capability="chat.admin",
+                    inherits_from="chat.manager",
+                    created_at=_PINNED,
+                )
+            )
+            db_session.flush()
+
+            b_rows = db_session.scalars(
+                select(LlmCapabilityInheritance).where(
+                    LlmCapabilityInheritance.workspace_id == ws_b.id
+                )
+            ).all()
+            assert [r.id for r in b_rows] == ["01HWA00000000000000000LCXB"]
+        finally:
+            reset_current(token_b)
+
+
 class TestCascadeOnWorkspaceDelete:
     """Deleting a workspace sweeps every LLM-layer row belonging to it."""
 
@@ -1455,6 +1866,13 @@ class TestCascadeOnWorkspaceDelete:
                         cap_cents=500,
                         updated_at=_PINNED,
                     ),
+                    LlmCapabilityInheritance(
+                        id="01HWA00000000000000000LCCW",
+                        workspace_id=workspace.id,
+                        capability="chat.admin",
+                        inherits_from="chat.manager",
+                        created_at=_PINNED,
+                    ),
                 ]
             )
             db_session.flush()
@@ -1476,6 +1894,7 @@ class TestCascadeOnWorkspaceDelete:
                 ApprovalRequest,
                 LlmUsage,
                 BudgetLedger,
+                LlmCapabilityInheritance,
             ):
                 rows = db_session.scalars(
                     select(model).where(model.workspace_id == workspace.id)
@@ -1609,7 +2028,14 @@ class TestCrossWorkspaceIsolation:
 
 
 class TestTenantFilter:
-    """All five LLM tables are workspace-scoped under the filter."""
+    """Every LLM table is workspace-scoped under the filter.
+
+    Covers the cd-cm5 quintet plus the cd-u84y
+    ``llm_capability_inheritance`` edge table — the tenancy filter
+    auto-injects ``workspace_id`` on every SELECT, and a bare read
+    without a :class:`WorkspaceContext` raises
+    :class:`TenantFilterMissing`.
+    """
 
     @pytest.mark.parametrize(
         "model",
@@ -1619,6 +2045,7 @@ class TestTenantFilter:
             ApprovalRequest,
             LlmUsage,
             BudgetLedger,
+            LlmCapabilityInheritance,
         ],
     )
     def test_read_without_ctx_raises(
@@ -1628,7 +2055,8 @@ class TestTenantFilter:
         | type[AgentToken]
         | type[ApprovalRequest]
         | type[LlmUsage]
-        | type[BudgetLedger],
+        | type[BudgetLedger]
+        | type[LlmCapabilityInheritance],
     ) -> None:
         with (
             filtered_factory() as session,
@@ -1636,3 +2064,322 @@ class TestTenantFilter:
         ):
             session.execute(select(model))
         assert exc.value.table == model.__tablename__
+
+
+class TestCdU84yMigrationRoundTrip:
+    """cd-u84y migration lands cleanly, reverses, and re-applies.
+
+    Mirrors the cd-i1qe migration smoke (see
+    ``tests/integration/test_migration_cd_i1qe.py``): scratch SQLite
+    file, ``alembic upgrade head``, introspect the added columns /
+    table / indexes, ``downgrade -1`` to restore the cd-cm5 shape,
+    then re-``upgrade head`` to prove the revision is reversible and
+    idempotent.
+
+    SQLite only — the cross-backend structural parity gate lives in
+    ``tests/integration/test_schema_parity.py``. Narrowing this to
+    the cd-u84y revision means a future breaking change points a
+    failure straight at the migration rather than at a whole-schema
+    fingerprint diff.
+    """
+
+    _REVISION_ID: str = "f6a7b8c9d0e1"
+    _PREVIOUS_REVISION_ID: str = "e5f6a7b8c9d0"
+
+    @staticmethod
+    def _alembic_ini() -> Path:
+        return Path(__file__).resolve().parents[2] / "alembic.ini"
+
+    @staticmethod
+    @contextmanager
+    def _override_database_url(url: str) -> Iterator[None]:
+        original = os.environ.get("CREWDAY_DATABASE_URL")
+        os.environ["CREWDAY_DATABASE_URL"] = url
+        from app.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            if original is None:
+                os.environ.pop("CREWDAY_DATABASE_URL", None)
+            else:
+                os.environ["CREWDAY_DATABASE_URL"] = original
+            get_settings.cache_clear()
+
+    def test_upgrade_adds_columns_and_table(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """cd-u84y acceptance: upgrade lands the columns + new table."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-u84y-mig") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+
+            insp = inspect(engine)
+            cols = {c["name"]: c for c in insp.get_columns("model_assignment")}
+            for added in (
+                "priority",
+                "enabled",
+                "max_tokens",
+                "temperature",
+                "extra_api_params",
+                "required_capabilities",
+            ):
+                assert added in cols, f"{added} missing after upgrade"
+            assert cols["priority"]["nullable"] is False
+            assert cols["enabled"]["nullable"] is False
+            # ``max_tokens`` / ``temperature`` nullable: NULL = inherit
+            # the provider-model default.
+            assert cols["max_tokens"]["nullable"] is True
+            assert cols["temperature"]["nullable"] is True
+
+            indexes = {ix["name"]: ix for ix in insp.get_indexes("model_assignment")}
+            # Old unique gone, new composite non-unique in.
+            assert "uq_model_assignment_workspace_capability" not in indexes
+            assert "ix_model_assignment_workspace_capability_priority" in indexes
+
+            # New table landed with its shape.
+            assert "llm_capability_inheritance" in insp.get_table_names()
+            lci_cols = {
+                c["name"]: c for c in insp.get_columns("llm_capability_inheritance")
+            }
+            assert set(lci_cols) == {
+                "id",
+                "workspace_id",
+                "capability",
+                "inherits_from",
+                "created_at",
+            }
+        finally:
+            engine.dispose()
+
+    def test_downgrade_reverses_columns_and_table(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """cd-u84y acceptance: downgrade -1 restores the cd-cm5 shape."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-u84y-mig-down") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+
+            insp = inspect(engine)
+            cols = {c["name"]: c for c in insp.get_columns("model_assignment")}
+            for absent in (
+                "priority",
+                "enabled",
+                "max_tokens",
+                "temperature",
+                "extra_api_params",
+                "required_capabilities",
+            ):
+                assert absent not in cols, f"{absent} still present after downgrade"
+
+            indexes = {ix["name"]: ix for ix in insp.get_indexes("model_assignment")}
+            # cd-cm5 unique restored; cd-u84y composite gone.
+            assert "uq_model_assignment_workspace_capability" in indexes
+            assert "ix_model_assignment_workspace_capability_priority" not in indexes
+
+            assert "llm_capability_inheritance" not in insp.get_table_names()
+        finally:
+            engine.dispose()
+
+    def test_upgrade_after_downgrade_is_idempotent(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """cd-u84y acceptance: upgrade → downgrade → upgrade cycles clean."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-u84y-mig-cycle") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+                command.upgrade(cfg, self._REVISION_ID)
+
+            insp = inspect(engine)
+            cols = {c["name"]: c for c in insp.get_columns("model_assignment")}
+            assert "priority" in cols
+            assert "enabled" in cols
+            assert "llm_capability_inheritance" in insp.get_table_names()
+        finally:
+            engine.dispose()
+
+    def test_downgrade_preserves_primary_rows(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Happy path: ``priority=0`` rows survive the downgrade.
+
+        A workspace carrying a single primary assignment per capability
+        is the pre-cd-u84y shape — these rows are already compatible
+        with the restored unique index and must round-trip untouched.
+        """
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+        from sqlalchemy import text
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-u84y-mig-down-happy") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+
+            # Seed: workspace + one primary assignment per capability.
+            # Raw SQL (no ORM factories) so the test owns the row shape
+            # at this exact revision.
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO workspace "
+                        "(id, slug, name, plan, quota_json, created_at) "
+                        "VALUES ('01HWA00000000000000000WDGH', 'dg-happy', "
+                        "'DgHappy', 'free', '{}', '2026-04-24T12:00:00+00:00')"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO model_assignment "
+                        "(id, workspace_id, capability, model_id, provider, "
+                        "priority, enabled, extra_api_params, "
+                        "required_capabilities, created_at) VALUES "
+                        "('01HWA00000000000000000MAHP', "
+                        "'01HWA00000000000000000WDGH', 'staff_chat', "
+                        "'01HWA00000000000000000MDLA', 'openrouter', "
+                        "0, 1, '{}', '[]', '2026-04-24T12:00:00+00:00')"
+                    )
+                )
+
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+
+            # Primary survives under the restored pre-cd-u84y shape.
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text("SELECT id FROM model_assignment ORDER BY id")
+                ).fetchall()
+            assert [r[0] for r in rows] == ["01HWA00000000000000000MAHP"]
+        finally:
+            engine.dispose()
+
+    def test_downgrade_sweeps_fallback_rows(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Sad path: ``priority > 0`` rungs are swept so the restored
+        unique index lands cleanly.
+
+        Mirrors the cd-i1qe PAT sweep (``DELETE FROM api_token WHERE
+        kind = 'personal'``) — under cd-u84y a capability may carry
+        several rungs, but the pre-cd-u84y schema allows only one per
+        ``(workspace_id, capability)``. Leaving duplicates in place
+        would collide with the restored unique and silently fail the
+        rollback. The sweep deletes every ``priority > 0`` row; the
+        primary (``priority=0``) survives.
+        """
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+        from sqlalchemy import text
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-u84y-mig-down-sad") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+
+            # Seed: one primary + two fallback rungs on the same
+            # (workspace, capability). Raw SQL keeps the test
+            # revision-agnostic.
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO workspace "
+                        "(id, slug, name, plan, quota_json, created_at) "
+                        "VALUES ('01HWA00000000000000000WDGS', 'dg-sad', "
+                        "'DgSad', 'free', '{}', '2026-04-24T12:00:00+00:00')"
+                    )
+                )
+                for index, priority in enumerate((0, 1, 2)):
+                    conn.execute(
+                        text(
+                            "INSERT INTO model_assignment "
+                            "(id, workspace_id, capability, model_id, provider, "
+                            "priority, enabled, extra_api_params, "
+                            "required_capabilities, created_at) VALUES "
+                            f"('01HWA00000000000000000MS{index}P', "
+                            "'01HWA00000000000000000WDGS', 'staff_chat', "
+                            f"'01HWA0000000000000000MDL{index}', 'openrouter', "
+                            f"{priority}, 1, '{{}}', '[]', "
+                            "'2026-04-24T12:00:00+00:00')"
+                        )
+                    )
+
+            # Downgrade must succeed — the sweep removes the two
+            # fallback rungs before rebuilding the unique index.
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+
+            # Only the priority=0 primary survives; duplicates are gone.
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text("SELECT id FROM model_assignment ORDER BY id")
+                ).fetchall()
+            assert [r[0] for r in rows] == ["01HWA00000000000000000MS0P"]
+
+            # And the restored unique landed — inserting a collision now
+            # at the downgraded shape must fail.
+            with (
+                engine.begin() as conn,
+                pytest.raises(IntegrityError),
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO model_assignment "
+                        "(id, workspace_id, capability, model_id, "
+                        "provider, created_at) VALUES "
+                        "('01HWA00000000000000000MSDUP', "
+                        "'01HWA00000000000000000WDGS', 'staff_chat', "
+                        "'01HWA00000000000000000MDLZ', 'openrouter', "
+                        "'2026-04-24T12:00:00+00:00')"
+                    )
+                )
+        finally:
+            engine.dispose()

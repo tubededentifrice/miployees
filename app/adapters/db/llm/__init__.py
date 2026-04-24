@@ -54,6 +54,7 @@ from app.adapters.db.llm.models import (
     AgentToken,
     ApprovalRequest,
     BudgetLedger,
+    LlmCapabilityInheritance,
     LlmUsage,
     ModelAssignment,
 )
@@ -65,6 +66,7 @@ for _table in (
     "approval_request",
     "llm_usage",
     "budget_ledger",
+    "llm_capability_inheritance",
 ):
     register(_table)
 
@@ -72,6 +74,7 @@ __all__ = [
     "AgentToken",
     "ApprovalRequest",
     "BudgetLedger",
+    "LlmCapabilityInheritance",
     "LlmUsage",
     "ModelAssignment",
 ]
