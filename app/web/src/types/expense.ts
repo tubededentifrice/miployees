@@ -90,7 +90,10 @@ export interface ExchangeRate {
 
 export interface PendingReimbursementUserBreakdown {
   user_id: string;
-  employee_id: string;
+  /** Display name for the manager UI ("Maya G."), pinned at read time
+   *  from `user.display_name`. Renames flow through naturally on the
+   *  next read of `/expenses/pending_reimbursement`. */
+  user_name: string;
   totals_by_currency: { currency: string; amount_cents: number }[];
 }
 

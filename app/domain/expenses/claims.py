@@ -117,6 +117,7 @@ from app.adapters.db.expenses.models import (
     ExpenseAttachment,
     ExpenseClaim,
 )
+from app.adapters.db.identity.models import User
 from app.adapters.db.workspace.models import WorkEngagement
 from app.adapters.storage.ports import Storage
 from app.audit import write_audit
@@ -140,12 +141,15 @@ __all__ = [
     "ClaimPermissionDenied",
     "ClaimStateTransitionInvalid",
     "CurrencyInvalid",
+    "CurrencyTotal",
     "ExpenseAttachmentView",
     "ExpenseCategory",
     "ExpenseClaimCreate",
     "ExpenseClaimUpdate",
     "ExpenseClaimView",
     "ExpenseState",
+    "PendingReimbursementUserBreakdown",
+    "PendingReimbursementView",
     "PurchaseDateInFuture",
     "ReceiptAttach",
     "ReceiptKind",
@@ -157,6 +161,7 @@ __all__ = [
     "get_claim",
     "list_for_user",
     "list_for_workspace",
+    "pending_reimbursement",
     "submit_claim",
     "update_claim",
 ]
@@ -1052,6 +1057,264 @@ def list_for_workspace(
 
 
 # ---------------------------------------------------------------------------
+# Pending-reimbursement aggregate (cd-mh4p)
+# ---------------------------------------------------------------------------
+#
+# Approved-but-not-yet-reimbursed claims are the "owed to the employee"
+# pool (§09 §"Amount owed to the employee"). The aggregate underlies
+# the worker's "Owed to you" panel (per-user totals) and the manager
+# "Pay" surface (workspace-wide totals + per-user breakdown).
+#
+# Authority lives here rather than on the router because the totals
+# aggregation is shared between the worker / manager / cross-user
+# paths and a future CSV export of "what's outstanding" surface will
+# reuse the same shape.
+
+
+@dataclass(frozen=True, slots=True)
+class CurrencyTotal:
+    """One ``(currency, amount_cents)`` total grouped by claim currency.
+
+    Currencies are keyed off ``expense_claim.currency`` (the original
+    purchase currency), NOT ``owed_currency``. The per-claim
+    ``owed_currency`` snapshot lands at approval time per §09 but is
+    not yet wired into the v1 service surface (the
+    ``payout_destination`` table is still deferred — see
+    :mod:`app.adapters.db.expenses.models` deviation note). Once that
+    lands, this aggregate switches to ``owed_currency``; the wire
+    shape stays the same.
+    """
+
+    currency: str
+    amount_cents: int
+
+
+@dataclass(frozen=True, slots=True)
+class PendingReimbursementUserBreakdown:
+    """Per-user slice of the workspace-wide pending-reimbursement total.
+
+    Surfaced only when the caller queried the workspace-wide aggregate
+    (no ``user_id`` filter); the per-user surface omits this slice
+    because it would just echo the top-level total back.
+
+    ``user_name`` is the :class:`User.display_name` at read time —
+    pinned so the manager UI can surface "Maya's outstanding" without
+    a second round-trip. Renames flow through naturally on the next
+    read.
+    """
+
+    user_id: str
+    user_name: str
+    totals_by_currency: tuple[CurrencyTotal, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PendingReimbursementView:
+    """The full pending-reimbursement read view.
+
+    ``user_id`` echoes the resolved filter target (``ctx.actor_id`` for
+    the ``user_id=me`` form, the explicit id for the manager-driven
+    form, ``None`` for the workspace-wide aggregate).
+
+    ``claims`` is the list of approved-but-not-reimbursed claims in
+    scope — the worker UI itemises each as a "due to you" row; the
+    manager UI sums via ``totals_by_currency`` but keeps the underlying
+    list available for drill-down.
+
+    ``totals_by_currency`` is the per-currency sum across ``claims``.
+    Empty when the scope yields no rows; the wire envelope still
+    includes the (empty) list so SPA consumers don't have to guard
+    on a missing key.
+
+    ``by_user`` is populated only on the workspace-wide aggregate
+    response — ``None`` for the per-user form, since the breakdown
+    would just echo ``totals_by_currency`` back.
+    """
+
+    user_id: str | None
+    claims: tuple[ExpenseClaimView, ...]
+    totals_by_currency: tuple[CurrencyTotal, ...]
+    by_user: tuple[PendingReimbursementUserBreakdown, ...] | None
+
+
+def _sum_by_currency(
+    claims: tuple[ExpenseClaimView, ...],
+) -> tuple[CurrencyTotal, ...]:
+    """Aggregate ``claims`` into one ``CurrencyTotal`` per currency.
+
+    Order is deterministic — sorted alphabetically by currency code so
+    a manager UI's table doesn't reshuffle on refresh and a snapshot-
+    test stays stable. Currencies with a zero sum cannot appear (the
+    only path here is "claim row exists in this currency"), so the
+    list length matches the distinct-currency count.
+    """
+    totals: dict[str, int] = {}
+    for claim in claims:
+        totals[claim.currency] = (
+            totals.get(claim.currency, 0) + claim.total_amount_cents
+        )
+    return tuple(
+        CurrencyTotal(currency=ccy, amount_cents=amt)
+        for ccy, amt in sorted(totals.items())
+    )
+
+
+def _load_pending_claims(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    user_id: str | None,
+) -> tuple[ExpenseClaimView, ...]:
+    """Load every approved-but-not-yet-reimbursed claim in scope.
+
+    Soft-deleted rows are excluded by definition (the ``deleted_at IS
+    NULL`` predicate). ``user_id`` narrows via the engagement join;
+    ``None`` returns every workspace claim. Order is ``id ASC`` so
+    same-currency totals roll up deterministically (the SUM is
+    associative either way; this just keeps fixture-driven tests
+    stable on the inline ``claims`` list).
+    """
+    stmt = select(ExpenseClaim).where(
+        ExpenseClaim.workspace_id == ctx.workspace_id,
+        ExpenseClaim.state == "approved",
+        ExpenseClaim.deleted_at.is_(None),
+    )
+    if user_id is not None:
+        stmt = stmt.join(
+            WorkEngagement,
+            (WorkEngagement.id == ExpenseClaim.work_engagement_id)
+            & (WorkEngagement.workspace_id == ExpenseClaim.workspace_id),
+        ).where(WorkEngagement.user_id == user_id)
+    stmt = stmt.order_by(ExpenseClaim.id.asc())
+    rows = list(session.scalars(stmt).all())
+    return tuple(_row_to_view(session, r) for r in rows)
+
+
+def _user_display_names(
+    session: Session,
+    *,
+    user_ids: set[str],
+) -> dict[str, str]:
+    """Bulk-resolve ``user_id -> display_name`` for ``user_ids``.
+
+    Returns an empty dict when ``user_ids`` is empty so the caller can
+    pass an empty set without conditional plumbing. A user row that
+    has been hard-deleted (rare; the platform soft-deletes via
+    ``user.deleted_at`` once that lands) collapses to a synthetic
+    ``"unknown"`` label rather than missing-key — the manager UI
+    must always render a name on every breakdown row.
+    """
+    if not user_ids:
+        return {}
+    stmt = select(User.id, User.display_name).where(User.id.in_(user_ids))
+    return {uid: name for uid, name in session.execute(stmt).all()}
+
+
+def pending_reimbursement(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    user_id: str | None,
+) -> PendingReimbursementView:
+    """Return the pending-reimbursement aggregate for ``user_id``.
+
+    ``user_id`` semantics:
+
+    * ``ctx.actor_id`` (or any value matching it) — narrow to the
+      caller's own approved-but-not-reimbursed claims. No capability
+      check; every worker can read their own pool.
+    * Any other id — narrow to that user's pool. Requires
+      ``expenses.approve`` (the manager queue gate); raises
+      :class:`ClaimPermissionDenied` otherwise.
+    * ``None`` — workspace-wide aggregate; ``by_user`` carries the
+      per-user breakdown. Requires ``expenses.approve`` for the same
+      reason as the cross-user form.
+
+    The wire envelope mirrors the SPA's ``PendingReimbursement``
+    type 1:1 (see ``app/web/src/types/expense.ts``). The router
+    layer projects to JSON; this function returns immutable
+    domain views.
+
+    Per §09 §"Amount owed to the employee", the pool is "approved-
+    but-not-yet-reimbursed" — claims in any other state are excluded
+    (a draft / submitted hasn't crossed the approval gate; a rejected
+    is terminal; a reimbursed has already settled). Soft-deleted rows
+    can't be in ``approved`` by the state-machine invariant, but the
+    ``deleted_at IS NULL`` predicate is kept for defence-in-depth.
+    """
+    # Self-only ("user_id=me" → ``user_id == ctx.actor_id``) is the
+    # single path that bypasses the manager-cap gate; every other
+    # path (cross-user, workspace-wide aggregate) runs the capability
+    # check so a worker probing another user's pool or the workspace-
+    # wide aggregate gets a 403 envelope.
+    is_self_only = user_id is not None and user_id == ctx.actor_id
+    if not is_self_only:
+        try:
+            _require_capability(session, ctx, action_key="expenses.approve")
+        except PermissionDenied as exc:
+            raise ClaimPermissionDenied(str(exc)) from exc
+
+    if user_id is None:
+        # Workspace-wide aggregate. Load once, slice per-user from the
+        # same projection so the totals + by_user shares come from the
+        # same SELECT pass.
+        claims = _load_pending_claims(session, ctx, user_id=None)
+        totals = _sum_by_currency(claims)
+
+        # Group claims by author user_id for the breakdown. We need a
+        # claim → user_id map; load every engagement referenced in the
+        # claim batch in one round-trip rather than per-claim.
+        engagement_ids = {c.work_engagement_id for c in claims}
+        eng_to_user: dict[str, str] = {}
+        if engagement_ids:
+            eng_stmt = select(WorkEngagement.id, WorkEngagement.user_id).where(
+                WorkEngagement.workspace_id == ctx.workspace_id,
+                WorkEngagement.id.in_(engagement_ids),
+            )
+            eng_to_user = {eid: uid for eid, uid in session.execute(eng_stmt).all()}
+
+        per_user_claims: dict[str, list[ExpenseClaimView]] = {}
+        for claim in claims:
+            uid = eng_to_user.get(claim.work_engagement_id)
+            if uid is None:
+                # Dangling engagement reference — the schema's RESTRICT
+                # ondelete makes this impossible without a manual
+                # tampering. Surface loudly rather than silently dropping
+                # the row from the aggregate.
+                raise RuntimeError(
+                    f"claim {claim.id!r} references missing engagement "
+                    f"{claim.work_engagement_id!r}"
+                )
+            per_user_claims.setdefault(uid, []).append(claim)
+
+        names = _user_display_names(session, user_ids=set(per_user_claims))
+        by_user = tuple(
+            PendingReimbursementUserBreakdown(
+                user_id=uid,
+                user_name=names.get(uid, "unknown"),
+                totals_by_currency=_sum_by_currency(tuple(per_user_claims[uid])),
+            )
+            for uid in sorted(per_user_claims)
+        )
+        return PendingReimbursementView(
+            user_id=None,
+            claims=claims,
+            totals_by_currency=totals,
+            by_user=by_user,
+        )
+
+    # Single-user (caller or other-with-capability) path.
+    claims = _load_pending_claims(session, ctx, user_id=user_id)
+    totals = _sum_by_currency(claims)
+    return PendingReimbursementView(
+        user_id=user_id,
+        claims=claims,
+        totals_by_currency=totals,
+        by_user=None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Writes
 # ---------------------------------------------------------------------------
 
@@ -1383,9 +1646,7 @@ def attach_receipt(
     # stays NULL) to know to fall back to manual entry.
     if extraction_runner is not None and row.state == "draft":
         try:
-            extraction_runner(
-                session, ctx, claim_id=claim_id, attachment_id=view.id
-            )
+            extraction_runner(session, ctx, claim_id=claim_id, attachment_id=view.id)
         except Exception as exc:
             # The runner has already written its own audit row +
             # ``LlmUsage`` row before raising; we want those rows

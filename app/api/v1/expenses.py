@@ -43,6 +43,12 @@ Surface (spec §12 "Time, payroll, expenses"):
 * ``POST /{id}/reimburse`` — body ``ReimburseBody`` (channel +
   optional ``paid_at``).
 * ``GET  /pending``      — manager queue, cursor-paginated.
+* ``GET  /pending_reimbursement`` — approved-but-not-reimbursed totals
+  (§09 §"Amount owed to the employee"). ``?user_id=me`` resolves to
+  the caller; ``?user_id=<uuid>`` or no param requires
+  ``expenses.approve``. The no-param form populates a per-user
+  ``by_user`` breakdown for the manager Pay page; the per-user form
+  leaves it ``null``.
 
 **OCR autofill (placeholder)**
 
@@ -53,10 +59,11 @@ The flat shape mirrors spec §12's "Time, payroll, expenses" REST
 table verbatim — ``POST /expenses``, ``GET /expenses``, ``POST
 /expenses/{id}/submit``, etc. — so the SPA's ``fetchJson("/api/v1/
 expenses")`` and ``fetchJson("/api/v1/expenses/" + id + "/" +
-decision)`` calls match the router 1:1. ``/pending`` and
-``/autofill`` are sibling literal segments under the same prefix;
-``/pending`` is registered before ``/{claim_id}`` so FastAPI's
-ordered route table matches the literal first.
+decision)`` calls match the router 1:1. ``/pending``,
+``/pending_reimbursement``, and ``/autofill`` are sibling literal
+segments under the same prefix; each is registered before
+``/{claim_id}`` so FastAPI's ordered route table matches the
+literal first.
 
 **Idempotency.** ``POST`` routes ride the process-wide
 :mod:`app.api.middleware.idempotency` middleware — a replayed POST
@@ -127,6 +134,8 @@ from app.domain.expenses import (
     ExpenseClaimUpdate,
     ExpenseClaimView,
     ExpenseState,
+    PendingReimbursementUserBreakdown,
+    PendingReimbursementView,
     PurchaseDateInFuture,
     ReceiptKind,
     ReimburseBody,
@@ -142,6 +151,7 @@ from app.domain.expenses import (
     list_for_user,
     list_pending,
     mark_reimbursed,
+    pending_reimbursement,
     reject_claim,
     submit_claim,
     update_claim,
@@ -311,6 +321,82 @@ class ExpenseAttachmentListResponse(BaseModel):
     """Collection envelope for ``GET /{id}/attachments``."""
 
     data: list[ExpenseAttachmentPayload]
+
+
+# ---------------------------------------------------------------------------
+# Pending-reimbursement (cd-mh4p)
+# ---------------------------------------------------------------------------
+
+
+class CurrencyTotalPayload(BaseModel):
+    """One ``(currency, amount_cents)`` total in the pending pool.
+
+    Mirrors :class:`~app.domain.expenses.claims.CurrencyTotal` 1:1.
+    """
+
+    currency: str
+    amount_cents: int
+
+
+class PendingReimbursementUserBreakdownPayload(BaseModel):
+    """One row of the workspace-wide pending-reimbursement breakdown.
+
+    Mirrors
+    :class:`~app.domain.expenses.claims.PendingReimbursementUserBreakdown`
+    1:1; the SPA's ``PendingReimbursementUserBreakdown`` type
+    (``app/web/src/types/expense.ts``) lines up field-for-field.
+    """
+
+    user_id: str
+    user_name: str
+    totals_by_currency: list[CurrencyTotalPayload]
+
+
+class PendingReimbursementResponse(BaseModel):
+    """Wire shape for ``GET /pending_reimbursement``.
+
+    Mirrors :class:`~app.domain.expenses.claims.PendingReimbursementView`.
+    ``by_user`` is non-null only on the workspace-wide aggregate
+    response (the per-user form sets it to ``None``); the SPA's
+    ``PendingReimbursement`` type tracks the same nullability.
+    """
+
+    user_id: str | None
+    claims: list[ExpenseClaimPayload]
+    totals_by_currency: list[CurrencyTotalPayload]
+    by_user: list[PendingReimbursementUserBreakdownPayload] | None = None
+
+    @classmethod
+    def from_view(cls, view: PendingReimbursementView) -> PendingReimbursementResponse:
+        """Project a :class:`PendingReimbursementView` into its HTTP payload."""
+        by_user_payload: list[PendingReimbursementUserBreakdownPayload] | None
+        if view.by_user is None:
+            by_user_payload = None
+        else:
+            by_user_payload = [_user_breakdown_payload(b) for b in view.by_user]
+        return cls(
+            user_id=view.user_id,
+            claims=[ExpenseClaimPayload.from_view(c) for c in view.claims],
+            totals_by_currency=[
+                CurrencyTotalPayload(currency=t.currency, amount_cents=t.amount_cents)
+                for t in view.totals_by_currency
+            ],
+            by_user=by_user_payload,
+        )
+
+
+def _user_breakdown_payload(
+    breakdown: PendingReimbursementUserBreakdown,
+) -> PendingReimbursementUserBreakdownPayload:
+    """Project a domain breakdown row into its HTTP payload."""
+    return PendingReimbursementUserBreakdownPayload(
+        user_id=breakdown.user_id,
+        user_name=breakdown.user_name,
+        totals_by_currency=[
+            CurrencyTotalPayload(currency=t.currency, amount_cents=t.amount_cents)
+            for t in breakdown.totals_by_currency
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +707,55 @@ def list_pending_expense_claims_route(
         next_cursor=encode_cursor(next_raw) if next_raw is not None else None,
         has_more=next_raw is not None,
     )
+
+
+@router.get(
+    "/pending_reimbursement",
+    response_model=PendingReimbursementResponse,
+    operation_id="get_pending_reimbursement",
+    summary="Pending-reimbursement totals (per-user or workspace aggregate)",
+)
+def get_pending_reimbursement_route(
+    ctx: _Ctx,
+    session: _Db,
+    user_id: Annotated[
+        str | None,
+        Query(
+            max_length=64,
+            description=(
+                "Filter target. ``me`` resolves to the caller (no "
+                "capability required). A different user id requires "
+                "``expenses.approve``. Omit the param entirely to get "
+                "the workspace-wide aggregate (also gated on "
+                "``expenses.approve``); the response then carries a "
+                "``by_user`` breakdown."
+            ),
+        ),
+    ] = None,
+) -> PendingReimbursementResponse:
+    """Return approved-but-not-yet-reimbursed totals (§09 "Amount owed").
+
+    Sibling literal route to ``/pending``; registered before the
+    ``/{claim_id}`` path-parameter route so FastAPI matches the
+    literal segment first. The router maps ``user_id=me`` to
+    ``ctx.actor_id`` so the SPA's ``OwedToYou`` panel doesn't have
+    to know its own id; the manager's ``PayPage`` omits the param
+    to get the workspace-wide aggregate (with the ``by_user``
+    breakdown populated).
+
+    Authorisation:
+
+    * ``user_id=me`` — every worker may read their own pool.
+    * ``user_id=<uuid>`` and ``user_id`` omitted — both gated on
+      ``expenses.approve`` (the manager queue capability). A worker
+      probe surfaces a 403 ``claim_permission_denied`` envelope.
+    """
+    resolved_user_id = ctx.actor_id if user_id == "me" else user_id
+    try:
+        view = pending_reimbursement(session, ctx, user_id=resolved_user_id)
+    except ClaimPermissionDenied as exc:
+        raise _http_for_claim_error(exc) from exc
+    return PendingReimbursementResponse.from_view(view)
 
 
 @router.get(

@@ -1154,7 +1154,10 @@ GET    /expenses                   # ?user_id=…&mine=true|false&state=…&curs
                                    #   used by the SPA worker surface.
                                    # user_id=<other> -> requires expenses.approve.
                                    # mine=true + user_id together -> 422 mine_user_id_conflict.
-GET    /expenses/pending_reimbursement   # ?user_id=me|<id>; returns approved-but-not-reimbursed totals grouped by owed_currency (§09)
+GET    /expenses/pending_reimbursement   # ?user_id=me|<id>|<omit>; approved-but-not-reimbursed totals grouped by claim currency (§09).
+                                         #   user_id=me  -> caller's own pool (no cap).
+                                         #   user_id=<id> or omitted -> workspace-wide; requires expenses.approve.
+                                         #   When user_id is omitted the response carries a per-user `by_user` breakdown.
 POST   /expenses                   # multipart for receipts
 POST   /expenses/{id}/submit
 POST   /expenses/{id}/approve      # snaps owed_* fields; see §09 "Amount owed to the employee"
@@ -1170,6 +1173,34 @@ POST   /exchange_rates/manual                        # manager-only; body {base,
 `POST /expenses/autofill` accepts `multipart/form-data` with
 `images[]` (1..2, ≤ 5 MB total), optional `hint_currency` /
 `hint_vendor`; response shape is `llm_autofill_json` (§09).
+
+`GET /expenses/pending_reimbursement` returns the approved-but-not-yet-
+reimbursed pool that drives the worker "Owed to you" panel (§09 §"Amount
+owed to the employee") and the manager "Pay" page summary. Response
+shape:
+
+```json
+{
+  "user_id": "<id> | null",
+  "claims": [<ExpenseClaim>, …],
+  "totals_by_currency": [{"currency": "EUR", "amount_cents": 1500}, …],
+  "by_user": [
+    {
+      "user_id": "<id>",
+      "user_name": "Maya G.",
+      "totals_by_currency": [{"currency": "EUR", "amount_cents": 1500}]
+    }
+  ]
+}
+```
+
+`by_user` is populated only on the workspace-wide aggregate response
+(no `user_id` query param) and is `null` on the per-user form. The
+per-currency total groups by `expense_claim.currency` today; once the
+`payout_destination` table lands the aggregate switches to
+`owed_currency` per §09 without changing the wire shape. Both the
+workspace-wide form and the cross-user (`user_id=<other>`) form
+require `expenses.approve`; the `user_id=me` form is unconditional.
 
 `POST /bookings/{id}/amend` requires a non-empty `reason` whenever
 the body moves any time field (`scheduled_start`, `scheduled_end`,

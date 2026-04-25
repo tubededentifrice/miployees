@@ -961,6 +961,471 @@ class TestPendingQueue:
             assert draft_id not in ids
 
 
+class TestPendingReimbursement:
+    """Integration coverage for ``GET /expenses/pending_reimbursement``.
+
+    The endpoint backs the SPA's "Owed to you" panel
+    (``app/web/src/pages/employee/expenses/OwedToYou.tsx``, worker
+    surface, ``?user_id=me``) and the manager Pay page (no ``user_id``
+    param, workspace-wide aggregate). Auth gates differ:
+
+    * ``user_id=me`` — every worker reads their own pool.
+    * ``user_id=<other>`` — requires ``expenses.approve``.
+    * No param — requires ``expenses.approve``; populates ``by_user``.
+
+    See :func:`app.domain.expenses.claims.pending_reimbursement` for
+    the underlying contract and §09 §"Amount owed to the employee".
+    """
+
+    @staticmethod
+    def _seed_approved_claim(
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+        *,
+        ctx_key: str,
+        eng_key: str,
+        manager_ctx_key: str = "manager_ctx",
+        currency: str = "EUR",
+        total_amount_cents: int = 1500,
+        vendor: str = "Vendor",
+    ) -> str:
+        """Drive a claim from draft → submitted → approved.
+
+        Returns the new claim id. The worker context creates and
+        submits; the manager context approves. Each call lives on
+        its own ``TestClient`` so the dep overrides match the actor.
+        """
+        with _client_for(session_factory, seeded[ctx_key], storage) as client:
+            r = client.post(
+                "/api/v1/expenses",
+                json=_create_body(
+                    work_engagement_id=seeded[eng_key],
+                    vendor=vendor,
+                    currency=currency,
+                    total_amount_cents=total_amount_cents,
+                ),
+            )
+            assert r.status_code == 201, r.text
+            cid = r.json()["id"]
+            r = client.post(f"/api/v1/expenses/{cid}/submit")
+            assert r.status_code == 200, r.text
+        with _client_for(session_factory, seeded[manager_ctx_key], storage) as client:
+            r = client.post(f"/api/v1/expenses/{cid}/approve")
+            assert r.status_code == 200, r.text
+        return str(cid)
+
+    def test_user_id_me_returns_caller_totals(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """``user_id=me`` resolves to ``ctx.actor_id`` and sums the
+        caller's approved-but-not-reimbursed claims by currency."""
+        # Two approved claims for the worker — one EUR, one USD.
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="EUR",
+            total_amount_cents=1500,
+            vendor="Worker EUR",
+        )
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="USD",
+            total_amount_cents=2500,
+            vendor="Worker USD",
+        )
+        # Peer's approved claim must NOT show up under the worker.
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="peer_ctx",
+            eng_key="peer_eng_id",
+            currency="EUR",
+            total_amount_cents=999,
+            vendor="Peer EUR",
+        )
+
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": "me"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["user_id"] == seeded["worker_id"]
+        assert body["by_user"] is None
+        # Totals are sorted alphabetically by currency code.
+        assert body["totals_by_currency"] == [
+            {"currency": "EUR", "amount_cents": 1500},
+            {"currency": "USD", "amount_cents": 2500},
+        ]
+        # The two worker claims surface under ``claims``; the peer's is
+        # filtered out.
+        vendors = {c["vendor"] for c in body["claims"]}
+        assert vendors == {"Worker EUR", "Worker USD"}
+
+    def test_user_id_me_excludes_reimbursed(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """A reimbursed claim drops out of the pool the moment the
+        manager marks it paid (§09 §"Amount owed")."""
+        cid_paid = TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="EUR",
+            total_amount_cents=2000,
+            vendor="Already paid",
+        )
+        cid_pending = TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="EUR",
+            total_amount_cents=500,
+            vendor="Still pending",
+        )
+
+        # Manager settles one of the two.
+        with _client_for(session_factory, seeded["manager_ctx"], storage) as client:
+            r = client.post(
+                f"/api/v1/expenses/{cid_paid}/reimburse",
+                json={"via": "bank"},
+            )
+            assert r.status_code == 200, r.text
+
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": "me"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Only the still-pending claim contributes to the total; the
+        # already-reimbursed claim drops out.
+        assert body["totals_by_currency"] == [
+            {"currency": "EUR", "amount_cents": 500},
+        ]
+        ids = [c["id"] for c in body["claims"]]
+        assert ids == [cid_pending]
+
+    def test_user_id_me_only_approved_claims(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """Drafts, submitted, and rejected claims must NOT contribute."""
+        # Approved claim — should land in the pool.
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="EUR",
+            total_amount_cents=700,
+            vendor="Approved",
+        )
+        # Draft (never submitted) — must NOT count.
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.post(
+                "/api/v1/expenses",
+                json=_create_body(
+                    work_engagement_id=seeded["worker_eng_id"],
+                    vendor="Draft only",
+                    currency="EUR",
+                    total_amount_cents=11_000,
+                ),
+            )
+            assert r.status_code == 201
+            # Submitted-but-not-approved — must NOT count.
+            r = client.post(
+                "/api/v1/expenses",
+                json=_create_body(
+                    work_engagement_id=seeded["worker_eng_id"],
+                    vendor="Submitted only",
+                    currency="EUR",
+                    total_amount_cents=22_000,
+                ),
+            )
+            cid_submitted = r.json()["id"]
+            client.post(f"/api/v1/expenses/{cid_submitted}/submit")
+            # Rejected claim — must NOT count.
+            r = client.post(
+                "/api/v1/expenses",
+                json=_create_body(
+                    work_engagement_id=seeded["worker_eng_id"],
+                    vendor="Will reject",
+                    currency="EUR",
+                    total_amount_cents=33_000,
+                ),
+            )
+            cid_reject = r.json()["id"]
+            client.post(f"/api/v1/expenses/{cid_reject}/submit")
+        with _client_for(session_factory, seeded["manager_ctx"], storage) as client:
+            r = client.post(
+                f"/api/v1/expenses/{cid_reject}/reject",
+                json={"reason_md": "duplicate"},
+            )
+            assert r.status_code == 200, r.text
+
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": "me"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Only the approved row — the 700 cents claim — contributes.
+        assert body["totals_by_currency"] == [
+            {"currency": "EUR", "amount_cents": 700},
+        ]
+        assert [c["vendor"] for c in body["claims"]] == ["Approved"]
+
+    def test_user_id_uuid_requires_approve_permission(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """A worker probing another user's pool by id surfaces 403."""
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="peer_ctx",
+            eng_key="peer_eng_id",
+            currency="EUR",
+            total_amount_cents=500,
+            vendor="Peer",
+        )
+
+        # Worker (no ``expenses.approve``) probes peer's pool — 403.
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": seeded["peer_id"]},
+            )
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == "claim_permission_denied"
+
+        # Manager (has ``expenses.approve``) succeeds.
+        with _client_for(session_factory, seeded["manager_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": seeded["peer_id"]},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["user_id"] == seeded["peer_id"]
+        assert body["by_user"] is None
+        assert body["totals_by_currency"] == [
+            {"currency": "EUR", "amount_cents": 500},
+        ]
+
+    def test_workspace_aggregate_includes_by_user(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """No ``user_id`` param → workspace aggregate with breakdown."""
+        # Worker: 1500 EUR + 2500 USD.
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="EUR",
+            total_amount_cents=1500,
+            vendor="Worker EUR",
+        )
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="USD",
+            total_amount_cents=2500,
+            vendor="Worker USD",
+        )
+        # Peer: 700 EUR.
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="peer_ctx",
+            eng_key="peer_eng_id",
+            currency="EUR",
+            total_amount_cents=700,
+            vendor="Peer EUR",
+        )
+
+        with _client_for(session_factory, seeded["manager_ctx"], storage) as client:
+            r = client.get("/api/v1/expenses/pending_reimbursement")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["user_id"] is None
+        # Workspace-wide totals merge across users.
+        assert body["totals_by_currency"] == [
+            {"currency": "EUR", "amount_cents": 1500 + 700},
+            {"currency": "USD", "amount_cents": 2500},
+        ]
+        assert body["by_user"] is not None
+        # Index by user_id for stable per-user assertions.
+        by_id = {row["user_id"]: row for row in body["by_user"]}
+        assert seeded["worker_id"] in by_id
+        assert seeded["peer_id"] in by_id
+        worker_row = by_id[seeded["worker_id"]]
+        peer_row = by_id[seeded["peer_id"]]
+        # ``user_name`` mirrors ``user.display_name`` set on bootstrap.
+        assert worker_row["user_name"] == "Worker"
+        assert peer_row["user_name"] == "Peer"
+        assert worker_row["totals_by_currency"] == [
+            {"currency": "EUR", "amount_cents": 1500},
+            {"currency": "USD", "amount_cents": 2500},
+        ]
+        assert peer_row["totals_by_currency"] == [
+            {"currency": "EUR", "amount_cents": 700},
+        ]
+
+    def test_workspace_aggregate_requires_approve_permission(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """The workspace-wide aggregate is gated on ``expenses.approve``."""
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get("/api/v1/expenses/pending_reimbursement")
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["error"] == "claim_permission_denied"
+
+    def test_cross_workspace_blocked(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """A foreign-workspace probe never sees the home workspace's pool."""
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="EUR",
+            total_amount_cents=1500,
+            vendor="Home worker",
+        )
+
+        # Foreign workspace context (owner there) probes the workspace
+        # aggregate. It legitimately holds ``expenses.approve`` in the
+        # foreign workspace but cannot see the home workspace's claims.
+        with _client_for(session_factory, seeded["foreign_ctx"], storage) as client:
+            r = client.get("/api/v1/expenses/pending_reimbursement")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["user_id"] is None
+        assert body["claims"] == []
+        assert body["totals_by_currency"] == []
+        assert body["by_user"] == []
+
+        # And probing for the home worker by id from the foreign
+        # workspace surfaces nothing (the worker has no engagement
+        # there, so the join produces no rows).
+        with _client_for(session_factory, seeded["foreign_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": seeded["worker_id"]},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["claims"] == []
+        assert body["totals_by_currency"] == []
+
+    def test_empty_returns_zero_totals(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """Caller with no approved claims gets a well-formed empty envelope."""
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": "me"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body == {
+            "user_id": seeded["worker_id"],
+            "claims": [],
+            "totals_by_currency": [],
+            "by_user": None,
+        }
+
+    def test_me_alias_matches_explicit_self_uuid(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        """``?user_id=me`` and ``?user_id=<own uuid>`` must behave identically.
+
+        Both paths echo ``user_id == ctx.actor_id`` on the wire and
+        skip the manager-cap gate; the OwedToYou panel sends ``me``,
+        but a future caller who already knows its own id (an agent,
+        say) MUST get the same response without ``expenses.approve``.
+        """
+        TestPendingReimbursement._seed_approved_claim(
+            session_factory,
+            storage,
+            seeded,
+            ctx_key="worker_ctx",
+            eng_key="worker_eng_id",
+            currency="EUR",
+            total_amount_cents=1500,
+            vendor="Worker EUR",
+        )
+
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r_me = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": "me"},
+            )
+            r_uuid = client.get(
+                "/api/v1/expenses/pending_reimbursement",
+                params={"user_id": seeded["worker_id"]},
+            )
+        assert r_me.status_code == 200, r_me.text
+        assert r_uuid.status_code == 200, r_uuid.text
+        # Identical wire bodies — `me` is just an alias for the actor id.
+        assert r_me.json() == r_uuid.json()
+        assert r_me.json()["user_id"] == seeded["worker_id"]
+
+
 class TestAutofillPlaceholder:
     def test_unconfigured_returns_503(
         self,
