@@ -131,6 +131,7 @@ __all__ = [
     "InviteAlreadyAccepted",
     "InviteBodyInvalid",
     "InviteExpired",
+    "InviteIntrospection",
     "InviteNotFound",
     "InviteOutcome",
     "InviteSession",
@@ -143,6 +144,7 @@ __all__ = [
     "complete_invite",
     "confirm_invite",
     "consume_invite_token",
+    "introspect_invite",
     "invite",
     "list_workspaces_for_user",
     "remove_member",
@@ -261,6 +263,40 @@ class ExistingUserAcceptance:
     """Consume-token outcome for a known user with an active session."""
 
     card: AcceptanceCard
+
+
+@dataclass(frozen=True, slots=True)
+class InviteIntrospection:
+    """Returned by :func:`introspect_invite` — read-only invite preview.
+
+    Carries everything the SPA's AcceptInvitePage needs to render an
+    informed Accept card before the user clicks Accept: who invited
+    them, what workspace they're joining, what grants will activate,
+    when the invite expires. ``kind`` mirrors the discriminator on
+    :func:`consume_invite_token`'s return so the SPA can branch the
+    same way (new-user → passkey ceremony, existing-user → Accept
+    card).
+
+    The shape matches :class:`AcceptanceCard` for the workspace-side
+    fields (so the SPA can keep one renderer) but adds the inviter's
+    display name + the invitee's email so the page can confirm "you,
+    <email>, were invited by <inviter> to <workspace>".
+
+    Read-only: this preview is generated without burning the
+    underlying magic-link nonce. The same ``token`` remains
+    redeemable on a subsequent ``POST /invites/{token}/accept``.
+    """
+
+    kind: str
+    invite_id: str
+    workspace_id: str
+    workspace_slug: str
+    workspace_name: str
+    inviter_display_name: str
+    email_lower: str
+    expires_at: datetime
+    grants: list[dict[str, Any]]
+    permission_group_memberships: list[dict[str, Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -766,6 +802,166 @@ def _send_invite_email(
         ttl_hours="24",
     )
     mailer.send(to=[to_email], subject=subject, body_text=body_text)
+
+
+# ---------------------------------------------------------------------------
+# introspect_invite (bare host, read-only)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_inviter_display_name(session: DbSession, *, user_id: str | None) -> str:
+    """Return the inviter's display name, or an empty string if absent.
+
+    The :class:`Invite.invited_by_user_id` FK can technically be
+    ``None`` (e.g. a system-issued invite, future); in that case the
+    UI falls back to "(system)" without us baking that copy into the
+    domain layer. ``user`` is identity-scoped so the lookup runs
+    under :func:`tenant_agnostic`.
+    """
+    if user_id is None:
+        return ""
+    with tenant_agnostic():
+        row = session.get(User, user_id)
+    return row.display_name if row is not None else ""
+
+
+def introspect_invite(
+    session: DbSession,
+    *,
+    token: str,
+    ip: str,
+    throttle: Throttle,
+    settings: Settings | None = None,
+    active_user_id: str | None = None,
+    now: datetime | None = None,
+    clock: Clock | None = None,
+) -> InviteIntrospection:
+    """Read-only preview of an invite — does NOT burn the magic-link nonce.
+
+    Mirrors :func:`consume_invite_token`'s validation surface but
+    delegates to :func:`app.auth.magic_link.peek_link` so the
+    underlying nonce stays redeemable. Returns enough data for the
+    SPA's AcceptInvitePage to render an informed Accept card before
+    the user clicks Accept (inviter, workspace, grants, expiry).
+
+    Branch decision (``kind``) matches
+    :func:`consume_invite_token`: a user with at least one
+    registered passkey is "existing_user"; otherwise "new_user".
+    Unlike consume, this function does **not** raise
+    :class:`PasskeySessionRequired` — introspect is decoupled from
+    session state by design (the SPA needs the preview to render
+    *before* the user signs in). ``active_user_id`` is reserved for
+    a future "show 'you are signed in as X' hint" affordance and
+    documented here so callers can pass it without re-plumbing.
+
+    Throttle: same bucket as accept (consume) — peeks count toward
+    the 3-fails / 60s → 10-minute lockout, so an attacker cannot
+    burn through more peeks than consumes against a given IP.
+
+    Audit: none. The preview is read-only; the actual accept owns
+    the audit row.
+
+    Raises:
+
+    * :class:`~app.auth.magic_link.InvalidToken` — signature failed
+      / payload malformed.
+    * :class:`~app.auth.magic_link.PurposeMismatch` — token purpose
+      != ``"grant_invite"``.
+    * :class:`~app.auth.magic_link.TokenExpired` — token / row
+      lapsed.
+    * :class:`~app.auth.magic_link.AlreadyConsumed` — the underlying
+      nonce was already redeemed (the user already clicked Accept).
+    * :class:`~app.auth.magic_link.ConsumeLockout` — IP locked out.
+    * :class:`InviteNotFound` — token's subject doesn't match any
+      invite row.
+    * :class:`InviteStateInvalid` — invite is revoked / corrupted.
+    * :class:`InviteAlreadyAccepted` — invite row was already
+      accepted (separate from token-already-consumed because the
+      DB state can diverge from the nonce state under partial
+      failure).
+    * :class:`InviteExpired` — invite row's ``expires_at`` has
+      passed.
+
+    The router is responsible for collapsing the token-validity
+    family onto a 404 ``invite_not_found`` so existence does not
+    leak across the bare-host surface; the domain still raises
+    typed exceptions so a CLI / scripted caller can branch.
+    """
+    # ``active_user_id`` is reserved — see docstring. The peek does
+    # not branch on it (introspect is session-agnostic), but keeping
+    # it in the signature lets future "you are signed in as <user>"
+    # affordances ride through without breaking callers.
+    del active_user_id
+
+    resolved_now = now if now is not None else _now(clock)
+
+    outcome = magic_link.peek_link(
+        session,
+        token=token,
+        expected_purpose="grant_invite",
+        ip=ip,
+        now=resolved_now,
+        throttle=throttle,
+        settings=settings,
+        clock=clock,
+    )
+    invite_id = outcome.subject_id
+
+    with tenant_agnostic():
+        invite_row = session.get(Invite, invite_id)
+    if invite_row is None:
+        raise InviteNotFound(invite_id)
+
+    if invite_row.state == "accepted":
+        raise InviteAlreadyAccepted(invite_id)
+    if invite_row.state in ("revoked", "expired"):
+        raise InviteStateInvalid(
+            f"invite {invite_id!r} is in state {invite_row.state!r}"
+        )
+    if _aware_utc(invite_row.expires_at) <= resolved_now:
+        raise InviteExpired(f"invite {invite_id!r} expired")
+
+    user_id = invite_row.user_id
+    if user_id is None:
+        raise InviteStateInvalid(f"invite {invite_id!r} has no linked user_id")
+
+    with tenant_agnostic():
+        workspace = session.get(Workspace, invite_row.workspace_id)
+    if workspace is None:
+        raise InviteStateInvalid(
+            f"invite {invite_id!r}: workspace {invite_row.workspace_id!r} missing"
+        )
+
+    # Branch on passkey-presence — same predicate as consume so the
+    # SPA's preview kind exactly matches what consume_invite_token
+    # would return on the subsequent POST. A user who has at least one
+    # passkey on file is "existing_user" (Accept card path); otherwise
+    # "new_user" (passkey enrol ceremony path).
+    has_passkey = _user_has_passkey(session, user_id=user_id)
+    kind = "existing_user" if has_passkey else "new_user"
+
+    inviter_display_name = _resolve_inviter_display_name(
+        session, user_id=invite_row.invited_by_user_id
+    )
+
+    with tenant_agnostic():
+        invitee = session.get(User, user_id)
+    email_lower = (
+        invitee.email_lower if invitee is not None else invite_row.pending_email_lower
+    )
+
+    return InviteIntrospection(
+        kind=kind,
+        invite_id=invite_id,
+        workspace_id=invite_row.workspace_id,
+        workspace_slug=workspace.slug,
+        workspace_name=workspace.name,
+        inviter_display_name=inviter_display_name,
+        email_lower=email_lower,
+        expires_at=_aware_utc(invite_row.expires_at),
+        grants=list(invite_row.grants_json),
+        permission_group_memberships=list(invite_row.group_memberships_json),
+    )
 
 
 # ---------------------------------------------------------------------------

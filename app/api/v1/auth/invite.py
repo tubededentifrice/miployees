@@ -1,32 +1,59 @@
 """Invite-accept HTTP router (bare host).
 
 Bare-host routes, tenant-agnostic at entry — the invite token carries
-the target workspace via its ``subject_id``. The router branches on
-invite shape:
+the target workspace via its ``subject_id``. Two router factories live
+here side-by-side:
 
-* ``POST /invite/accept`` ``{token}`` — redeems the magic link and
-  returns either a ``NewUserAcceptance`` (brand-new invitee — the
-  SPA forwards to the passkey ceremony, which on finish calls
+* :func:`build_invites_router` (plural ``/invites/``, **the spec**) —
+  spec §12 §"Auth" pins ``GET /api/v1/invites/{token}`` for
+  pre-accept introspection plus ``POST /api/v1/invites/{token}/accept``
+  with the token in the URL. Every new SPA flow targets this shape.
+* :func:`build_invite_router` (singular ``/invite/``, **legacy**) —
+  the original Phase-0 SPA shape: ``POST /invite/accept`` with the
+  token in the body, plus ``/invite/{invite_id}/confirm`` and
+  ``/invite/complete``. Kept alive verbatim during the cutover (see
+  cd-z6vm) so the in-flight SPA build does not break; **deprecated**
+  for new callers and slated for removal once the SPA cuts over.
+
+The router branches on invite shape:
+
+* ``POST /invites/{token}/accept`` (or legacy ``POST /invite/accept``
+  ``{token}``) — redeems the magic link and returns either a
+  ``NewUserAcceptance`` (brand-new invitee — the SPA forwards to the
+  passkey ceremony, which on finish calls
   :func:`app.domain.identity.membership.complete_invite` via
   :mod:`app.api.v1.auth.passkey`) or an ``ExistingUserAcceptance``
   (known user with an active session — the SPA renders the
   acceptance card).
-* ``POST /invite/{invite_id}/confirm`` — existing-user second leg:
-  confirms the pending invite activation.
-* ``POST /invite/complete`` — new-user second leg (post passkey-
-  finish hook). Today :func:`app.auth.passkey.register_finish_signup`
-  does not carry invite awareness; the SPA posts here with the
-  ``invite_id`` it kept from the ``/invite/accept`` response once
-  the passkey ceremony completes. A later consolidation (cd-kd26)
-  folds this into the passkey-finish callback.
+* ``GET /invites/{token}`` — read-only introspect; returns the same
+  preview the SPA needs to render an Accept card before the user
+  clicks Accept (inviter, workspace, grants, expiry, ``kind``).
+  Does NOT burn the underlying magic-link nonce.
+* ``POST /invite/{invite_id}/confirm`` — existing-user second leg
+  (legacy router): confirms the pending invite activation.
+* ``POST /invite/complete`` — new-user second leg (legacy router,
+  post passkey-finish hook). Today
+  :func:`app.auth.passkey.register_finish_signup` does not carry
+  invite awareness; the SPA posts here with the ``invite_id`` it
+  kept from the ``/invite/accept`` response once the passkey
+  ceremony completes. A later consolidation (cd-kd26) folds this
+  into the passkey-finish callback.
 
-See ``docs/specs/03-auth-and-tokens.md`` §"Additional users".
+Existence-leak guard: on the plural surface, every token-validity
+error (invalid signature, expired, already consumed) collapses onto
+``404 invite_not_found`` so an attacker cannot use the introspect
+endpoint as a token-validity oracle. The legacy singular surface
+preserves its richer error vocabulary for back-compat.
+
+See ``docs/specs/03-auth-and-tokens.md`` §"Additional users" and
+``docs/specs/12-rest-api.md`` §"Auth".
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any
+from datetime import datetime
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -51,7 +78,9 @@ __all__ = [
     "AcceptResponse",
     "CompleteRequest",
     "ConfirmResponse",
+    "InviteIntrospectionResponse",
     "build_invite_router",
+    "build_invites_router",
 ]
 
 
@@ -112,6 +141,42 @@ class CompleteRequest(BaseModel):
     """
 
     invite_id: str = Field(..., min_length=1)
+
+
+class InviteIntrospectionResponse(BaseModel):
+    """Response body for ``GET /api/v1/invites/{token}``.
+
+    Read-only preview of an invite — the SPA renders this on the
+    AcceptInvitePage before the user clicks Accept so they see what
+    they are joining and who invited them. Mirrors
+    :class:`~app.domain.identity.membership.InviteIntrospection`;
+    the boundary type stays here so the OpenAPI schema is owned by
+    the router.
+
+    The ``kind`` field branches on passkey-presence the same way
+    :class:`AcceptResponse` does — ``"new_user"`` for an invitee
+    with no passkey on file (the subsequent accept will return a
+    :class:`~app.domain.identity.membership.NewUserAcceptance`),
+    ``"existing_user"`` otherwise.
+    """
+
+    kind: str = Field(
+        ...,
+        description=(
+            "'new_user' → the subsequent accept will start a "
+            "passkey ceremony; 'existing_user' → it will render "
+            "the acceptance card."
+        ),
+    )
+    invite_id: str
+    workspace_id: str
+    workspace_slug: str
+    workspace_name: str
+    inviter_display_name: str
+    email_lower: str
+    expires_at: datetime
+    grants: list[dict[str, Any]]
+    permission_group_memberships: list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -423,5 +488,205 @@ def build_invite_router(
             ws = session.scalar(select(Workspace).where(Workspace.id == workspace_id))
         redirect = f"/w/{ws.slug}/today" if ws is not None else "/"
         return ConfirmResponse(workspace_id=workspace_id, redirect=redirect)
+
+    return router
+
+
+# ---------------------------------------------------------------------------
+# Plural router (spec-aligned, path-carried token)
+# ---------------------------------------------------------------------------
+
+
+# Existence-leak guard: every token-validity error on the plural surface
+# collapses onto 404 ``invite_not_found``. Distinct from the singular
+# ``_http_for_token`` (which exposes 400 invalid_token / 410 expired /
+# 409 already_consumed for the existing SPA back-compat) — see module
+# docstring.
+_INVITES_NOT_FOUND_DETAIL: Final[dict[str, str]] = {"error": "invite_not_found"}
+
+
+def _http_for_invites_token(exc: Exception) -> HTTPException:
+    """Map magic-link errors onto 404 ``invite_not_found`` for the plural surface.
+
+    On the plural ``/invites/{token}`` surface every token-validity
+    error (invalid signature, expired, already consumed, purpose
+    mismatch) is collapsed onto a single 404 so the introspect
+    endpoint cannot be used as a token-validity oracle.
+
+    :class:`~app.auth.magic_link.ConsumeLockout` and
+    :class:`~app.auth.magic_link.RateLimited` keep their 429 mapping
+    — those signal abuse-mitigation activity, not invite existence,
+    and the SPA needs to render a "try later" hint.
+    """
+    if isinstance(exc, ConsumeLockout):
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "consume_locked_out"},
+        )
+    if isinstance(exc, RateLimited):
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "rate_limited"},
+        )
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=dict(_INVITES_NOT_FOUND_DETAIL),
+    )
+
+
+def _http_for_invites_invite(exc: Exception) -> HTTPException:
+    """Map :mod:`membership` errors onto 404 for the plural surface.
+
+    Same existence-leak guard as :func:`_http_for_invites_token`:
+    every invite-row branch (not found, expired, already accepted,
+    state invalid) flattens to 404 so the introspect endpoint does
+    not leak whether the row exists.
+
+    :class:`~app.domain.identity.membership.PasskeySessionRequired`
+    is **not** raised by introspect (read-only). On the accept leg we
+    keep the 401 mapping so the SPA's existing 401-redirect behaviour
+    works against the plural endpoint too.
+    """
+    if isinstance(exc, membership.PasskeySessionRequired):
+        return HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "passkey_session_required"},
+        )
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=dict(_INVITES_NOT_FOUND_DETAIL),
+    )
+
+
+def build_invites_router(
+    *,
+    throttle: Throttle,
+    settings: Settings | None = None,
+) -> APIRouter:
+    """Return a fresh :class:`APIRouter` for the spec-aligned plural shape.
+
+    Mounts ``GET /invites/{token}`` (introspect) +
+    ``POST /invites/{token}/accept`` (accept with token in path) at
+    ``/api/v1`` so the final paths are
+    ``/api/v1/invites/{token}`` and
+    ``/api/v1/invites/{token}/accept`` (spec §12 §"Auth").
+
+    Shares the throttle instance with :func:`build_invite_router` —
+    the factory passes the same :class:`Throttle` to both so brute-
+    force protection counts peeks + accepts in one bucket.
+    """
+    router = APIRouter(
+        prefix="/invites",
+        tags=["identity", "auth", "invite"],
+    )
+    cfg = settings if settings is not None else get_settings()
+
+    @router.get(
+        "/{token}",
+        response_model=InviteIntrospectionResponse,
+        operation_id="auth.invites.introspect",
+        summary="Introspect an invite (read-only preview)",
+    )
+    def get_introspect(
+        token: str,
+        request: Request,
+        session: _Db,
+        crewday_session: Annotated[
+            str | None, Cookie(alias=auth_session.SESSION_COOKIE_NAME)
+        ] = None,
+    ) -> InviteIntrospectionResponse:
+        """Return the Accept-card preview without burning the nonce."""
+        active_user_id = _resolve_active_user_id(
+            session,
+            cookie_value=crewday_session,
+            ua=request.headers.get("user-agent", ""),
+            accept_language=request.headers.get("accept-language", ""),
+        )
+        try:
+            preview = membership.introspect_invite(
+                session,
+                token=token,
+                ip=_client_ip(request),
+                throttle=throttle,
+                settings=cfg,
+                active_user_id=active_user_id,
+            )
+        except _TokenDomainError as exc:
+            raise _http_for_invites_token(exc) from exc
+        except _InviteDomainError as exc:
+            raise _http_for_invites_invite(exc) from exc
+
+        return InviteIntrospectionResponse(
+            kind=preview.kind,
+            invite_id=preview.invite_id,
+            workspace_id=preview.workspace_id,
+            workspace_slug=preview.workspace_slug,
+            workspace_name=preview.workspace_name,
+            inviter_display_name=preview.inviter_display_name,
+            email_lower=preview.email_lower,
+            expires_at=preview.expires_at,
+            grants=preview.grants,
+            permission_group_memberships=preview.permission_group_memberships,
+        )
+
+    @router.post(
+        "/{token}/accept",
+        response_model=AcceptResponse,
+        operation_id="auth.invites.accept",
+        summary="Redeem the invite magic link (token in path)",
+    )
+    def post_accept(
+        token: str,
+        request: Request,
+        session: _Db,
+        crewday_session: Annotated[
+            str | None, Cookie(alias=auth_session.SESSION_COOKIE_NAME)
+        ] = None,
+    ) -> AcceptResponse:
+        """Same as legacy ``POST /invite/accept`` but with token in path."""
+        active_user_id = _resolve_active_user_id(
+            session,
+            cookie_value=crewday_session,
+            ua=request.headers.get("user-agent", ""),
+            accept_language=request.headers.get("accept-language", ""),
+        )
+        try:
+            outcome = membership.consume_invite_token(
+                session,
+                token=token,
+                ip=_client_ip(request),
+                throttle=throttle,
+                settings=cfg,
+                active_user_id=active_user_id,
+            )
+        except membership.PasskeySessionRequired as exc:
+            # Same shape as the legacy router — see post_accept on
+            # build_invite_router for the rationale.
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": "passkey_session_required"},
+            ) from exc
+        except _TokenDomainError as exc:
+            raise _http_for_invites_token(exc) from exc
+        except _InviteDomainError as exc:
+            raise _http_for_invites_invite(exc) from exc
+
+        if isinstance(outcome, membership.NewUserAcceptance):
+            return AcceptResponse(
+                kind="new_user",
+                invite_id=outcome.session.invite_id,
+                user_id=outcome.session.user_id,
+                email_lower=outcome.session.email_lower,
+                display_name=outcome.session.display_name,
+            )
+        return AcceptResponse(
+            kind="existing_user",
+            invite_id=outcome.card.invite_id,
+            workspace_id=outcome.card.workspace_id,
+            workspace_slug=outcome.card.workspace_slug,
+            workspace_name=outcome.card.workspace_name,
+            grants=outcome.card.grants,
+            permission_group_memberships=outcome.card.group_memberships,
+        )
 
     return router

@@ -420,8 +420,25 @@ def _mount_auth_routers(
     # operator mailed out-of-band is still valid in an SMTP-less
     # deployment. Keep this mount unconditional so the SPA's
     # ``/invite/...`` flow survives ``CREWDAY_SMTP_HOST`` being unset.
+    #
+    # Two routers, one throttle bucket: the legacy singular shape
+    # (``/invite/accept`` with token in body, plus ``/{invite_id}/confirm``
+    # + ``/complete``) stays alive for SPA back-compat per cd-z6vm,
+    # and the spec-aligned plural shape (``/invites/{token}`` GET
+    # introspect + ``POST /invites/{token}/accept``) lands alongside.
+    # Sharing ``throttle`` means brute-force attempts hit the same
+    # consume-failure lockout regardless of which surface they probe.
+    # The legacy router is deprecated for new callers and slated for
+    # removal once the SPA cuts over.
     app.include_router(
         invite_module.build_invite_router(
+            throttle=throttle,
+            settings=settings,
+        ),
+        prefix=bare_prefix,
+    )
+    app.include_router(
+        invite_module.build_invites_router(
             throttle=throttle,
             settings=settings,
         ),

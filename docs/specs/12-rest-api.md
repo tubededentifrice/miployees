@@ -370,8 +370,14 @@ POST   /api/v1/auth/email/revert                 # body: {token}; 72h revert lin
 # Click-to-accept invite (§03 "Additional users (invite)"). Identity-
 # scoped; same token lands new users in a passkey ceremony and existing
 # users on an Accept card. Rejected unless the token's purpose == 'accept'.
+# Token-validity errors (invalid signature, expired, already consumed)
+# all flatten to 404 ``invite_not_found`` so the introspect endpoint
+# cannot be used as a token-validity oracle.
 GET    /api/v1/invites/{token}                   # introspect the invite (grants, inviter, expiry) pre-accept
 POST   /api/v1/invites/{token}/accept            # activate the pending grants atomically
+# DEPRECATED: legacy singular shape — token in body, kept alive during
+# the SPA cutover only. New callers MUST target /api/v1/invites/{token}.
+POST   /api/v1/invite/accept                     # body: {token}; superseded by POST /invites/{token}/accept (cd-z6vm)
 
 # Personal access tokens (§03 "Personal access tokens"). Identity-
 # scoped, passkey-session only, `me:*` scopes only, subject is always

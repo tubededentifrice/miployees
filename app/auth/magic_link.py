@@ -123,6 +123,7 @@ __all__ = [
     "Throttle",
     "TokenExpired",
     "consume_link",
+    "peek_link",
     "reason_for_exception",
     "request_link",
     "write_rejected_audit",
@@ -669,6 +670,110 @@ def _send_link_email(
         ttl_minutes=str(ttl_minutes),
     )
     mailer.send(to=[to_email], subject=subject, body_text=body_text)
+
+
+# ---------------------------------------------------------------------------
+# Public surface — peek (read-only preview)
+# ---------------------------------------------------------------------------
+
+
+def peek_link(
+    session: Session,
+    *,
+    token: str,
+    expected_purpose: MagicLinkPurpose,
+    ip: str,
+    now: datetime | None = None,
+    throttle: Throttle,
+    settings: Settings | None = None,
+    clock: Clock | None = None,
+) -> MagicLinkOutcome:
+    """Validate ``token`` without burning the nonce — read-only preview.
+
+    Mirrors :func:`consume_link`'s validation surface (signature,
+    payload shape, ``exp`` check, persisted-TTL check, purpose match,
+    already-consumed check) but **never** flips the nonce row's
+    ``consumed_at``. Used by introspect-style endpoints that want to
+    render an Accept card before the user clicks Accept — the actual
+    consume happens on the subsequent POST.
+
+    Same throttle bucket as :func:`consume_link` — both call
+    :meth:`Throttle.check_consume_allowed` as a pre-flight gate, so
+    a locked-out IP cannot peek either. Failure-recording stays the
+    router's job (matches the consume path's wiring); peek + accept
+    both ride the same 3-fails / 60s → 10-minute IP lockout because
+    they share the throttle instance.
+
+    Raises:
+
+    * :class:`ConsumeLockout` — IP locked out (pre-flight, no DB).
+    * :class:`InvalidToken` — signature failed, payload malformed.
+    * :class:`PurposeMismatch` — token purpose != ``expected_purpose``.
+    * :class:`TokenExpired` — ``exp`` claim or persisted TTL lapsed.
+    * :class:`AlreadyConsumed` — the nonce row's ``consumed_at`` is
+      already set (i.e. the token was already redeemed). Distinct
+      from the consume race because peek itself never flips the row;
+      this branch only fires if a sibling :func:`consume_link` call
+      previously won.
+
+    Returns the same :class:`MagicLinkOutcome` shape as
+    :func:`consume_link` so a caller that wants to inspect the
+    subject_id without committing can stay symmetric. Does **not**
+    write an audit row — peek is read-only and audit is the
+    consume's job.
+    """
+    if expected_purpose not in _VALID_PURPOSES:
+        raise InvalidToken(f"unknown magic-link purpose: {expected_purpose!r}")
+
+    resolved_now = now if now is not None else _now(clock)
+
+    # Same pre-flight lockout as consume — a locked-out IP cannot
+    # introspect either (otherwise the introspect path becomes a
+    # token-validity oracle for an attacker the lockout was supposed
+    # to silence).
+    throttle.check_consume_allowed(ip=ip, now=resolved_now)
+
+    payload = _unseal(_serializer(settings), token=token, now=resolved_now)
+    payload_purpose = payload["purpose"]
+    if not isinstance(payload_purpose, str):
+        raise InvalidToken("token payload 'purpose' is not a string")
+    if payload_purpose != expected_purpose:
+        raise PurposeMismatch(
+            f"token purpose {payload_purpose!r} != expected {expected_purpose!r}"
+        )
+    jti = payload["jti"]
+    subject_id = payload["subject_id"]
+    if not isinstance(jti, str) or not isinstance(subject_id, str):
+        raise InvalidToken("token payload 'jti' / 'subject_id' must be strings")
+
+    # justification: magic_link_nonce is identity-scoped.
+    with tenant_agnostic():
+        row = session.get(MagicLinkNonce, jti)
+    if row is None:
+        # No nonce row for this jti — either a forged token (signature
+        # check passed, but no row was ever inserted) or a sweeper
+        # purged it. We collapse onto :class:`AlreadyConsumed` so the
+        # router can map both "spent" and "never existed" to the same
+        # 404 ``invite_not_found`` without a per-branch leak.
+        raise AlreadyConsumed(f"nonce {jti!r} unknown or already swept")
+
+    _check_row_expiry(row, now=resolved_now)
+
+    if row.consumed_at is not None:
+        raise AlreadyConsumed(f"nonce {jti!r} already consumed")
+
+    if row.purpose != payload_purpose:
+        # Token and row disagree — same defensive branch as consume.
+        raise InvalidToken("nonce / token purpose disagree")
+    if row.subject_id != subject_id:
+        raise InvalidToken("nonce / token subject disagree")
+
+    return MagicLinkOutcome(
+        purpose=row.purpose,
+        subject_id=row.subject_id,
+        email_hash=row.created_email_hash,
+        ip_hash=row.created_ip_hash,
+    )
 
 
 # ---------------------------------------------------------------------------
