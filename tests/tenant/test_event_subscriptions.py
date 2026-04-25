@@ -98,21 +98,46 @@ def _sentinel_value_for(field_name: str, annotation: object) -> object:
     """Return a minimal sentinel value matching the field's annotation.
 
     Today's events carry a mix of ``str`` payload fields (task ids,
-    user ids, action enums), short ``int`` counters, and a handful
-    of :class:`~datetime.datetime` fields (``overdue_since``,
-    ``arrives_at``, ``ended_at``). A small set of string fields also
-    carry a publish-time validator (``reason`` on
+    user ids), short ``int`` counters, ``bool`` flags
+    (``had_edits``), :class:`~datetime.datetime` fields
+    (``overdue_since``, ``arrives_at``, ``ended_at``), a handful of
+    :data:`~typing.Literal` enums (``action`` / ``kind`` /
+    ``reimbursed_via``), one ``list[str]`` field
+    (``mentioned_user_ids``), and a small set of free-text strings
+    guarded by a publish-time validator (``reason`` on
     :class:`~app.events.types.TaskUnassigned` /
     :class:`~app.events.types.TaskSkipped` /
-    :class:`~app.events.types.TaskCancelled`) that rejects free text
-    — a ULID sentinel would fail the identifier-shape regex.
+    :class:`~app.events.types.TaskCancelled`).
 
-    An unknown annotation falls back to a ULID-shaped string so the
-    test keeps the assertion alive even against a newly-added event
-    kind — the regression is what we're guarding. A new validator-
-    constrained string field added without a case here surfaces as
-    a :class:`ValidationError` in the parametrised test above; add
-    a branch.
+    Branch dispatch is layered: **annotation-based first** for types
+    where any value of that type is acceptable (``datetime``, ``int``,
+    ``bool``); **field-name-based next** for fields where the
+    annotation alone is too coarse (``Literal[...]`` enums need a
+    member of the enum, regex-validated strings need an
+    identifier-shaped value). An unknown annotation falls back to a
+    ULID-shaped string so a newly-registered event with an extra
+    ``*_id`` field is covered without code changes.
+
+    **Maintenance pattern when adding a new event field.** Run the
+    parametrised test (``pytest
+    tests/tenant/test_event_subscriptions.py``); a missing case
+    surfaces as a :class:`pydantic.ValidationError` on the
+    ``[<event_name>]`` parametrisation. Then:
+
+    * a plain ``str`` ``*_id`` payload field needs no change — the
+      ULID fallback covers it;
+    * a constrained scalar (``int``, ``bool``, ``datetime``) needs
+      an ``annotation is …`` branch above the field-name section;
+    * a ``Literal[...]`` enum or regex-validated string needs a
+      ``field_name == …`` branch above the ULID fallback, returning
+      a member that satisfies the constraint;
+    * a new collection / nested model needs its own branch — the
+      ULID fallback won't satisfy ``list[...]`` / submodel parsers.
+
+    Each branch carries the publishing event class in its comment so
+    the next coder can verify the chosen sentinel matches the
+    domain's "common shape" (e.g. ``had_edits=False`` matches the
+    no-edit branch in :mod:`app.domain.expenses.approval`).
     """
     # datetime first — some payload datetimes (``overdue_since``,
     # ``arrives_at``, ``ended_at``) enforce timezone-aware UTC.
@@ -125,6 +150,12 @@ def _sentinel_value_for(field_name: str, annotation: object) -> object:
     # value for this event — "the pool was empty too").
     if annotation is int:
         return 0
+    # Boolean payload fields (``had_edits`` on :class:`ExpenseApproved`).
+    # ``False`` is the canonical "nothing changed" shape and matches
+    # the no-edit branch of the approval flow that publishes the
+    # event in :mod:`app.domain.expenses.approval`.
+    if annotation is bool:
+        return False
     # ``reason`` on :class:`TaskUnassigned` / :class:`TaskSkipped` /
     # :class:`TaskCancelled` is guarded by ``_REASON_CODE_RE``
     # (``^[a-z][a-z0-9_]{0,63}$``) — a ULID sentinel fails the regex.
@@ -139,10 +170,18 @@ def _sentinel_value_for(field_name: str, annotation: object) -> object:
     if field_name == "action":
         return "opened"
     # ``kind`` on :class:`TaskCommentAdded` is a three-value
-    # :data:`~typing.Literal`; a ULID sentinel would fail the
-    # Pydantic literal check. ``"user"`` is the common shape.
+    # :data:`~typing.Literal["user", "agent", "system"]`; a ULID
+    # sentinel would fail the Pydantic literal check. ``"user"`` is
+    # the common shape and also satisfies the unconstrained
+    # ``kind: str`` field on :class:`NotificationCreated` — both
+    # events share this branch.
     if field_name == "kind":
         return "user"
+    # ``reimbursed_via`` on :class:`ExpenseReimbursed` is a four-value
+    # :data:`~typing.Literal` (``cash`` / ``bank`` / ``card`` /
+    # ``other``); ``"cash"`` is the common payment-channel shape.
+    if field_name == "reimbursed_via":
+        return "cash"
     # List-valued payload fields on events registered today
     # (``mentioned_user_ids`` on :class:`TaskCommentAdded`). An empty
     # list keeps the cross-tenant routing assertion alive without
