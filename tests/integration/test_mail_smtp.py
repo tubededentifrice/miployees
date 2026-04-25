@@ -17,89 +17,23 @@ See ``docs/specs/10-messaging-notifications.md`` and
 
 from __future__ import annotations
 
-import json
-import time
-import urllib.error
-import urllib.request
 from collections.abc import Iterator
-from typing import Any
 
 import pytest
 
 from app.adapters.mail.smtp import SMTPMailer
+from tests.integration.mail import (
+    fetch_headers,
+    fetch_message_detail,
+    wait_for_http,
+    wait_for_message,
+)
 
 pytestmark = pytest.mark.integration
 
 _MAILPIT_IMAGE = "axllent/mailpit:latest"
 _SMTP_PORT = 1025
 _HTTP_PORT = 8025
-
-
-def _fetch_messages(api_url: str) -> list[dict[str, Any]]:
-    """Return the ``messages`` array from Mailpit's ``/api/v1/messages``.
-
-    Mailpit's JSON shape — ``{"total": N, "messages": [...]}`` — is
-    documented and stable; the runtime ``isinstance`` guard keeps mypy
-    honest without pretending we know more than we do about
-    third-party JSON.
-    """
-    with urllib.request.urlopen(f"{api_url}/api/v1/messages", timeout=5) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise AssertionError(f"Mailpit returned non-object payload: {payload!r}")
-    messages = payload.get("messages", [])
-    if not isinstance(messages, list):
-        raise AssertionError(f"Mailpit 'messages' is not a list: {messages!r}")
-    return [item for item in messages if isinstance(item, dict)]
-
-
-def _fetch_headers(api_url: str, internal_id: str) -> dict[str, list[str]]:
-    """Return Mailpit's per-message header map (``/api/v1/message/{id}/headers``).
-
-    Mailpit normalises header keys to ``Canonical-Case`` and yields
-    each header's values as a list of strings — exactly the shape the
-    caller wants for ``Reply-To`` / ``X-…`` assertions.
-    """
-    with urllib.request.urlopen(
-        f"{api_url}/api/v1/message/{internal_id}/headers", timeout=5
-    ) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise AssertionError(f"Mailpit headers payload is not a dict: {payload!r}")
-    out: dict[str, list[str]] = {}
-    for key, value in payload.items():
-        if not isinstance(key, str) or not isinstance(value, list):
-            continue
-        str_values = [v for v in value if isinstance(v, str)]
-        out[key] = str_values
-    return out
-
-
-def _wait_for_message(
-    api_url: str,
-    *,
-    message_id: str,
-    deadline_s: float = 10.0,
-) -> dict[str, Any]:
-    """Poll Mailpit until the envelope with ``message_id`` arrives, then return it.
-
-    We key on each stored envelope's top-level ``MessageID`` field
-    (the angle-brackets-stripped form Mailpit surfaces in its list
-    endpoint) so the assertion is tied to *this* test's send — a
-    future caller adding a second send in the same module doesn't
-    accidentally assert against the wrong envelope.
-    """
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        items = _fetch_messages(api_url)
-        for item in items:
-            if item.get("MessageID") == message_id:
-                return item
-        time.sleep(0.2)
-    raise AssertionError(
-        f"Mailpit at {api_url} never received the expected message "
-        f"({message_id!r}) within {deadline_s}s"
-    )
 
 
 @pytest.fixture(scope="module")
@@ -141,29 +75,11 @@ def mailpit_container() -> Iterator[tuple[str, int, str]]:
         # Wait for the HTTP API to answer — the container is up well
         # before Mailpit finishes binding its listeners, and urlopen
         # against a not-yet-open port throws :class:`ConnectionRefusedError`.
-        _wait_for_http(api_url, deadline_s=15.0)
+        wait_for_http(api_url, deadline_s=15.0)
 
         yield host, smtp_port, api_url
     finally:
         container.stop()
-
-
-def _wait_for_http(base_url: str, *, deadline_s: float) -> None:
-    """Poll Mailpit's ``/livez`` until it returns 2xx or we time out."""
-    end = time.monotonic() + deadline_s
-    last_exc: BaseException | None = None
-    while time.monotonic() < end:
-        try:
-            with urllib.request.urlopen(f"{base_url}/livez", timeout=2) as resp:
-                if 200 <= resp.status < 300:
-                    return
-        except (urllib.error.URLError, ConnectionError, OSError) as exc:
-            last_exc = exc
-        time.sleep(0.2)
-    raise RuntimeError(
-        f"Mailpit HTTP API at {base_url} never came up in {deadline_s}s "
-        f"(last error: {last_exc!r})"
-    )
 
 
 def test_send_delivers_envelope_to_mailpit(
@@ -210,7 +126,7 @@ def test_send_delivers_envelope_to_mailpit(
     assert returned_id
     assert returned_id.endswith("@example.com")
 
-    stored = _wait_for_message(api_url, message_id=returned_id)
+    stored = wait_for_message(api_url, message_id=returned_id)
 
     # Mailpit's list endpoint exposes the envelope fields directly:
     # ``MessageID`` (no angle brackets), ``From``/``To`` as
@@ -229,7 +145,7 @@ def test_send_delivers_envelope_to_mailpit(
     # — note ``Message-Id`` (not the raw ``Message-ID`` we sent).
     internal_id = stored["ID"]
     assert isinstance(internal_id, str) and internal_id
-    headers = _fetch_headers(api_url, internal_id)
+    headers = fetch_headers(api_url, internal_id)
     assert headers["Subject"] == ["Hello from crew.day"]
     assert headers["From"] == ["crew.day <noreply@example.com>"]
     assert headers["To"] == ["alice@example.com"]
@@ -241,9 +157,6 @@ def test_send_delivers_envelope_to_mailpit(
     # the rendered text/html bodies on the message-detail endpoint.
     content_type = headers["Content-Type"][0]
     assert content_type.startswith("multipart/alternative")
-    with urllib.request.urlopen(
-        f"{api_url}/api/v1/message/{internal_id}", timeout=5
-    ) as resp:
-        detail = json.loads(resp.read().decode("utf-8"))
+    detail = fetch_message_detail(api_url, internal_id)
     assert "Plain-text body" in detail["Text"]
     assert "HTML body with" in detail["HTML"]
