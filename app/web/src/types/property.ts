@@ -14,10 +14,28 @@ export interface Property {
   evidence_policy: "inherit" | "require" | "optional" | "forbid";
   country: string;
   locale: string;
+  /**
+   * §05 per-property settings cascade override blob. Always a real
+   * mapping for owner / manager callers; cd-yjw5 masks it to `{}`
+   * for workers — the empty mapping is the SPA's "inherit workspace
+   * default" signal, so worker UIs must keep treating an empty
+   * `settings_override` as "no override" rather than synthesising
+   * one from a missing field.
+   */
   settings_override: Record<string, unknown>;
-  /** §22 — when set, the property is billed to that organization. */
+  /**
+   * §22 — when set, the property is billed to that organization.
+   * cd-yjw5 masks this to `null` for workers (it's a manager-only
+   * governance field). The type already permits `null` for the
+   * pre-§22 rows that legitimately have no client_org pinned, so
+   * the masking is a value change only — no type narrowing needed.
+   */
   client_org_id: string | null;
-  /** §22 — owner-of-record (a real human, not just a workspace). */
+  /**
+   * §22 — owner-of-record (a real human, not just a workspace).
+   * cd-yjw5 masks this to `null` for workers for the same reason
+   * as `client_org_id` above.
+   */
   owner_user_id: string | null;
 }
 

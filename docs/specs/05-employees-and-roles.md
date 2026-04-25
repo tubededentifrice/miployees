@@ -502,7 +502,7 @@ configuration.
 | `properties.create`                     | `workspace`                    | `owners, managers`            | —  | §04 |
 | `properties.archive`                    | `workspace`, `property`        | `owners, managers`            | ✅ | §04 |
 | `properties.edit`                       | `workspace`, `property`        | `owners, managers`            | —  | §04 |
-| `properties.read`                       | `workspace`                    | `owners, managers`            | —  | §12 — gates the workspace properties roster (`GET /properties`). Workers access property-pinned data via the property-scoped surfaces (`/tasks`, `/stays`, …); the cross-roster listing is manager-only because it surfaces governance-adjacent fields (`client_org_id`, `owner_user_id`, `settings_override`). |
+| `properties.read`                       | `workspace`                    | `owners, managers`            | —  | §12 — gates the **full** projection of the workspace properties roster (`GET /properties`): every field, including the §22 governance-adjacent `client_org_id` / `owner_user_id` and the per-property `settings_override` blob. The endpoint itself accepts every authenticated workspace member — workers fall through to a narrowed projection scoped to the properties they hold a `role_grant` on, with those three governance fields masked to `null` / `null` / `{}` (cd-yjw5). The cross-roster listing is no longer 403 for workers because the worker pages (`HistoryPage`, `NewTaskModal`, `SubmitExpenseForm`) need the name + city + timezone of properties they already see in property-pinned data; the masking keeps the privacy posture intact. |
 | `properties.view_access_codes`          | `workspace`, `property`        | `owners, managers`            | —  | §04 |
 | `work_roles.manage`                     | `workspace`                    | `owners, managers`            | —  | §05 |
 | `tasks.create`                          | `workspace`, `property`        | `owners, managers, all_workers` | — | §06 |
@@ -603,7 +603,20 @@ Notes:
 - `scope.view` appearing at `default_allow: owners, managers,
   all_workers, all_clients` is intentional — it means "every
   surface-entitled user may see the scope exists". RLS still
-  filters which rows they can read (§15).
+  filters which rows they can read (§15). Property-pinned
+  worker access works through the same lens via `role_grant`:
+  a `role_grant(grant_role='worker', scope_property_id=<P>)`
+  row gives the worker `scope.view` on property `P` (and on
+  every entity owned by it) without granting any
+  workspace-wide membership; conversely, a workspace-wide
+  worker grant (`scope_property_id IS NULL`) fans out across
+  every live property in the workspace. The `GET /properties`
+  roster (cd-yjw5, §12) consults this directly: workers see
+  the union of properties their grants visit, and the
+  governance-adjacent fields (`client_org_id`,
+  `owner_user_id`, `settings_override`) are masked to safe
+  defaults so the cross-roster listing never reveals the §22
+  billing-org / owner-of-record coupling to a worker.
 - Identity-scoped actions ("edit my own profile", "amend my own
   booking", "decline my own booking", "view my own payslip") are
   **not** listed as workspace-assignable action keys; they are

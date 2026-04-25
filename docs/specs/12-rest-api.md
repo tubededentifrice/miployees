@@ -654,31 +654,61 @@ deployment audit worth exposing.
 ### Properties / areas / stays
 
 ```
-GET    /properties                # workspace properties roster (cd-lzh1).
-                                   # Returns a bare `Property[]` JSON array
-                                   # — NOT the `{data, next_cursor, has_more}`
+GET    /properties                # properties visible to the caller
+                                   # (cd-lzh1, cd-yjw5). Returns a bare
+                                   # `Property[]` JSON array — NOT the
+                                   # `{data, next_cursor, has_more}`
                                    # envelope — because the SPA's manager
                                    # pages (SchedulesPage, PropertiesPage,
                                    # PropertyDetailPage, EmployeesPage)
+                                   # AND worker pages (HistoryPage,
+                                   # NewTaskModal, SubmitExpenseForm)
                                    # consume it as a flat list via
                                    # `fetchJson<Property[]>`. Pagination is
                                    # tracked as a separate follow-up that
                                    # pairs the envelope shape with an SPA
                                    # call-site migration. The `Property`
-                                   # projection joins `property ×
-                                   # property_workspace × area` and carries
+                                   # projection joins `property x
+                                   # property_workspace x area` and carries
                                    # the fields declared in
                                    # `app/web/src/types/property.ts` (id,
                                    # name, city, timezone, color, kind,
                                    # areas, evidence_policy, country,
                                    # locale, settings_override,
-                                   # client_org_id, owner_user_id). Gated
-                                   # by `properties.read` (manager+);
-                                   # workers fall through to 403.
+                                   # client_org_id, owner_user_id).
+                                   #
+                                   # Per-role projection (cd-yjw5). The
+                                   # endpoint accepts every authenticated
+                                   # workspace member; per-role narrowing +
+                                   # masking happens inside the handler:
+                                   #
+                                   #   * Owners + managers (`properties.read`
+                                   #     resolves allow): full workspace
+                                   #     roster, every field — including the
+                                   #     §22 governance-adjacent
+                                   #     `client_org_id` / `owner_user_id`
+                                   #     and the per-property
+                                   #     `settings_override` blob.
+                                   #   * Workers (`properties.read` resolves
+                                   #     deny): narrowed to the properties
+                                   #     they hold a `role_grant` on
+                                   #     (workspace-wide grant fans out
+                                   #     across every live property;
+                                   #     property-pinned grants stay narrow);
+                                   #     the three governance-adjacent
+                                   #     fields above mask to `null` /
+                                   #     `null` / `{}` regardless of the
+                                   #     stored row value. Worker pages
+                                   #     get name + city + timezone for
+                                   #     properties they already see in
+                                   #     property-pinned data, without
+                                   #     leaking the §22 billing-org /
+                                   #     owner-of-record coupling.
+                                   #
                                    # Workspace-scoped via the
                                    # `property_workspace` junction;
                                    # soft-deleted rows (`deleted_at IS NOT
-                                   # NULL`) are excluded.
+                                   # NULL`) are excluded for both branches.
 POST   /properties
 GET    /properties/{id}
 PATCH  /properties/{id}

@@ -478,16 +478,25 @@ _RULE_DRIVEN: tuple[ActionSpec, ...] = (
     ),
     ActionSpec(
         key="properties.read",
-        # cd-lzh1 — SPA properties roster endpoint. Manager-only
-        # (owners + managers) by analogy with ``employees.read``: the
-        # workspace-wide property roster is a manager view that
-        # surfaces governance-adjacent fields (``client_org_id`` /
-        # ``owner_user_id`` per §22, ``settings_override``) which
-        # workers should not enumerate. Property-pinned worker access
-        # to a specific property's data lives in the property-scoped
-        # surfaces (``/tasks``, ``/stays``, …) gated on their own
-        # property-scope rules; this read gates only the cross-roster
-        # listing.
+        # cd-lzh1, cd-yjw5 — SPA properties roster endpoint
+        # (``GET /properties``). Manager-only (owners + managers) by
+        # ``default_allow``: holding the action grants the **full**
+        # projection, including the §22 governance-adjacent fields
+        # (``client_org_id`` / ``owner_user_id``) and the per-property
+        # ``settings_override`` blob.
+        #
+        # The endpoint itself accepts every authenticated workspace
+        # member (no action-key gate — see ``app/api/v1/places.py``
+        # for why ``scope.view@workspace`` would be too narrow) and
+        # falls through to a worker-narrowed projection when
+        # ``properties.read`` resolves deny: only the properties the
+        # worker holds a ``role_grant`` on, with the three governance
+        # fields masked to safe defaults. Worker pages
+        # (``HistoryPage``, ``NewTaskModal``, ``SubmitExpenseForm``)
+        # need the name + city + timezone of properties they already
+        # see in property-pinned data; the cross-roster listing is the
+        # cheapest place to serve that without N+1
+        # ``/properties/{id}`` calls.
         valid_scope_kinds=("workspace",),
         default_allow=("owners", "managers"),
         root_only=False,

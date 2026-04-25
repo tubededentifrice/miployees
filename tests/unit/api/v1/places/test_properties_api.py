@@ -1,9 +1,13 @@
-"""HTTP-level tests for ``/properties`` (cd-lzh1).
+"""HTTP-level tests for ``/properties`` (cd-lzh1, cd-yjw5).
 
 Exercises the workspace properties roster endpoint:
 
-* manager / owner can list the roster (200, valid shape);
-* worker is rejected with 403 ``permission_denied``;
+* manager / owner can list the roster (200, valid shape) with the
+  full governance projection;
+* worker is no longer 403 (cd-yjw5) — they get a narrowed projection
+  scoped to the properties their ``role_grant`` rows visit, with
+  ``client_org_id`` / ``owner_user_id`` / ``settings_override``
+  masked to safe defaults;
 * cross-workspace bleed-through is impossible;
 * the projection joins :class:`Property`, :class:`PropertyWorkspace`,
   and :class:`Area` correctly (areas nested per property,
@@ -202,17 +206,26 @@ class TestAuthZ:
         resp = client.get("/properties")
         assert resp.status_code == 200, resp.text
 
-    def test_worker_403(
+    def test_worker_can_list_scoped_properties(
         self,
         worker_ctx: tuple[WorkspaceContext, sessionmaker[Session], str, str],
     ) -> None:
-        """Workers do not hold ``properties.read`` — must be 403."""
+        """cd-yjw5 — workers no longer 403; they list scope.view properties.
+
+        The ``worker_ctx`` fixture seeds a workspace-wide
+        ``RoleGrant(grant_role='worker', scope_property_id=None)`` so
+        the worker has scope.view on every live property in the
+        workspace by the §05 default fan-out. The endpoint must return
+        200 with the workspace's properties — not the pre-cd-yjw5 403.
+        """
         ctx, factory, ws_id, _ = worker_ctx
         _seed_property(factory, workspace_id=ws_id, name="Villa Sud")
         client = _client(ctx, factory)
         resp = client.get("/properties")
-        assert resp.status_code == 403, resp.text
-        assert resp.json()["detail"]["error"] == "permission_denied"
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert isinstance(body, list)
+        assert {row["name"] for row in body} == {"Villa Sud"}
 
 
 # ---------------------------------------------------------------------------
@@ -511,3 +524,393 @@ class TestColorStability:
         ):
             digest = hashlib.sha256(raw_id.encode("utf-8")).digest()
             assert _color_for(raw_id) == _COLOR_PALETTE[digest[0] % len(_COLOR_PALETTE)]
+
+
+# ---------------------------------------------------------------------------
+# Per-role projection (cd-yjw5)
+# ---------------------------------------------------------------------------
+
+
+def _seed_property_pinned_worker(
+    factory: sessionmaker[Session],
+    *,
+    workspace_id: str,
+    workspace_slug: str,
+    email: str,
+    display_name: str,
+    scope_property_ids: list[str],
+) -> WorkspaceContext:
+    """Seed a worker user with property-pinned ``role_grant`` rows only.
+
+    Returns a :class:`WorkspaceContext` impersonating that worker.
+    No workspace-wide (``scope_property_id IS NULL``) grant is created
+    — this is the property-narrowed worker surface (cd-yjw5) where
+    ``scope.view`` only resolves on the explicitly-listed properties.
+    """
+    from app.adapters.db.authz.models import RoleGrant
+    from tests.factories.identity import build_workspace_context
+
+    with factory() as s:
+        worker = bootstrap_user(s, email=email, display_name=display_name)
+        for pid in scope_property_ids:
+            s.add(
+                RoleGrant(
+                    id=new_ulid(),
+                    workspace_id=workspace_id,
+                    user_id=worker.id,
+                    grant_role="worker",
+                    scope_property_id=pid,
+                    created_at=_PINNED,
+                    created_by_user_id=None,
+                )
+            )
+        s.commit()
+        worker_id = worker.id
+    return build_workspace_context(
+        workspace_id=workspace_id,
+        workspace_slug=workspace_slug,
+        actor_id=worker_id,
+        actor_kind="user",
+        actor_grant_role="worker",
+        actor_was_owner_member=False,
+    )
+
+
+class TestWorkerProjection:
+    """Worker-scoped projection — see ``places.py`` per-role split (cd-yjw5)."""
+
+    def test_worker_only_sees_scoped_properties(
+        self,
+        worker_ctx: tuple[WorkspaceContext, sessionmaker[Session], str, str],
+    ) -> None:
+        """A property the worker has no role_grant on stays invisible.
+
+        Replaces the workspace-wide worker grant from ``worker_ctx``
+        with a single property-pinned grant; only that property may
+        surface. A second seeded property in the same workspace must
+        NOT appear in the response, even though it lives on the
+        ``property_workspace`` junction the manager view would see.
+        """
+        from sqlalchemy import delete
+
+        from app.adapters.db.authz.models import RoleGrant
+
+        ctx, factory, ws_id, worker_id = worker_ctx
+        # Two properties — pin the worker to one of them by removing
+        # the workspace-wide grant the fixture seeded and inserting a
+        # single property-pinned grant instead.
+        visible = _seed_property(factory, workspace_id=ws_id, name="Worker Villa")
+        hidden = _seed_property(factory, workspace_id=ws_id, name="Manager-Only Villa")
+
+        with factory() as s, tenant_agnostic():
+            s.execute(
+                delete(RoleGrant).where(
+                    RoleGrant.workspace_id == ws_id,
+                    RoleGrant.user_id == worker_id,
+                )
+            )
+            s.add(
+                RoleGrant(
+                    id=new_ulid(),
+                    workspace_id=ws_id,
+                    user_id=worker_id,
+                    grant_role="worker",
+                    scope_property_id=visible,
+                    created_at=_PINNED,
+                    created_by_user_id=None,
+                )
+            )
+            s.commit()
+
+        client = _client(ctx, factory)
+        body = client.get("/properties").json()
+        ids = {row["id"] for row in body}
+        assert visible in ids
+        assert hidden not in ids
+        # Sanity: only the one property surfaces; no other rows leak.
+        assert len(body) == 1
+
+    def test_worker_with_no_grants_sees_empty_list(
+        self,
+        owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+    ) -> None:
+        """A worker with zero ``role_grant`` rows lists nothing — silently.
+
+        cd-yjw5 deliberately drops the ``scope.view`` action gate (a
+        property-pinned-only worker is intentionally NOT in
+        ``all_workers@workspace`` per :func:`is_member_of`, so a gate
+        would 403 the very actor the narrowing branch was written
+        for). The privacy contract is enforced inside the handler:
+        the visible-property fan-out walks the actor's
+        :class:`RoleGrant` rows, and a user with zero matching rows
+        ends up with an empty visibility set → empty response. Pin
+        the empty-array contract here so a future regression that
+        widens the worker view (e.g. fans out across every workspace
+        property when no grants are found) trips loudly.
+        """
+        ctx, factory, ws_id = owner_ctx
+        # Build a worker user with NO ``role_grant`` rows at all.
+        worker_ctx_local = _seed_property_pinned_worker(
+            factory,
+            workspace_id=ctx.workspace_id,
+            workspace_slug=ctx.workspace_slug,
+            email="empty-worker@example.com",
+            display_name="Empty Worker",
+            scope_property_ids=[],
+        )
+        # Seed a property the worker has NO grant on — proves the
+        # narrowing fires (returns []), rather than the early "no
+        # rows in the workspace" branch returning the same shape by
+        # accident.
+        _seed_property(factory, workspace_id=ws_id, name="Hidden Villa")
+
+        client = _client(worker_ctx_local, factory)
+        resp = client.get("/properties")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == []
+
+    def test_worker_projection_omits_governance_fields(
+        self,
+        worker_ctx: tuple[WorkspaceContext, sessionmaker[Session], str, str],
+    ) -> None:
+        """The three §22 / §05 governance fields mask to safe defaults.
+
+        cd-yjw5 masks ``client_org_id`` / ``owner_user_id`` to ``None``
+        and ``settings_override`` to ``{}`` for workers regardless of
+        the row's underlying value. The seed sets non-NULL governance
+        values; the worker projection must still read NULL/empty.
+        """
+        ctx, factory, ws_id, _ = worker_ctx
+        _seed_property(
+            factory,
+            workspace_id=ws_id,
+            name="Governance Villa",
+            client_org_id="01HZGOVRORGCLIENTABCDEFGHJ",
+            owner_user_id="01HZGOVROWNERUSERABCDEFGHJ",
+        )
+        client = _client(ctx, factory)
+        body = client.get("/properties").json()
+        assert len(body) == 1
+        row = body[0]
+        assert row["client_org_id"] is None
+        assert row["owner_user_id"] is None
+        assert row["settings_override"] == {}
+
+    def test_worker_projection_keeps_non_governance_fields(
+        self,
+        worker_ctx: tuple[WorkspaceContext, sessionmaker[Session], str, str],
+    ) -> None:
+        """Worker projection still carries every non-governance field.
+
+        The whole point of cd-yjw5 is to give worker pages enough to
+        render the property name + city + timezone. Pin every other
+        SPA field so a regression that masks too aggressively (e.g.
+        nulls out ``city``) trips loudly here.
+        """
+        ctx, factory, ws_id, _ = worker_ctx
+        _seed_property(
+            factory,
+            workspace_id=ws_id,
+            name="Worker Villa",
+            city="Antibes",
+            timezone="Europe/Paris",
+            kind="vacation",
+            country="FR",
+            locale="fr-FR",
+        )
+        client = _client(ctx, factory)
+        row = client.get("/properties").json()[0]
+        assert row["name"] == "Worker Villa"
+        assert row["city"] == "Antibes"
+        assert row["timezone"] == "Europe/Paris"
+        assert row["kind"] == "vacation"
+        assert row["country"] == "FR"
+        assert row["locale"] == "fr-FR"
+        # Stable shape — every key the SPA expects must round-trip
+        # even on the masked branch.
+        assert set(row.keys()) == {
+            "id",
+            "name",
+            "city",
+            "timezone",
+            "color",
+            "kind",
+            "areas",
+            "evidence_policy",
+            "country",
+            "locale",
+            "settings_override",
+            "client_org_id",
+            "owner_user_id",
+        }
+
+    def test_worker_property_pinned_grant_narrows_set(
+        self,
+        owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+    ) -> None:
+        """A worker with two property-pinned grants sees exactly those two.
+
+        Three seeded properties; the worker carries two property-
+        pinned grants and no workspace-wide grant. The roster must
+        return precisely the two pinned ids, not the third — and not
+        the full list (which would mean the workspace-wide fan-out
+        branch fired by mistake).
+        """
+        ctx, factory, ws_id = owner_ctx
+        prop_a = _seed_property(factory, workspace_id=ws_id, name="Villa A")
+        prop_b = _seed_property(factory, workspace_id=ws_id, name="Villa B")
+        prop_c = _seed_property(factory, workspace_id=ws_id, name="Villa C")
+        worker_ctx_local = _seed_property_pinned_worker(
+            factory,
+            workspace_id=ctx.workspace_id,
+            workspace_slug=ctx.workspace_slug,
+            email="pinned-worker@example.com",
+            display_name="Pinned Worker",
+            scope_property_ids=[prop_a, prop_b],
+        )
+        client = _client(worker_ctx_local, factory)
+        body = client.get("/properties").json()
+        ids = {row["id"] for row in body}
+        assert ids == {prop_a, prop_b}
+        assert prop_c not in ids
+
+
+class TestManagerProjectionUnchanged:
+    """Manager / owner projection still carries the full governance set.
+
+    cd-yjw5 only narrows the worker branch; the existing manager
+    contract stays exactly as cd-lzh1 shipped it — every field present
+    and unmasked, including ``client_org_id`` / ``owner_user_id`` /
+    ``settings_override``.
+    """
+
+    def test_manager_projection_includes_governance_fields(
+        self,
+        owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+    ) -> None:
+        """Manager (non-owner) gets the real governance values, not masks.
+
+        Build a pure-manager ctx (no owners-group membership) so the
+        projection branch is decided by ``properties.read``'s
+        ``managers`` default-allow rather than the owners short-
+        circuit. The seeded governance values must round-trip
+        verbatim — masking them here would be a regression that
+        broke the manager pages' §22 widgets.
+        """
+        from app.adapters.db.authz.models import RoleGrant
+        from tests.factories.identity import build_workspace_context
+
+        ctx, factory, ws_id = owner_ctx
+        client_org = "01HZGOVRORGMANAGERROUNDTRIP"
+        owner_user = "01HZGOVROWNERMANAGERTRIPABC"
+        _seed_property(
+            factory,
+            workspace_id=ws_id,
+            name="Governance Villa",
+            client_org_id=client_org,
+            owner_user_id=owner_user,
+        )
+        with factory() as s:
+            mgr = bootstrap_user(s, email="mgr-gov@example.com", display_name="MgrGov")
+            s.add(
+                RoleGrant(
+                    id=new_ulid(),
+                    workspace_id=ws_id,
+                    user_id=mgr.id,
+                    grant_role="manager",
+                    scope_property_id=None,
+                    created_at=_PINNED,
+                    created_by_user_id=None,
+                )
+            )
+            s.commit()
+            mgr_id = mgr.id
+        manager_ctx = build_workspace_context(
+            workspace_id=ctx.workspace_id,
+            workspace_slug=ctx.workspace_slug,
+            actor_id=mgr_id,
+            actor_kind="user",
+            actor_grant_role="manager",
+            actor_was_owner_member=False,
+        )
+        client = _client(manager_ctx, factory)
+        row = client.get("/properties").json()[0]
+        assert row["client_org_id"] == client_org
+        assert row["owner_user_id"] == owner_user
+        # ``settings_override`` is currently a static ``{}`` placeholder
+        # for both branches (the per-property column hasn't landed); the
+        # real assertion is "not masked away to a placeholder when the
+        # column lands". Pin the v1 default explicitly.
+        assert row["settings_override"] == {}
+
+    def test_owner_projection_includes_governance_fields(
+        self,
+        owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+    ) -> None:
+        """Owner gets the real governance values too.
+
+        Owners short-circuit through the resolver's owners-group
+        check, so this test catches a regression that flipped
+        ``mask_governance`` for owners specifically (e.g. by
+        accidentally inverting the boolean).
+        """
+        ctx, factory, ws_id = owner_ctx
+        client_org = "01HZGOVRORGOWNERROUNDTRIPXY"
+        owner_user = "01HZGOVROWNEROWNERTRIPABCDE"
+        _seed_property(
+            factory,
+            workspace_id=ws_id,
+            name="Owner Governance Villa",
+            client_org_id=client_org,
+            owner_user_id=owner_user,
+        )
+        client = _client(ctx, factory)
+        row = client.get("/properties").json()[0]
+        assert row["client_org_id"] == client_org
+        assert row["owner_user_id"] == owner_user
+
+    def test_manager_sees_all_workspace_properties(
+        self,
+        owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+    ) -> None:
+        """Manager projection is NOT narrowed by ``role_grant``.
+
+        cd-yjw5 only narrows the worker branch. A manager with no
+        property-pinned grants must still see every workspace
+        property — the narrowing must not leak across role boundaries.
+        """
+        from app.adapters.db.authz.models import RoleGrant
+        from tests.factories.identity import build_workspace_context
+
+        ctx, factory, ws_id = owner_ctx
+        prop_a = _seed_property(factory, workspace_id=ws_id, name="Villa A")
+        prop_b = _seed_property(factory, workspace_id=ws_id, name="Villa B")
+        with factory() as s:
+            mgr = bootstrap_user(
+                s, email="mgr-wide@example.com", display_name="MgrWide"
+            )
+            s.add(
+                RoleGrant(
+                    id=new_ulid(),
+                    workspace_id=ws_id,
+                    user_id=mgr.id,
+                    grant_role="manager",
+                    scope_property_id=None,
+                    created_at=_PINNED,
+                    created_by_user_id=None,
+                )
+            )
+            s.commit()
+            mgr_id = mgr.id
+        manager_ctx = build_workspace_context(
+            workspace_id=ctx.workspace_id,
+            workspace_slug=ctx.workspace_slug,
+            actor_id=mgr_id,
+            actor_kind="user",
+            actor_grant_role="manager",
+            actor_was_owner_member=False,
+        )
+        client = _client(manager_ctx, factory)
+        body = client.get("/properties").json()
+        ids = {row["id"] for row in body}
+        assert ids == {prop_a, prop_b}
