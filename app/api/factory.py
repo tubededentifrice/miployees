@@ -98,6 +98,9 @@ from app.api.v1.role_grants import (
     build_role_grants_router,
     build_users_role_grants_router,
 )
+from app.api.v1.user_availability_overrides import (
+    build_user_availability_overrides_router,
+)
 from app.api.v1.user_leaves import build_user_leaves_router
 from app.api.v1.user_work_roles import (
     build_user_work_roles_router,
@@ -558,6 +561,19 @@ def _mount_auth_routers(
     # a single route-level ``Depends`` would either over-gate the
     # self path or under-gate the cross-user path.
     app.include_router(build_user_leaves_router(), prefix=scoped_prefix)
+    # Workspace-scoped user_availability_override CRUD + hybrid approval
+    # (cd-uqw1). Mounted at the top of the workspace tree per §12 —
+    # NOT under ``/identity`` (same precedent as the sibling
+    # ``user_leaves`` mount above). Tags ``identity`` +
+    # ``user_availability_overrides`` so OpenAPI clusters the verbs
+    # with the rest of the identity context. Authz is enforced at the
+    # service layer because the capability shape varies per target
+    # user (self vs cross-user); a single route-level ``Depends``
+    # would either over-gate the self path or under-gate the
+    # cross-user path. The service computes ``approval_required`` per
+    # §06 "Approval logic (hybrid model)" by comparing the override
+    # against the user's weekly availability pattern.
+    app.include_router(build_user_availability_overrides_router(), prefix=scoped_prefix)
     # Workspace-scoped employees roster (cd-g6nf, cd-jtgo) — flat
     # ``Employee[]`` projection consumed by the SPA's manager pages.
     # See ``app/api/v1/employees.py`` for the join shape and the

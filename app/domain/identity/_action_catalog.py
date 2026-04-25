@@ -176,6 +176,45 @@ _RULE_DRIVEN: tuple[ActionSpec, ...] = (
         root_protected_deny=True,
     ),
     ActionSpec(
+        key="availability_overrides.create_self",
+        # cd-uqw1 — workers self-submit `user_availability_override` rows
+        # (date-specific tweaks of the weekly availability pattern).
+        # Mirrors :data:`leaves.create_self`: managers + owners hold the
+        # capability so a manager creating an override on their own
+        # account takes the same code path; cross-user creation is
+        # gated on ``availability_overrides.edit_others``. Listed in
+        # ``docs/specs/05-employees-and-roles.md`` §"Rule-driven actions".
+        valid_scope_kinds=("workspace",),
+        default_allow=("owners", "managers", "all_workers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
+        key="availability_overrides.edit_others",
+        # cd-uqw1 — manager / owner retroactive edits on someone else's
+        # override (create-on-behalf-of, approve, reject, delete). Same
+        # shape as :data:`leaves.edit_others`: a single capability
+        # covers approve / reject / cross-user edit so the catalog
+        # doesn't drift toward one key per verb. Listed in
+        # ``docs/specs/05-employees-and-roles.md`` §"Rule-driven actions".
+        valid_scope_kinds=("workspace",),
+        default_allow=("owners", "managers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
+        key="availability_overrides.view_others",
+        # cd-uqw1 — manager / owner inbox view "every override in this
+        # workspace". A worker reads their own overrides via the self
+        # filter (``?user_id=ctx.actor_id``); cross-user visibility
+        # requires this capability. Listed in
+        # ``docs/specs/05-employees-and-roles.md`` §"Rule-driven actions".
+        valid_scope_kinds=("workspace",),
+        default_allow=("owners", "managers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
         key="bookings.amend_other",
         valid_scope_kinds=("workspace", "property"),
         default_allow=("owners", "managers"),

@@ -955,12 +955,56 @@ DELETE /user_leaves/{id}          # soft-delete; 204 / 404. Requester or
                                    #   worker "withdraw request" path and the
                                    #   manager "revoke approved leave" path.
 
-GET    /user_availability_overrides   # ?user_id=…&from=…&to=…&approved=true|false
-POST   /user_availability_overrides
-PATCH  /user_availability_overrides/{id}
-POST   /user_availability_overrides/{id}/approve
-POST   /user_availability_overrides/{id}/reject
-DELETE /user_availability_overrides/{id}
+GET    /user_availability_overrides   # cursor-paginated. Filters: ?user_id=…
+                                       #   &from=…&to=…&approved=true|false.
+                                       #   Listing without ``user_id`` is the manager
+                                       #   inbox view and requires
+                                       #   ``availability_overrides.view_others``.
+                                       #   Listing with ``user_id == caller`` is always
+                                       #   allowed; cross-user requires
+                                       #   ``availability_overrides.view_others``.
+POST   /user_availability_overrides    # body: {user_id?, date, available,
+                                       #   starts_local?, ends_local?, reason?}.
+                                       #   ``user_id`` defaults to the caller;
+                                       #   cross-user requires
+                                       #   ``availability_overrides.edit_others``.
+                                       #   Server computes ``approval_required`` per
+                                       #   §06 "Approval logic (hybrid model)" by
+                                       #   comparing the override against the user's
+                                       #   weekly pattern row for the date's weekday:
+                                       #     adding hours → False (auto-approved),
+                                       #     reducing hours → True (pending).
+                                       #   Owner/manager-created rows always
+                                       #   auto-approve regardless. ``starts_local``
+                                       #   / ``ends_local`` are paired (BOTH-OR-NEITHER
+                                       #   per §06); ``available=false`` requires both
+                                       #   null. 422 on a bad window or half-set hours.
+PATCH  /user_availability_overrides/{id}  # body: {available?, starts_local?,
+                                       #   ends_local?, reason?}. Pending-only; an
+                                       #   approved override collapses to 409
+                                       #   ``user_availability_override_transition_forbidden``.
+                                       #   Authorisation: requester or
+                                       #   ``availability_overrides.edit_others``. 422
+                                       #   if the resulting window violates
+                                       #   BOTH-OR-NEITHER or ``ends_local <= starts_local``.
+POST   /user_availability_overrides/{id}/approve   # stamp ``approved_at`` +
+                                       #   ``approved_by``. Requires
+                                       #   ``availability_overrides.edit_others``.
+                                       #   Already-approved → 409.
+POST   /user_availability_overrides/{id}/reject    # body (optional): {reason_md?}.
+                                       #   Soft-deletes the row and folds ``reason_md``
+                                       #   into ``reason`` so the worker keeps the
+                                       #   rationale visible (§06 doesn't carve a
+                                       #   persistent ``rejected`` column on
+                                       #   ``user_availability_override``). Requires
+                                       #   ``availability_overrides.edit_others``.
+                                       #   Already-approved → 409 (manager must DELETE
+                                       #   instead).
+DELETE /user_availability_overrides/{id}   # soft-delete; 204 / 404. Requester or
+                                       #   ``availability_overrides.edit_others``.
+                                       #   Used both as the worker "withdraw request"
+                                       #   path and the manager "revoke approved
+                                       #   override" path.
 
 GET    /public_holidays                   # ?from=…&to=…&country=…
 POST   /public_holidays

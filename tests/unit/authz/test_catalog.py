@@ -54,7 +54,7 @@ class TestShape:
         assert frozenset(ACTION_CATALOG.keys()) == ACTION_KEYS
 
     def test_catalog_has_expected_size(self) -> None:
-        """v1 spec §05 enumerates 7 root-only + 79 rule-driven = 86 keys.
+        """v1 spec §05 enumerates 7 root-only + 82 rule-driven = 89 keys.
 
         A hard number — if it changes, either the spec or the catalog
         drifted and the author needs to say which. cd-cfe4 added
@@ -65,8 +65,13 @@ class TestShape:
         workspace properties roster surface (``GET /properties``).
         cd-y5z3 added ``users.reset_passkey`` for the owner-initiated
         worker passkey reset surface (``POST /users/{id}/reset_passkey``).
+        cd-uqw1 added ``availability_overrides.create_self`` /
+        ``availability_overrides.edit_others`` /
+        ``availability_overrides.view_others`` for the
+        ``/user_availability_overrides`` surface (§06 hybrid approval
+        model).
         """
-        assert len(ACTION_CATALOG) == 86
+        assert len(ACTION_CATALOG) == 89
 
     def test_entries_are_action_spec_instances(self) -> None:
         for key, spec in ACTION_CATALOG.items():

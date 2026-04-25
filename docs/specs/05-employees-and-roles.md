@@ -527,6 +527,9 @@ configuration.
 | `leaves.create_self`                    | `workspace`                    | `owners, managers, all_workers` | — | §09 |
 | `leaves.edit_others`                    | `workspace`                    | `owners, managers`            | —  | §09 |
 | `leaves.view_others`                    | `workspace`                    | `owners, managers`            | —  | §09 |
+| `availability_overrides.create_self`    | `workspace`                    | `owners, managers, all_workers` | — | §06 — gates self-submitted `user_availability_override` rows. Workers carry it by default (the `/schedule` self-service form is the canonical entry point). |
+| `availability_overrides.edit_others`    | `workspace`                    | `owners, managers`            | —  | §06 — gates cross-user create/edit + the approve / reject sub-resources. Single capability, multiple paths — same shape as `leaves.edit_others`. |
+| `availability_overrides.view_others`    | `workspace`                    | `owners, managers`            | —  | §06 — gates the manager inbox view (`GET /user_availability_overrides` without a `?user_id=` filter, or with one pointing at someone else). |
 | `inventory.adjust`                      | `workspace`, `property`        | `owners, managers`            | —  | §08 |
 | `inventory.stocktake`                   | `workspace`, `property`        | `owners, managers`            | —  | §08 — open, edit, and commit an `inventory_stocktake` session. |
 | `instructions.edit`                     | `workspace`, `property`        | `owners, managers`            | —  | §07 |
