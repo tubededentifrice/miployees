@@ -458,23 +458,10 @@ ignore_imports = [
     # the tasks + inventory repositories land.
     "app.domain.tasks.completion -> app.adapters.db.tasks.models",
     "app.domain.tasks.completion -> app.adapters.db.inventory.models",
-    # cd-jl0g: ``app.domain.tasks.completion.add_file_evidence``
-    # instantiates :class:`NullVirusScanner` as the default scanner
-    # so the seam is opt-in (callers pass a real scanner via DI when
-    # the deployment ships one). The Protocol port itself
-    # (:class:`VirusScanner`) is reached through
-    # ``app.adapters.storage.ports`` and so is already permitted by
-    # the ``app.domain.** -> app.adapters.*.ports.*`` exception above;
-    # this entry covers the concrete fallback. Drops when a
-    # ``virus_scanner`` factory in :mod:`app.config` injects the real
-    # implementation at boot and the domain caller stops needing the
-    # default.
-    "app.domain.tasks.completion -> app.adapters.storage.virus",
     # cd-ba5c: ``app.domain.tasks.completion.add_file_evidence`` uses
     # :class:`FiletypeMimeSniffer` as the default MIME sniffer so the
-    # seam is opt-in (callers pass a fake via DI in tests). Same
-    # rationale as the ``virus_scanner`` stopgap above — the Protocol
-    # port (:class:`MimeSniffer`) reaches through
+    # seam is opt-in (callers pass a fake via DI in tests). The
+    # Protocol port (:class:`MimeSniffer`) reaches through
     # ``app.adapters.storage.ports`` and is already permitted by the
     # ``app.domain.** -> app.adapters.*.ports.*`` exception; this
     # entry covers the concrete fallback. Drops when a sniffer factory

@@ -1236,16 +1236,14 @@ POST   /tasks/{id}/evidence        # multipart/form-data. Every §06 kind
                                    #   in `note_md`; photo / voice / gps
                                    #   route through the content-addressed
                                    #   `Storage` port — SHA-256 blob hash,
-                                   #   virus scan, per-kind MIME / size
-                                   #   cap (§15 "Input validation"). gps
-                                   #   payload is a small JSON document
-                                   #   with `lat` / `lon` / optional
-                                   #   `accuracy_m`. 413 evidence_too_large
-                                   #   past the per-kind cap; 415
+                                   #   per-kind MIME / size cap (§15
+                                   #   "Input validation"). gps payload is
+                                   #   a small JSON document with `lat` /
+                                   #   `lon` / optional `accuracy_m`. 413
+                                   #   evidence_too_large past the per-kind
+                                   #   cap; 415
                                    #   evidence_content_type_rejected for
-                                   #   off-allowlist MIME; 415
-                                   #   evidence_infected when the scanner
-                                   #   blocks; 422
+                                   #   off-allowlist MIME; 422
                                    #   evidence_gps_payload_invalid for a
                                    #   malformed coordinate document.
 

@@ -439,22 +439,6 @@ size cap and the rest of the validation chain still apply; the
 widening is a sniffer-vocabulary concession, not a content
 concession.
 
-### Virus scanning
-
-Uploads MUST be scanned before they land in the blob store. The
-domain layer takes a `VirusScanner` Protocol port; the production
-wiring (ClamAV daemon, vendor REST API, …) is selected by
-`settings.virus_scanner_backend`.
-
-**Default fallback (`NullVirusScanner`) is fail-open with a
-single-warning per process.** The default returns
-`VirusScanResult(status="unknown")` and emits one `WARNING` log row
-the first time it's hit so an operator notices the deployment
-shipped without antivirus protection — the upload still lands so
-self-hosters can boot the stack with the bare minimum config.
-A deployment that wants fail-closed semantics MUST wire a real
-scanner; cd-v0iz tracks the production wiring.
-
 ### Blob download authorization
 
 Files are content-addressed by SHA-256, but the download URL is

@@ -52,7 +52,7 @@ completion,assignment,comments}``
   is wired end-to-end. ``note`` rides the inline ``note_md`` form
   field; ``photo`` / ``voice`` / ``gps`` route through the
   content-addressed :class:`Storage` port (SHA-256 blob hash +
-  server-side MIME sniff + virus scan + per-kind size cap per spec
+  server-side MIME sniff + per-kind size cap per spec
   §15 "Input validation"). The sniffed MIME (not the multipart
   header) is what the per-kind allow-list rejects against; ``gps``
   carries a small JSON document with ``lat`` / ``lon`` / optional
@@ -146,7 +146,6 @@ from app.domain.tasks.comments import (
 from app.domain.tasks.completion import (
     EvidenceContentTypeNotAllowed,
     EvidenceGpsPayloadInvalid,
-    EvidenceInfected,
     EvidenceRequired,
     EvidenceTooLarge,
     EvidenceView,
@@ -2229,10 +2228,7 @@ async def upload_task_evidence_route(
       §15 "Input validation": the body is sniffed server-side via
       the injectable :class:`MimeSniffer` and the **sniffed** type
       is validated against the per-kind allow-list (the multipart
-      header is informational only). Size cap per kind, virus scan
-      via the injectable :class:`VirusScanner` (currently a logged
-      "no scanner configured" stub — follow-up Beads task tracks the
-      real wiring).
+      header is informational only). Size cap per kind.
     * ``gps`` — :func:`~app.domain.tasks.completion.add_file_evidence`
       with the multipart-declared ``Content-Type`` (which the client
       MUST set to ``application/json`` per spec §06 "Evidence" — the
@@ -2369,14 +2365,6 @@ async def upload_task_evidence_route(
             kind=exc.kind,
             size_bytes=exc.size_bytes,
             cap_bytes=exc.cap_bytes,
-            message=str(exc),
-        ) from exc
-    except EvidenceInfected as exc:
-        raise _http(
-            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            "evidence_infected",
-            kind=exc.kind,
-            signature=exc.signature,
             message=str(exc),
         ) from exc
     except EvidenceGpsPayloadInvalid as exc:

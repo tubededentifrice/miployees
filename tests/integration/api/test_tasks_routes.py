@@ -1288,9 +1288,7 @@ class TestEvidence:
     # The PE header below is the smallest fragment ``filetype`` will
     # recognise as a Windows executable — enough to assert the seam
     # rejects it under the photo allow-list.
-    _TINY_EXE: bytes = (
-        b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00" + b"\x00" * 32
-    )
+    _TINY_EXE: bytes = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00" + b"\x00" * 32
 
     def test_evil_exe_declared_as_png_rejected(
         self,

@@ -23,59 +23,11 @@ __all__ = [
     "EnvelopeEncryptor",
     "MimeSniffer",
     "Storage",
-    "VirusScanResult",
-    "VirusScanner",
 ]
 
 
 class BlobNotFound(Exception):
     """Raised by :meth:`Storage.get` when a hash has no blob on the store."""
-
-
-@dataclass(frozen=True, slots=True)
-class VirusScanResult:
-    """Outcome of a :meth:`VirusScanner.scan` call.
-
-    ``clean`` is the happy path; ``infected`` carries a ``signature``
-    for the audit row and the rejection envelope. ``unknown`` is the
-    "no scanner configured" stub state — the default scanner emits
-    this with a once-per-process logger warning so operators learn
-    they shipped without protection without taking the upload down.
-    """
-
-    status: str
-    """One of ``"clean"`` / ``"infected"`` / ``"unknown"``."""
-
-    signature: str | None = None
-    """Vendor-specific signature label when ``status='infected'``."""
-
-
-class VirusScanner(Protocol):
-    """Port: scan an upload payload before it lands in the blob store.
-
-    The default implementation (:class:`app.adapters.storage.virus.
-    NullVirusScanner`) returns ``status='unknown'`` and logs a one-shot
-    warning, so the upload still lands but the operator learns the
-    deployment shipped without scanning. Real implementations (ClamAV
-    via TCP, a vendor REST API, …) plug in behind this Protocol.
-
-    The seam takes raw bytes rather than a stream so the caller can
-    re-use the buffer it already hashed for content-addressing without
-    a second pass. Scanners that need a file handle wrap the bytes
-    themselves.
-
-    See ``docs/specs/15-security-privacy.md`` §"Input validation".
-    """
-
-    def scan(self, payload: bytes, *, content_type: str | None) -> VirusScanResult:
-        """Return the scan outcome for ``payload``.
-
-        Raises only when the scanner itself is broken (network down,
-        out-of-memory). A clean / infected verdict comes back as a
-        :class:`VirusScanResult`; the caller decides whether to write
-        the blob or surface a rejection.
-        """
-        ...
 
 
 class MimeSniffer(Protocol):

@@ -764,11 +764,11 @@ note_md?}`:
   through the same content-addressed pipeline as photo / voice so
   every file-bearing evidence row shares one storage seam.
 
-Per-kind input validation (MIME allow-list, size cap, virus scan)
-lives in §15 "Input validation" — the domain layer rejects
-`kind=photo` with `Content-Type: image/svg+xml`, anything past the
-per-kind cap (10 MiB photo / 25 MiB voice / 4 KiB gps), and any
-infected payload before the bytes reach the blob store.
+Per-kind input validation (MIME allow-list, size cap) lives in §15
+"Input validation" — the domain layer rejects `kind=photo` with
+`Content-Type: image/svg+xml` and anything past the per-kind cap
+(10 MiB photo / 25 MiB voice / 4 KiB gps) before the bytes reach
+the blob store.
 
 The worker can attach evidence at any point through
 `POST /tasks/{id}/evidence` (multipart/form-data); see §12 "REST

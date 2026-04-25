@@ -121,9 +121,7 @@ from app.adapters.storage.mime import FiletypeMimeSniffer
 from app.adapters.storage.ports import (
     MimeSniffer,
     Storage,
-    VirusScanner,
 )
-from app.adapters.storage.virus import NullVirusScanner
 from app.audit import write_audit
 from app.events.bus import EventBus
 from app.events.bus import bus as default_event_bus
@@ -141,7 +139,6 @@ __all__ = [
     "ChecklistRequiredResolver",
     "EvidenceContentTypeNotAllowed",
     "EvidenceGpsPayloadInvalid",
-    "EvidenceInfected",
     "EvidencePolicyResolver",
     "EvidenceRequired",
     "EvidenceTooLarge",
@@ -387,24 +384,6 @@ class EvidenceTooLarge(ValueError):
         self.kind = kind
         self.size_bytes = size_bytes
         self.cap_bytes = cap_bytes
-
-
-class EvidenceInfected(ValueError):
-    """Virus scanner rejected the payload.
-
-    415-equivalent. The scanner's vendor-specific signature label
-    rides on the exception so the audit row + the HTTP envelope can
-    surface the diagnosis without re-scanning. Mirrors §15 "Input
-    validation" — uploads MUST be scanned before they land in the
-    blob store.
-    """
-
-    def __init__(self, *, kind: str, signature: str) -> None:
-        super().__init__(
-            f"evidence kind {kind!r} payload rejected by virus scanner: {signature!r}"
-        )
-        self.kind = kind
-        self.signature = signature
 
 
 class EvidenceGpsPayloadInvalid(ValueError):
@@ -1455,7 +1434,6 @@ def add_file_evidence(
     payload: bytes,
     content_type: str,
     storage: Storage,
-    virus_scanner: VirusScanner | None = None,
     mime_sniffer: MimeSniffer | None = None,
     clock: Clock | None = None,
 ) -> EvidenceView:
@@ -1479,17 +1457,12 @@ def add_file_evidence(
        the vector the seam closes.
     5. For ``kind='gps'``, parses + validates the JSON coordinate
        document so the stored bytes carry a known shape.
-    6. Runs the injectable :class:`VirusScanner`; ``infected`` →
-       :class:`EvidenceInfected`. ``unknown`` and ``clean`` both
-       allow the upload (the default :class:`NullVirusScanner` logs
-       a one-shot warning so operators learn the deployment shipped
-       without scanning).
-    7. SHA-256 the bytes, hand them to :meth:`Storage.put` with the
+    6. SHA-256 the bytes, hand them to :meth:`Storage.put` with the
        **sniffed** type (idempotent; same hash → same blob). The
        declared header never reaches storage — only the sniff does,
        so the persisted ``content_type`` matches what's actually in
        the blob.
-    8. Inserts the :class:`Evidence` row with the resolved
+    7. Inserts the :class:`Evidence` row with the resolved
        ``blob_hash``, flushes, audits ``task.evidence.<kind>.add``.
 
     The audit row carries the **sniffed** ``content_type``, the
@@ -1497,21 +1470,12 @@ def add_file_evidence(
     a later walk can reconstruct what landed without re-reading the
     blob.
 
-    ``virus_scanner`` defaults to :class:`NullVirusScanner` — the
-    "no scanner configured" stub that logs a one-shot warning. The
-    real wiring lands with a follow-up Beads task; the seam is the
-    Protocol-port pattern every other adapter follows so swap-in is
-    a constructor change, not a domain edit.
-
     ``mime_sniffer`` defaults to :class:`FiletypeMimeSniffer` (cd-ba5c)
     — the pure-Python magic-byte sniff backed by ``filetype`` + a
     narrow JSON structural check for the GPS branch. Tests override
     with a fake to pin the verdict.
     """
     resolved_clock = clock if clock is not None else SystemClock()
-    resolved_scanner = (
-        virus_scanner if virus_scanner is not None else NullVirusScanner()
-    )
     resolved_sniffer = (
         mime_sniffer if mime_sniffer is not None else FiletypeMimeSniffer()
     )
@@ -1555,16 +1519,6 @@ def add_file_evidence(
         # rejection reason instead of an opaque blob hash).
         _validate_gps_payload(payload)
 
-    scan_result = resolved_scanner.scan(payload, content_type=sniffed_type)
-    if scan_result.status == "infected":
-        # Spec §15 "Input validation": infected uploads are rejected
-        # outright. Carry the signature into the typed exception so
-        # the audit row + the HTTP envelope can surface the diagnosis.
-        raise EvidenceInfected(
-            kind=kind,
-            signature=scan_result.signature or "unknown",
-        )
-
     # Hash + store. The Storage port is idempotent: the same hash on a
     # repeat upload returns the existing blob's metadata without
     # re-writing. We do NOT short-circuit the audit row on a dedupe —
@@ -1607,7 +1561,6 @@ def add_file_evidence(
                 # sniffed; both in the allow-list).
                 "declared_content_type": content_type,
                 "size_bytes": size_bytes,
-                "scan_status": scan_result.status,
             }
         },
     )
