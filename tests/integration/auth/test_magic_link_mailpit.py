@@ -108,6 +108,60 @@ def _app_reachable(app_url: str, *, timeout: float = 2.0) -> bool:
     return 200 <= status < 300
 
 
+def _readyz_failures(app_url: str, *, timeout: float = 2.0) -> list[str] | None:
+    """Return a list of failing ``/readyz`` checks, or ``None`` when ready.
+
+    The dev-stack ``app-api`` container runs ``alembic upgrade head`` in
+    its entrypoint, but a long-lived container can drift behind the
+    repo's migration head whenever a new revision lands and the
+    container hasn't been restarted (``docker compose restart app-api``
+    re-runs the upgrade). When that happens, ``/healthz`` still answers
+    200 (the ASGI server is up) but every write that touches a column
+    added by the missing migration fails at commit time — silently
+    rolling back the magic-link nonce row, so a subsequent ``consume``
+    sees ``rowcount == 0`` and maps onto ``409 already_consumed``.
+
+    That's exactly the failure mode cd-t2jz reproduced before this
+    helper existed: the round-trip looked like the consume side was
+    broken, but the real cause was schema drift on the request side.
+    Probing ``/readyz`` lets the fixture distinguish "app down" from
+    "app up but migrations behind / worker stalled / root key missing"
+    and surface a clear remediation hint, instead of a confusing 409.
+
+    Returns ``None`` when readyz returns 200; on a 503 returns the
+    ``checks[].check`` symbols (e.g. ``["migrations"]``); on any
+    network / parse failure returns a one-element fallback list so the
+    fixture still skips with a coherent reason.
+    """
+    try:
+        with urllib.request.urlopen(f"{app_url}/readyz", timeout=timeout) as resp:
+            status = int(resp.status)
+            payload_bytes = resp.read()
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        payload_bytes = exc.read()
+    except (urllib.error.URLError, ConnectionError, OSError):
+        return ["unreachable"]
+
+    if 200 <= status < 300:
+        return None
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+    except (ValueError, UnicodeDecodeError):
+        return [f"http_{status}"]
+    if not isinstance(payload, dict):
+        return [f"http_{status}"]
+    checks = payload.get("checks", [])
+    if not isinstance(checks, list):
+        return [f"http_{status}"]
+    failures = [
+        check.get("check", "unknown")
+        for check in checks
+        if isinstance(check, dict) and check.get("ok") is False
+    ]
+    return failures or [f"http_{status}"]
+
+
 @pytest.fixture(scope="module")
 def stack_endpoints() -> Iterator[tuple[str, str]]:
     """Yield ``(app_url, mailpit_url)`` after sanity-checking both.
@@ -117,6 +171,13 @@ def stack_endpoints() -> Iterator[tuple[str, str]]:
     a skip — not a failure. Module-scoped because we only need one
     reachability probe per test session; the per-test inbox purge
     (function-scoped fixture below) handles isolation.
+
+    Beyond raw reachability, we also gate on ``/readyz`` so a dev-stack
+    container running stale migrations (the cd-t2jz failure mode —
+    ``audit_log`` missing the ``scope_kind`` column added by a
+    revision newer than the one the running image migrated to) skips
+    with a precise remediation hint instead of failing later with a
+    misleading ``409 already_consumed`` from ``consume``.
     """
     app_url = _app_url()
     mailpit_url = _mailpit_url()
@@ -124,6 +185,14 @@ def stack_endpoints() -> Iterator[tuple[str, str]]:
         pytest.skip(
             f"app-api not reachable at {app_url} — start the dev stack via "
             "`docker compose -f mocks/docker-compose.yml up -d`"
+        )
+    failing_checks = _readyz_failures(app_url)
+    if failing_checks is not None:
+        pytest.skip(
+            f"app-api at {app_url} is not ready (failing: {failing_checks}); "
+            "if 'migrations' is listed, restart the dev stack — "
+            "`docker compose -f mocks/docker-compose.yml restart app-api` — "
+            "to pick up new revisions"
         )
     if not is_reachable(mailpit_url):
         pytest.skip(
