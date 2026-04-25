@@ -234,10 +234,7 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
     for (const kind of ["task.completed", "task.skipped"] as const) {
       const qc = makeClient();
       const spy = vi.spyOn(qc, "invalidateQueries");
-      INVALIDATIONS[kind](
-        makeEvent(kind, { task: { id: "t1", name: "x" } }),
-        qc,
-      );
+      INVALIDATIONS[kind](makeEvent(kind, { task_id: "t1" }), qc);
       const called = spy.mock.calls.map((c) => c[0]?.queryKey);
       expect(called).toEqual(expect.arrayContaining([["my-schedule"]]));
     }
@@ -267,45 +264,65 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
     }
   });
 
-  it("task.updated merges into the task detail envelope", () => {
-    const qc = makeClient();
-    // Seed the cache with the `{ task, property, instructions }`
-    // wrapper the detail page actually stores.
-    qc.setQueryData(qk.task("t1"), {
-      task: { id: "t1", name: "old" },
-      property: { id: "p1" },
-      instructions: [],
-    });
-    INVALIDATIONS["task.updated"](
-      makeEvent("task.updated", { task: { id: "t1", name: "new" } }),
-      qc,
-    );
-    const cached = qc.getQueryData<{ task: { name: string } }>(qk.task("t1"));
-    expect(cached?.task.name).toBe("new");
-  });
-
-  it("task.updated does not clobber a missing detail envelope", () => {
-    const qc = makeClient();
-    // No existing data; the setter should leave the cache untouched.
-    INVALIDATIONS["task.updated"](
-      makeEvent("task.updated", { task: { id: "t1", name: "new" } }),
-      qc,
-    );
-    expect(qc.getQueryData(qk.task("t1"))).toBeUndefined();
-  });
-
-  it("task.updated also invalidates my-schedule", () => {
-    // cd-ops1 — a task rename or property reassignment has to refresh
-    // the `/schedule` cell chip; the per-task envelope alone isn't
-    // read by the schedule view.
+  it("task.updated invalidates the per-row detail key by task_id", () => {
+    // cd-m0hz — the canonical `TaskUpdated` event publishes
+    // `{task_id, changed_fields}` only. The dispatcher treats it as a
+    // pure invalidation signal: any mounted `/task/:id` page refetches
+    // via REST under the normal per-row authz path.
     const qc = makeClient();
     const spy = vi.spyOn(qc, "invalidateQueries");
     INVALIDATIONS["task.updated"](
-      makeEvent("task.updated", { task: { id: "t1", name: "new" } }),
+      makeEvent("task.updated", {
+        task_id: "t1",
+        changed_fields: ["title"],
+      }),
       qc,
     );
     const called = spy.mock.calls.map((c) => c[0]?.queryKey);
-    expect(called).toEqual(expect.arrayContaining([["my-schedule"]]));
+    expect(called).toEqual(expect.arrayContaining([qk.task("t1")]));
+  });
+
+  it("task.updated never reaches into a non-existent payload.task field", () => {
+    // Regression guard for cd-m0hz. Before the fix the dispatcher
+    // read `payload.task.id`, which threw on the canonical wire shape
+    // (no `task` field). The fix reads `task_id`; calling the
+    // reducer on the canonical payload must not throw.
+    const qc = makeClient();
+    expect(() =>
+      INVALIDATIONS["task.updated"](
+        makeEvent("task.updated", {
+          task_id: "t1",
+          changed_fields: ["scheduled_for_local"],
+        }),
+        qc,
+      ),
+    ).not.toThrow();
+  });
+
+  it("task.updated also invalidates my-schedule + tasks + today + dashboard", () => {
+    // cd-ops1 — a task rename or property reassignment has to refresh
+    // the `/schedule` cell chip; the dashboard counters can flip too
+    // (e.g. priority change), and the worker's Today + Tasks lists
+    // both surface the change.
+    const qc = makeClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    INVALIDATIONS["task.updated"](
+      makeEvent("task.updated", {
+        task_id: "t1",
+        changed_fields: ["title"],
+      }),
+      qc,
+    );
+    const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+    expect(called).toEqual(
+      expect.arrayContaining([
+        qk.task("t1"),
+        qk.tasks(),
+        qk.today(),
+        qk.dashboard(),
+        ["my-schedule"],
+      ]),
+    );
   });
 
   it("agent.message.appended appends to the scope's chat log", () => {
@@ -482,12 +499,22 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
     for (const kind of ["task.completed", "task.skipped"] as const) {
       const qc = makeClient();
       const spy = vi.spyOn(qc, "invalidateQueries");
-      INVALIDATIONS[kind](
-        makeEvent(kind, { task: { id: "t1", name: "x" } }),
-        qc,
-      );
+      INVALIDATIONS[kind](makeEvent(kind, { task_id: "t1" }), qc);
       const called = spy.mock.calls.map((c) => c[0]?.queryKey);
       expect(called).toEqual(expect.arrayContaining([qk.history("tasks")]));
+    }
+  });
+
+  it("task.{completed,skipped} invalidates the per-row detail key by task_id", () => {
+    // cd-m0hz — completion/skip events publish `{task_id, ...}` only;
+    // dispatcher invalidates `qk.task(task_id)` so a mounted detail
+    // page refetches.
+    for (const kind of ["task.completed", "task.skipped"] as const) {
+      const qc = makeClient();
+      const spy = vi.spyOn(qc, "invalidateQueries");
+      INVALIDATIONS[kind](makeEvent(kind, { task_id: "t1" }), qc);
+      const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+      expect(called).toEqual(expect.arrayContaining([qk.task("t1")]));
     }
   });
 
@@ -622,6 +649,8 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
       // Provide a minimally-shaped payload so handlers that read
       // into the data object don't crash on undefined access.
       const data: Record<string, unknown> = {
+        task_id: "t1",
+        changed_fields: [],
         task: { id: "t1" },
         message: { id: "m1" },
         scope: "manager",

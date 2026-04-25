@@ -1539,9 +1539,13 @@ export type SseEvent =
         outcome: "replied" | "action" | "error" | "timeout";
       };
     }
-  | { event: "task.updated"; data: { task: Task } }
-  | { event: "task.completed"; data: { task: Task } }
-  | { event: "task.skipped"; data: { task: Task; reason: string | null } }
+  // §06 + cd-m0hz — canonical task events carry `{task_id, …}` only.
+  // The rendered `Task` object is never wired through SSE; subscribers
+  // re-fetch via REST under the normal per-row authz path. Keeps PII
+  // (description_md, completion notes) off the broadcast surface.
+  | { event: "task.updated"; data: { task_id: string; changed_fields: string[] } }
+  | { event: "task.completed"; data: { task_id: string; completed_by: string } }
+  | { event: "task.skipped"; data: { task_id: string; reason: string } }
   | { event: "approval.decided"; data: { id: string; decision: "approve" | "reject" } }
   | { event: "expense.approved"; data: { id: string; status: ExpenseStatus } }
   | { event: "expense.rejected"; data: { id: string; status: ExpenseStatus } }

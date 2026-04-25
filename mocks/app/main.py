@@ -3484,7 +3484,11 @@ def api_task_check(tid: str, idx: int) -> Response:
     if task is None or idx < 0 or idx >= len(task.checklist):
         return JSONResponse({"detail": "not found"}, status_code=404)
     task.checklist[idx]["done"] = not task.checklist[idx].get("done", False)
-    hub.publish("task.updated", {"task": task})
+    # cd-m0hz — canonical wire shape: foreign-key id + a hint at which
+    # §06 mutable column moved. Subscribers re-fetch via REST under the
+    # normal per-row authz path; the rendered `Task` object is never
+    # broadcast.
+    hub.publish("task.updated", {"task_id": task.id, "changed_fields": ["checklist"]})
     return ok(task)
 
 
@@ -3494,7 +3498,14 @@ def api_task_complete(tid: str) -> Response:
     if task is None:
         return JSONResponse({"detail": "not found"}, status_code=404)
     task.status = "completed"
-    hub.publish("task.completed", {"task": task})
+    # cd-m0hz — canonical wire shape: `{task_id, completed_by}` only.
+    # The mocks server doesn't carry an authenticated user identity,
+    # so we stamp the default employee id; production callers wire the
+    # real actor.
+    hub.publish(
+        "task.completed",
+        {"task_id": task.id, "completed_by": md.DEFAULT_EMPLOYEE_ID},
+    )
     return ok(task)
 
 
@@ -3505,7 +3516,14 @@ def api_task_skip(tid: str, payload: dict[str, Any] = Body(default_factory=dict)
         return JSONResponse({"detail": "not found"}, status_code=404)
     task.status = "skipped"
     reason = payload.get("reason")
-    hub.publish("task.skipped", {"task": task, "reason": reason})
+    # cd-m0hz — canonical wire shape: `{task_id, reason}` only. The
+    # canonical event constrains `reason` to a code-shaped string;
+    # the mocks server passes through whatever the caller sent (or a
+    # placeholder when omitted).
+    hub.publish(
+        "task.skipped",
+        {"task_id": task.id, "reason": str(reason) if reason else "unspecified"},
+    )
     return ok(task)
 
 
@@ -3646,7 +3664,12 @@ def api_tasks_create(request: Request, payload: dict[str, Any] = Body(...)) -> R
         workspace_id=md.DEFAULT_WORKSPACE_ID,
     )
     md.TASKS.append(task)
-    hub.publish("task.updated", {"task": task})
+    # cd-m0hz — canonical wire shape (no rendered task on the broadcast).
+    # This is a personal-task creation endpoint; the canonical
+    # production server emits `task.created` here. The mocks dispatcher
+    # only listens for `task.updated`, so we keep the existing kind to
+    # avoid a wider mock contract change in this fix.
+    hub.publish("task.updated", {"task_id": task.id, "changed_fields": []})
     return ok(task, status_code=201)
 
 

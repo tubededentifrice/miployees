@@ -8,7 +8,6 @@ import type {
   AgentTurnScope,
   AssetAction,
   SseEvent,
-  Task,
   ExpenseStatus,
 } from "@/types/api";
 import { qk } from "./queryKeys";
@@ -168,13 +167,15 @@ function dispatch(client: QueryClient, evt: TypedEvent): void {
     case "task.updated":
     case "task.completed":
     case "task.skipped": {
-      const payload = data as { task: Task };
-      // The task-detail query caches a wrapper `{ task, property, instructions }`,
-      // so merge into the existing envelope; don't clobber it with a bare Task.
-      client.setQueryData<{ task: Task } & Record<string, unknown>>(
-        qk.task(payload.task.id),
-        (prev) => (prev ? { ...prev, task: payload.task } : prev),
-      );
+      // The canonical events
+      // (`app.events.types.{TaskUpdated,TaskCompleted,TaskSkipped}`)
+      // carry `{task_id, ...}` only — never a rendered `Task` object
+      // (cd-m0hz). Treat each kind as a pure invalidation signal:
+      // invalidate the per-row detail key alongside the list / today /
+      // dashboard surfaces, and any mounted page refetches via REST
+      // under the normal per-row authz path.
+      const payload = data as { task_id: string };
+      client.invalidateQueries({ queryKey: qk.task(payload.task_id) });
       client.invalidateQueries({ queryKey: qk.tasks() });
       client.invalidateQueries({ queryKey: qk.today() });
       client.invalidateQueries({ queryKey: qk.dashboard() });

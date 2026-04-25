@@ -33,7 +33,6 @@ import type {
   AgentMessage,
   AgentTurnScope,
   AssetAction,
-  Task,
 } from "@/types/api";
 import { qk } from "./queryKeys";
 
@@ -228,8 +227,26 @@ export type InvalidationHandler = (event: SseEvent, qc: QueryClient) => void;
 // error in whatever query we re-populate, which is the same failure
 // mode the mock has today.
 
-interface TaskPayload {
-  task: Task;
+/**
+ * Wire shape for `task.updated`, `task.completed`, `task.skipped`.
+ *
+ * The canonical events (`app.events.types.TaskUpdated` /
+ * `TaskCompleted` / `TaskSkipped`) carry only the foreign-key
+ * identifier plus a few small scalars (`changed_fields`,
+ * `completed_by`, `reason`) — never a rendered `Task` object.
+ * Subscribers that need the title / description / property re-fetch
+ * via REST under the normal per-row authz path. See
+ * `docs/specs/06-tasks-and-scheduling.md` and the cd-m0hz handoff
+ * for the rationale (PII leakage + payload bloat if we wired the
+ * full task on every event).
+ *
+ * `changed_fields` is currently only set by `task.updated`; the
+ * dispatcher leaves it unread for now (a no-op switch on the field
+ * names is a follow-up once the SPA wants to narrow invalidations
+ * per-field).
+ */
+interface TaskRefPayload {
+  task_id: string;
 }
 
 interface AssetActionPayload {
@@ -334,29 +351,31 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
   },
 
   "task.updated": (event, qc) => {
-    const payload = event.data as unknown as TaskPayload;
-    // `/task/:id` caches a `{ task, property, instructions }`
-    // envelope; merge into it instead of clobbering.
-    qc.setQueryData<{ task: Task } & Record<string, unknown>>(
-      qk.task(payload.task.id),
-      (prev) => (prev ? { ...prev, task: payload.task } : prev),
-    );
+    const payload = event.data as unknown as TaskRefPayload;
+    // The canonical event carries `{task_id, changed_fields}` only —
+    // there is no rendered `task` object on the wire (cd-m0hz). Treat
+    // `task.updated` as a pure invalidation signal: the per-detail
+    // envelope (`{ task, property, instructions }`) is dropped from
+    // the cache, and any mounted detail page refetches under the
+    // normal per-row authz path.
+    invalidate(qc, qk.task(payload.task_id));
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
     // §14 worker schedule — the cell-level chip reads `title`,
-    // `property_id`, and `scheduled_start` from the merged schedule
-    // payload, so a rename or re-property doesn't surface without
-    // invalidating the loaded windows.
+    // `property_id`, and `scheduled_start` from the schedule payload,
+    // so a rename or re-property doesn't surface without invalidating
+    // the loaded windows.
     invalidate(qc, ["my-schedule"]);
   },
 
   "task.completed": (event, qc) => {
-    const payload = event.data as unknown as TaskPayload;
-    qc.setQueryData<{ task: Task } & Record<string, unknown>>(
-      qk.task(payload.task.id),
-      (prev) => (prev ? { ...prev, task: payload.task } : prev),
-    );
+    const payload = event.data as unknown as TaskRefPayload;
+    // Same posture as `task.updated`: the canonical `TaskCompleted`
+    // event publishes `{task_id, completed_by}` only; subscribers
+    // re-fetch via REST. Invalidate the per-row detail key alongside
+    // the list / today / dashboard / history surfaces.
+    invalidate(qc, qk.task(payload.task_id));
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
@@ -370,11 +389,10 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
   },
 
   "task.skipped": (event, qc) => {
-    const payload = event.data as unknown as TaskPayload;
-    qc.setQueryData<{ task: Task } & Record<string, unknown>>(
-      qk.task(payload.task.id),
-      (prev) => (prev ? { ...prev, task: payload.task } : prev),
-    );
+    const payload = event.data as unknown as TaskRefPayload;
+    // Same posture as `task.updated`: the canonical `TaskSkipped`
+    // event publishes `{task_id, reason}` only.
+    invalidate(qc, qk.task(payload.task_id));
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());

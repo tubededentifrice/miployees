@@ -36,7 +36,7 @@ from app.api.transport.sse import (
 from app.events import bus as default_bus
 from app.events import registry as registry_module
 from app.events.registry import ALL_ROLES, Event, register
-from app.events.types import TaskCreated
+from app.events.types import TaskCompleted, TaskCreated, TaskSkipped, TaskUpdated
 
 
 def _fresh_id() -> _ParsedLastEventId:
@@ -864,6 +864,143 @@ class TestBindToBus:
         assert data["workspace_id"] == "01HX00000000000000000WS0000"
         # Timestamp is serialised as ISO-8601 string.
         assert data["occurred_at"].startswith("2026-04-24")
+
+
+# ---------------------------------------------------------------------------
+# Wire-shape contract for task.* events (cd-m0hz)
+#
+# The SPA dispatcher reads ``payload.task_id`` (and never a hand-shaped
+# ``payload.task`` object). Pin the canonical wire shape on the
+# server side so a future drift — adding a rendered ``Task`` field, for
+# instance — fails this test before it slips past review and the SPA
+# breaks silently. Spec refs:
+#
+# * ``docs/specs/06-tasks-and-scheduling.md`` — task event contract.
+# * ``docs/specs/14-web-frontend.md`` §"SSE-driven invalidation".
+# * Beads cd-m0hz — surfaced during cd-43wv selfreview.
+# ---------------------------------------------------------------------------
+
+
+class TestTaskEventWireShape:
+    """Pin the JSON payload shape for task.{updated,completed,skipped}.
+
+    The dispatcher consumes ``{task_id, ...}`` only — never a rendered
+    ``Task``. Subscribers re-fetch via REST under per-row authz.
+    """
+
+    _WS = "01HX00000000000000000WS0000"
+    _ACTOR = "01HX00000000000000000USR000"
+    _CORR = "01HX00000000000000000COR000"
+    _TASK = "01HX00000000000000000TSK000"
+
+    async def test_task_updated_payload_keys_are_minimal(
+        self,
+        fresh_fanout: SSEFanOut,
+        isolate_bus: None,
+    ) -> None:
+        """task.updated → ``{kind, workspace_id, task_id, changed_fields,
+        invalidates, actor_id, correlation_id, occurred_at}`` — never a
+        rendered ``task`` object.
+
+        The frame envelope (``actor_id`` + ``correlation_id`` +
+        ``occurred_at``) is added by the base :class:`Event` model_dump;
+        the SSE transport stamps ``kind``, ``workspace_id``, and
+        ``invalidates`` on top. The point of this test is what is
+        **not** there — no ``task`` field.
+        """
+        from app.events.bus import EventBus
+
+        local_bus = EventBus()
+        fresh_fanout.bind_to_bus(local_bus)
+        sub = fresh_fanout.subscribe(
+            workspace_id=self._WS, user_id=self._ACTOR, role="manager"
+        )
+        local_bus.publish(
+            TaskUpdated(
+                workspace_id=self._WS,
+                actor_id=self._ACTOR,
+                correlation_id=self._CORR,
+                occurred_at=_utc(),
+                task_id=self._TASK,
+                changed_fields=("title", "scheduled_for_local"),
+            )
+        )
+        raw = await asyncio.wait_for(sub.queue.get(), 0.5)
+        data = json.loads(_parse_frames(raw)[0]["data"])
+
+        # The keys the SPA dispatcher reads.
+        assert data["kind"] == "task.updated"
+        assert data["workspace_id"] == self._WS
+        assert data["task_id"] == self._TASK
+        assert data["changed_fields"] == ["title", "scheduled_for_local"]
+        # The transport stamps the default invalidation map for the
+        # kind; ``task.updated`` invalidates the workspace tasks list.
+        assert data["invalidates"] == [["tasks"]]
+        # Crucially: no rendered ``Task`` field on the wire. The SPA
+        # treats the event as a pure invalidation signal.
+        assert "task" not in data
+
+    async def test_task_completed_payload_has_no_task_field(
+        self,
+        fresh_fanout: SSEFanOut,
+        isolate_bus: None,
+    ) -> None:
+        """task.completed → ``{task_id, completed_by, ...}`` — no ``task``."""
+        from app.events.bus import EventBus
+
+        local_bus = EventBus()
+        fresh_fanout.bind_to_bus(local_bus)
+        sub = fresh_fanout.subscribe(
+            workspace_id=self._WS, user_id=self._ACTOR, role="manager"
+        )
+        local_bus.publish(
+            TaskCompleted(
+                workspace_id=self._WS,
+                actor_id=self._ACTOR,
+                correlation_id=self._CORR,
+                occurred_at=_utc(),
+                task_id=self._TASK,
+                completed_by=self._ACTOR,
+            )
+        )
+        raw = await asyncio.wait_for(sub.queue.get(), 0.5)
+        data = json.loads(_parse_frames(raw)[0]["data"])
+        assert data["kind"] == "task.completed"
+        assert data["task_id"] == self._TASK
+        assert data["completed_by"] == self._ACTOR
+        assert "task" not in data
+
+    async def test_task_skipped_payload_has_no_task_field(
+        self,
+        fresh_fanout: SSEFanOut,
+        isolate_bus: None,
+    ) -> None:
+        """task.skipped → ``{task_id, skipped_by, reason, ...}`` — no ``task``."""
+        from app.events.bus import EventBus
+
+        local_bus = EventBus()
+        fresh_fanout.bind_to_bus(local_bus)
+        sub = fresh_fanout.subscribe(
+            workspace_id=self._WS, user_id=self._ACTOR, role="manager"
+        )
+        local_bus.publish(
+            TaskSkipped(
+                workspace_id=self._WS,
+                actor_id=self._ACTOR,
+                correlation_id=self._CORR,
+                occurred_at=_utc(),
+                task_id=self._TASK,
+                skipped_by=self._ACTOR,
+                reason="guest_left_early",
+            )
+        )
+        raw = await asyncio.wait_for(sub.queue.get(), 0.5)
+        data = json.loads(_parse_frames(raw)[0]["data"])
+        assert data["kind"] == "task.skipped"
+        assert data["task_id"] == self._TASK
+        assert data["skipped_by"] == self._ACTOR
+        assert data["reason"] == "guest_left_early"
+        assert "task" not in data
 
 
 # ---------------------------------------------------------------------------
