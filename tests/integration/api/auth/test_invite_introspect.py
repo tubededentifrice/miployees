@@ -60,7 +60,11 @@ from tests.factories.identity import bootstrap_user, bootstrap_workspace
 pytestmark = pytest.mark.integration
 
 
-_PINNED = datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC)
+# Anchored slightly behind real wall-clock so the magic-link token minted
+# by ``_seed_invite`` (TTL 24h) still has a valid ``exp`` claim when the
+# handler resolves it via :class:`SystemClock`. A fixed past instant
+# bit-rots the moment it falls outside that window — see cd-7920.
+_PINNED = datetime.now(tz=UTC) - timedelta(hours=1)
 _BASE_URL = "https://crew.day"
 
 
