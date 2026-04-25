@@ -359,7 +359,23 @@ POST   /api/v1/auth/magic/consume                # consume a break-glass code �
 POST   /api/v1/auth/recover/start                # self-service lost-device; body: {email, break_glass_code?}. Always 200 {status:"sent_if_exists"}.
 GET    /api/v1/auth/me
 POST   /api/v1/auth/logout                       # invalidate every active session for the caller (cause `logout`, §15 "Session-invalidation causes"); always 204 + Set-Cookie clearing `__Host-crewday_session` (best-effort: no cookie / invalid cookie still 204 + clear, no audit row)
-GET    /api/v1/me/workspaces                     # switcher payload for the current session
+GET    /api/v1/me/workspaces                     # cd-y5z3 — switcher payload for the
+                                                  # current session. Distinct from
+                                                  # /auth/me's `available_workspaces`:
+                                                  # carries {workspace_id, slug, name,
+                                                  # current_role, last_seen_at,
+                                                  # settings_override} per row so the
+                                                  # SPA workspace switcher can render
+                                                  # last-seen + per-workspace
+                                                  # branding without a follow-up
+                                                  # round-trip. Returns 401 on missing
+                                                  # / invalid session cookie; returns
+                                                  # `[]` for an authenticated user
+                                                  # who has no memberships yet (never
+                                                  # 404 — successful auth, legitimate
+                                                  # state). No PII in the payload —
+                                                  # only workspace metadata + the
+                                                  # caller's own role + last_seen_at.
 
 # Self-service email change (§03 "Self-service email change"). Passkey
 # session only; PATs and delegated tokens cannot touch email.
@@ -763,10 +779,32 @@ GET    /users/{id}
 PATCH  /users/{id}
 POST   /users/{id}/archive
 POST   /users/{id}/reinstate
-POST   /users/{id}/magic_link
-POST   /users/{id}/reset_passkey   # owner-initiated worker passkey reset (§03);
-                                   # mails the enrolment link to the worker AND a
-                                   # non-consumable notification copy to the owner
+POST   /users/{id}/magic_link      # cd-y5z3 — owner / manager re-mails a
+                                   # `recover_passkey` magic link to {id}.
+                                   # Body: {email_to_use?: str | null} (omit / null
+                                   # to mail the user's stored email). Action gate:
+                                   # `users.edit_profile_other` (default-allow:
+                                   # owners + managers, §05). Cross-workspace target
+                                   # collapses to 404 employee_not_found. Audit:
+                                   # `user.magic_link.issued` carries
+                                   # {subject_user_id, actor_user_id, purpose,
+                                   # destination_overridden}; the magic-link service
+                                   # writes its own `magic_link.sent` row in the
+                                   # same UoW. Returns 202 {user_id, status:"sent"}.
+POST   /users/{id}/reset_passkey   # cd-y5z3 — owner-initiated worker passkey reset
+                                   # (§03 "Owner-initiated worker passkey reset");
+                                   # mails the enrolment link (purpose=recover_passkey)
+                                   # to the worker AND a non-consumable notification
+                                   # copy to the calling owner with the worker's
+                                   # email masked. Body: empty. Action gate:
+                                   # `users.reset_passkey` (default-allow: `owners`
+                                   # only, root_protected_deny=true; managers fall
+                                   # through to 403 — they can still re-issue a
+                                   # link via `POST /users/{id}/magic_link`). Audit:
+                                   # `user.reset_passkey.initiated` with
+                                   # {subject_user_id, actor_user_id, workspace_id};
+                                   # plaintext email + IP never enter the diff.
+                                   # Returns 202 {user_id, status:"sent"}.
 
 GET    /employees                 # manager roster (cd-g6nf, cd-jtgo). Returns a
                                    # bare `Employee[]` JSON array — NOT the

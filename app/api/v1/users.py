@@ -25,6 +25,16 @@ Today's v1 surface:
   permission_group_member + user_workspace row for ``user_id`` in
   the caller's workspace, plus revokes all sessions scoped there.
   Honours the last-owner guard.
+* ``POST /users/{user_id}/magic_link`` — re-mails a ``recover_passkey``
+  magic link to the user (cd-y5z3). Action gate
+  ``users.edit_profile_other`` (default-allow: owners + managers,
+  §05). Body ``{email_to_use?: str | null}`` overrides the destination.
+* ``POST /users/{user_id}/reset_passkey`` — owner-initiated worker
+  passkey reset (cd-y5z3, §03 "Owner-initiated worker passkey
+  reset"). Action gate ``users.reset_passkey`` (default-allow:
+  ``owners`` only). Sends two emails — the consumable enrolment
+  link to the worker, a non-consumable notification copy to the
+  calling owner.
 
 Handler shape mirrors :mod:`app.api.v1.auth.signup` — unpack body,
 call the domain service, map typed errors to HTTP symbols. The
@@ -46,18 +56,25 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.adapters.db.identity.models import User
 from app.adapters.db.session import make_uow
-from app.adapters.db.workspace.models import Workspace
-from app.adapters.mail.ports import Mailer
+from app.adapters.db.workspace.models import UserWorkspace, Workspace
+from app.adapters.mail.ports import MailDeliveryError, Mailer
 from app.api.deps import current_workspace_context, db_session
+from app.audit import write_audit
+from app.auth import magic_link as magic_link_module
 from app.auth._throttle import Throttle
-from app.authz import PermissionDenied
+from app.authz import Permission, PermissionDenied, require
 from app.config import Settings, get_settings
 from app.domain.identity import membership
 from app.domain.identity.permission_groups import (
     LastOwnerMember,
     write_member_remove_rejected_audit,
 )
+from app.mail.templates import passkey_reset_notice as passkey_reset_notice_template
+from app.mail.templates import passkey_reset_worker as passkey_reset_worker_template
+from app.mail.templates import recovery_new_link as recovery_new_link_template
+from app.mail.templates import render as render_template
 from app.services.employees import (
     EmployeeNotFound,
     EmployeeProfileUpdate,
@@ -69,12 +86,16 @@ from app.services.employees import (
     update_profile,
 )
 from app.tenancy import WorkspaceContext, tenant_agnostic
+from app.util.clock import SystemClock
 
 __all__ = [
     "EmployeeProfileResponse",
     "EmployeeUpdateRequest",
     "InviteRequest",
     "InviteResponse",
+    "MagicLinkReissueRequest",
+    "MagicLinkReissueResponse",
+    "ResetPasskeyResponse",
     "build_users_router",
 ]
 
@@ -200,6 +221,55 @@ class EmployeeProfileResponse(BaseModel):
     created_at: str
 
 
+class MagicLinkReissueRequest(BaseModel):
+    """Request body for ``POST /users/{user_id}/magic_link``.
+
+    Body is empty by default — re-issuing the magic link uses the
+    target user's stored email. ``email_to_use`` is reserved so an
+    operator can override the destination (e.g. send the link to a
+    secondary address the user just confirmed) without first having
+    to update :attr:`User.email`. Phase 1 honours the override only
+    when explicitly set; an absent / null value falls back to the
+    user's row.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    email_to_use: str | None = Field(
+        default=None,
+        description=(
+            "Optional override destination address. When None / absent "
+            "the link is mailed to the user's stored email."
+        ),
+    )
+
+
+class MagicLinkReissueResponse(BaseModel):
+    """Response body for ``POST /users/{user_id}/magic_link``.
+
+    Carries the ``user_id`` (echoed for caller convenience) plus a
+    ``status`` symbol the SPA can switch on. Status is always
+    ``"sent"`` on the happy path; a future "queued" / "throttled"
+    branch can land without breaking the contract.
+    """
+
+    user_id: str
+    status: str = "sent"
+
+
+class ResetPasskeyResponse(BaseModel):
+    """Response body for ``POST /users/{user_id}/reset_passkey``.
+
+    ``status`` is always ``"sent"`` on the happy path. The body is
+    intentionally minimal — the operator-visible result lives in the
+    audit row + the two emails delivered; the HTTP envelope just
+    confirms the action started.
+    """
+
+    user_id: str
+    status: str = "sent"
+
+
 def _view_to_response(view: EmployeeView) -> EmployeeProfileResponse:
     """Project an :class:`EmployeeView` into the HTTP response shape."""
     return EmployeeProfileResponse(
@@ -275,8 +345,6 @@ def _client_ip(request: Request) -> str:
 
 def _resolve_inviter_display_name(session: Session, *, user_id: str) -> str:
     """Return the inviter's display name for the invite email copy."""
-    from app.adapters.db.identity.models import User
-
     with tenant_agnostic():
         user = session.get(User, user_id)
     if user is None:
@@ -290,6 +358,221 @@ def _resolve_workspace_name(session: Session, *, workspace_id: str) -> str:
     if row is None:
         return "your workspace"
     return row.name
+
+
+def _assert_workspace_membership(
+    session: Session, *, ctx: WorkspaceContext, user_id: str
+) -> UserWorkspace:
+    """Return the (user, workspace) :class:`UserWorkspace` row or raise 404.
+
+    Mirrors :func:`app.services.employees._assert_membership` — the
+    ``magic_link`` and ``reset_passkey`` routes both target a user
+    inside the caller's workspace, and a cross-workspace probe must
+    collapse to 404 ``employee_not_found`` rather than leaking the
+    user's existence (or absence) on a sibling tenant.
+    """
+    row = session.get(UserWorkspace, (user_id, ctx.workspace_id))
+    if row is None or row.workspace_id != ctx.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "employee_not_found"},
+        )
+    return row
+
+
+def _load_user(session: Session, *, user_id: str) -> User:
+    """Return the :class:`User` row for ``user_id`` or raise 404.
+
+    ``user`` is identity-scoped (not workspace-scoped); membership
+    against the caller's workspace MUST be verified independently
+    before this is called.
+    """
+    with tenant_agnostic():
+        row = session.get(User, user_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "employee_not_found"},
+        )
+    return row
+
+
+def _mask_email_for_notice(email: str) -> str:
+    """Return ``email`` with the local part collapsed for the notice copy.
+
+    Spec §03 "Owner-initiated worker passkey reset" pins the masked
+    shape (e.g. ``m***@example.com``). Keeps the first character of
+    the local part so the owner can do a quick sanity-check; replaces
+    the rest with three asterisks. Defensive against missing ``@`` —
+    in that case we collapse the whole string to ``"***"``.
+    """
+    if "@" not in email:
+        return "***"
+    local, _, domain = email.partition("@")
+    if not local:
+        return f"***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
+class _CapturingMailer:
+    """Recording :class:`Mailer` that intercepts the magic-link send.
+
+    Mirrors the pattern in :class:`app.auth.recovery._CapturingMailer`.
+    :func:`magic_link.request_link` mints the token and inserts the
+    nonce row; we re-use that mint pipeline (one source of truth for
+    token layout + rate-limiting + audit) but capture the rendered
+    body to recover the URL — which our caller then re-frames using
+    its own template.
+    """
+
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
+        self.captured_url: str | None = None
+
+    def send(
+        self,
+        *,
+        to: object,
+        subject: object,
+        body_text: str,
+        body_html: object = None,
+        headers: object = None,
+        reply_to: object = None,
+    ) -> str:
+        del to, subject, body_html, headers, reply_to
+        prefix = self._base_url.rstrip("/")
+        for line in body_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(prefix):
+                self.captured_url = stripped
+                return "captured"
+        # Defensive — magic-link's template always carries a URL.
+        # Failing loudly here is better than silently shipping a
+        # tokenless mail.
+        raise RuntimeError("users router capture: magic-link body did not carry a URL")
+
+
+def _issue_passkey_recovery_link(
+    session: Session,
+    *,
+    user: User,
+    target_email: str,
+    ip: str,
+    base_url: str,
+    throttle: Throttle,
+    settings: Settings,
+) -> str:
+    """Mint a ``recover_passkey`` magic link for ``user`` and return the URL.
+
+    Reuses :func:`magic_link.request_link` for the token mint + nonce
+    insert + ``audit.magic_link.sent`` audit row (single source of
+    truth for token layout, rate-limit, and forensic data). The
+    caller renders + sends the email itself so the body copy can
+    differentiate "manager re-issued a magic link" from
+    "self-service recovery".
+
+    ``target_email`` is the address the magic-link service will
+    pepper-hash for its own audit row; ``user.email`` is the canonical
+    form pinned to the row, so we always pass that — the caller does
+    not get to override the hash anchor (the override on the HTTP
+    surface only affects the destination of the rendered email, not
+    the forensic identity of the link).
+    """
+    del target_email  # reserved for a future override-aware nonce hash
+    capture = _CapturingMailer(base_url=base_url)
+    magic_link_module.request_link(
+        session,
+        email=user.email,
+        purpose="recover_passkey",
+        ip=ip,
+        mailer=capture,
+        base_url=base_url,
+        throttle=throttle,
+        settings=settings,
+        subject_id=user.id,
+    )
+    if capture.captured_url is None:  # pragma: no cover - defensive
+        raise RuntimeError("users router: magic-link service produced no URL")
+    return capture.captured_url
+
+
+def _send_recovery_link_email(
+    *,
+    mailer: Mailer,
+    to_email: str,
+    display_name: str,
+    url: str,
+) -> None:
+    """Render + send the standard recovery template (cd-y5z3 magic_link reissue).
+
+    The owner-initiated reissue uses the same body the self-service
+    recovery flow uses — the worker's mailbox already understands
+    "open this link to enrol a fresh passkey", so a separate template
+    would just diverge wording without adding signal. The 15-minute
+    TTL string matches the magic-link service's per-purpose ceiling
+    for ``recover_passkey``.
+    """
+    subject = render_template(recovery_new_link_template.SUBJECT)
+    body_text = render_template(
+        recovery_new_link_template.BODY_TEXT,
+        display_name=display_name,
+        url=url,
+        ttl_minutes="10",
+    )
+    mailer.send(to=[to_email], subject=subject, body_text=body_text)
+
+
+def _send_passkey_reset_worker_email(
+    *,
+    mailer: Mailer,
+    to_email: str,
+    worker_display_name: str,
+    owner_display_name: str,
+    workspace_name: str,
+    url: str,
+) -> None:
+    """Render + send the worker-side passkey-reset email."""
+    subject = render_template(passkey_reset_worker_template.SUBJECT)
+    body_text = render_template(
+        passkey_reset_worker_template.BODY_TEXT,
+        display_name=worker_display_name,
+        owner_display_name=owner_display_name,
+        workspace_name=workspace_name,
+        url=url,
+        ttl_minutes="10",
+    )
+    mailer.send(to=[to_email], subject=subject, body_text=body_text)
+
+
+def _send_passkey_reset_notice_email(
+    *,
+    mailer: Mailer,
+    to_email: str,
+    owner_display_name: str,
+    worker_display_name: str,
+    worker_email_masked: str,
+    workspace_name: str,
+    timestamp: str,
+    notice_url: str,
+) -> None:
+    """Render + send the owner-side notification copy.
+
+    Carries no consumable token — the link inside lands on
+    ``/recover/notice`` per spec §03 "Owner-initiated worker passkey
+    reset". The body explicitly tells the owner clicking the URL is
+    NOT an enrolment action.
+    """
+    subject = render_template(passkey_reset_notice_template.SUBJECT)
+    body_text = render_template(
+        passkey_reset_notice_template.BODY_TEXT,
+        owner_display_name=owner_display_name,
+        worker_display_name=worker_display_name,
+        worker_email_masked=worker_email_masked,
+        workspace_name=workspace_name,
+        timestamp=timestamp,
+        notice_url=notice_url,
+    )
+    mailer.send(to=[to_email], subject=subject, body_text=body_text)
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +812,251 @@ def build_users_router(
             raise _http_for_remove(exc) from exc
 
         return RemoveMemberResponse()
+
+    @router.post(
+        "/{user_id}/magic_link",
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=MagicLinkReissueResponse,
+        operation_id="users.magic_link.issue",
+        summary="Re-mail a recovery magic link to a user (manager+)",
+        # ``users.edit_profile_other`` (default-allow: owners + managers)
+        # gates the action — re-issuing a magic link is the same authority
+        # tier as editing someone else's profile (§12 "Users").
+        dependencies=[
+            Depends(Permission("users.edit_profile_other", scope_kind="workspace"))
+        ],
+    )
+    def post_magic_link(
+        user_id: str,
+        body: MagicLinkReissueRequest | None,
+        request: Request,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> MagicLinkReissueResponse:
+        """Re-mail a ``recover_passkey`` magic link to ``user_id``.
+
+        Authority gate: ``users.edit_profile_other`` (default-allow
+        owners + managers, per §05 catalog). Workers who hit this
+        route fall through to 403 ``permission_denied``.
+
+        Membership: the target must be a member of the caller's
+        workspace; a cross-tenant call collapses to 404
+        ``employee_not_found`` (matches the rest of the user-targeting
+        surface).
+
+        Audit: writes ``user.magic_link.issued`` with the actor + the
+        subject user id. The magic-link service writes its own
+        ``magic_link.sent`` row under an agnostic ctx — both rows
+        land in the same UoW.
+        """
+        if resolved_base_url is None:
+            raise RuntimeError(
+                "base_url / settings.public_url is not set; "
+                "cannot build magic-link URLs"
+            )
+
+        _assert_workspace_membership(session, ctx=ctx, user_id=user_id)
+        user = _load_user(session, user_id=user_id)
+
+        # ``email_to_use`` overrides the destination only — never the
+        # forensic anchor (the magic-link nonce always hashes the
+        # canonical user.email so abuse correlation joins cleanly).
+        target_email = (
+            body.email_to_use
+            if (body is not None and body.email_to_use)
+            else user.email
+        )
+
+        url = _issue_passkey_recovery_link(
+            session,
+            user=user,
+            target_email=target_email,
+            ip=_client_ip(request),
+            base_url=resolved_base_url,
+            throttle=throttle,
+            settings=cfg,
+        )
+
+        # Mailer outage must not fail the audit row — the link is
+        # already minted and committed (operator can re-render from
+        # the row). Mirrors the §15 swallow pattern in invite + magic
+        # link.
+        try:
+            _send_recovery_link_email(
+                mailer=mailer,
+                to_email=target_email,
+                display_name=user.display_name,
+                url=url,
+            )
+        except MailDeliveryError:
+            _log.warning(
+                "users magic_link reissue mail send failed for user %r; "
+                "swallowing so the link row commits and an operator can re-issue",
+                user_id,
+                exc_info=True,
+            )
+
+        write_audit(
+            session,
+            ctx,
+            entity_kind="user",
+            entity_id=user_id,
+            action="user.magic_link.issued",
+            diff={
+                "subject_user_id": user_id,
+                "actor_user_id": ctx.actor_id,
+                "purpose": "recover_passkey",
+                # ``email_to_use`` is logged as a boolean discriminator
+                # — the plaintext lives in the magic-link nonce + this
+                # endpoint's mailer call, never in the audit diff
+                # (§15 PII minimisation).
+                "destination_overridden": bool(body is not None and body.email_to_use),
+            },
+        )
+
+        return MagicLinkReissueResponse(user_id=user_id)
+
+    @router.post(
+        "/{user_id}/reset_passkey",
+        status_code=status.HTTP_202_ACCEPTED,
+        response_model=ResetPasskeyResponse,
+        operation_id="users.reset_passkey",
+        summary="Owner-initiated worker passkey reset (owners only)",
+    )
+    def post_reset_passkey(
+        user_id: str,
+        request: Request,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> ResetPasskeyResponse:
+        """Trigger an owner-initiated passkey reset for ``user_id``.
+
+        Spec §03 "Owner-initiated worker passkey reset". Authority
+        gate: ``users.reset_passkey`` (default-allow ``owners`` only,
+        per §05 catalog). Managers fall through to 403; the lighter
+        re-issue surface (``POST /{user_id}/magic_link``) remains
+        available to them.
+
+        Side effects (one UoW):
+
+        1. Mint a ``recover_passkey`` magic link bound to the worker.
+        2. Send the worker the real magic link (claimable).
+        3. Send the owner a non-consumable notification copy with
+           the worker's email masked.
+        4. Audit ``user.reset_passkey.initiated`` with subject + actor.
+
+        Membership / 404 / 403 vocabulary matches the sibling
+        ``/{user_id}/magic_link`` route.
+        """
+        # Owner-only gate, performed inline (not via the
+        # :class:`Permission` dependency) because the action key was
+        # added in this slice and we want the test to drive the
+        # default_allow=("owners",) path explicitly. Equivalent to
+        # ``Depends(Permission("users.reset_passkey", scope_kind="workspace"))``;
+        # kept inline so a future shift to the FastAPI dep is a single
+        # import swap without restructuring the body.
+        try:
+            require(
+                session,
+                ctx,
+                action_key="users.reset_passkey",
+                scope_kind="workspace",
+                scope_id=ctx.workspace_id,
+            )
+        except PermissionDenied as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "permission_denied",
+                    "action_key": "users.reset_passkey",
+                },
+            ) from exc
+
+        if resolved_base_url is None:
+            raise RuntimeError(
+                "base_url / settings.public_url is not set; "
+                "cannot build magic-link URLs"
+            )
+
+        _assert_workspace_membership(session, ctx=ctx, user_id=user_id)
+        worker = _load_user(session, user_id=user_id)
+        owner = _load_user(session, user_id=ctx.actor_id)
+        workspace_name = _resolve_workspace_name(session, workspace_id=ctx.workspace_id)
+
+        # Mint the (single) consumable magic link for the worker. The
+        # owner's notification copy carries no token — it points at
+        # ``/recover/notice`` so a forwarded copy lands on a "this is
+        # the notice, not the link" page rather than a redeemable
+        # ceremony (§03).
+        worker_url = _issue_passkey_recovery_link(
+            session,
+            user=worker,
+            target_email=worker.email,
+            ip=_client_ip(request),
+            base_url=resolved_base_url,
+            throttle=throttle,
+            settings=cfg,
+        )
+        notice_url = f"{resolved_base_url.rstrip('/')}/recover/notice"
+        now = SystemClock().now()
+
+        # Send both emails. A failure on either is logged + swallowed
+        # so the audit row + magic-link nonce commit; an operator can
+        # re-render either side from the audit trail. We do NOT race
+        # the two sends — fail-fast on the worker side would leave the
+        # owner's notification missing forensic context, so each send
+        # is wrapped independently.
+        try:
+            _send_passkey_reset_worker_email(
+                mailer=mailer,
+                to_email=worker.email,
+                worker_display_name=worker.display_name,
+                owner_display_name=owner.display_name,
+                workspace_name=workspace_name,
+                url=worker_url,
+            )
+        except MailDeliveryError:
+            _log.warning(
+                "reset_passkey: worker mail send failed for user %r",
+                user_id,
+                exc_info=True,
+            )
+        try:
+            _send_passkey_reset_notice_email(
+                mailer=mailer,
+                to_email=owner.email,
+                owner_display_name=owner.display_name,
+                worker_display_name=worker.display_name,
+                worker_email_masked=_mask_email_for_notice(worker.email),
+                workspace_name=workspace_name,
+                timestamp=now.isoformat(),
+                notice_url=notice_url,
+            )
+        except MailDeliveryError:
+            _log.warning(
+                "reset_passkey: owner notification mail send failed for user %r",
+                user_id,
+                exc_info=True,
+            )
+
+        write_audit(
+            session,
+            ctx,
+            entity_kind="user",
+            entity_id=user_id,
+            action="user.reset_passkey.initiated",
+            diff={
+                "subject_user_id": user_id,
+                "actor_user_id": ctx.actor_id,
+                "workspace_id": ctx.workspace_id,
+                # No plaintext emails, no plaintext IPs — the magic-
+                # link nonce already carries the forensic hashes
+                # under its own audit row, and re-recording them here
+                # would double the PII surface for no gain.
+            },
+        )
+
+        return ResetPasskeyResponse(user_id=user_id)
 
     return router
 

@@ -684,6 +684,23 @@ _RULE_DRIVEN: tuple[ActionSpec, ...] = (
         root_protected_deny=True,
     ),
     ActionSpec(
+        # cd-y5z3 — owner-initiated worker passkey reset
+        # (``POST /users/{id}/reset_passkey``). §03 "Owner-initiated
+        # worker passkey reset" pins the gate to **owners only**:
+        # mailing the worker a fresh enrolment link plus a non-
+        # consumable notification copy to the owner is a sensitive
+        # break-glass path — managers are intentionally excluded so a
+        # manager-tier compromise cannot pivot to wholesale credential
+        # rotation without an owner's hand on the trigger.
+        # ``root_protected_deny=True`` so a deny rule cannot strip the
+        # capability from owners (mirrors :data:`groups.manage_members`).
+        key="users.reset_passkey",
+        valid_scope_kinds=("workspace",),
+        default_allow=("owners",),
+        root_only=False,
+        root_protected_deny=True,
+    ),
+    ActionSpec(
         key="vendor_invoices.approve",
         valid_scope_kinds=("workspace", "property"),
         default_allow=("owners", "managers"),

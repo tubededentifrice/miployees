@@ -404,6 +404,13 @@ def _mount_auth_routers(
     # /auth/me — SPA identity-bootstrap probe. Mounted unconditionally
     # (no SMTP dependency) because every authenticated SPA load hits it.
     app.include_router(me_module.build_me_router(), prefix=bare_prefix)
+    # /me/workspaces — workspace-switcher payload (cd-y5z3). Bare-host
+    # alongside /auth/me because the switcher runs before a workspace
+    # is picked.
+    app.include_router(
+        me_module.build_me_workspaces_router(),
+        prefix=bare_prefix,
+    )
     # /me/tokens — identity-scoped personal-access-token CRUD (§03).
     # Bare-host because PATs live outside any workspace; the router
     # reads the session cookie itself, matching ``/auth/me``.
