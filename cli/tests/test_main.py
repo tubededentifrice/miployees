@@ -295,15 +295,21 @@ def test_python_dash_m_entry_point_module_exists() -> None:
 
 
 def test_placeholders_importable() -> None:
-    """The three placeholder modules exist so later phases can plug
+    """The remaining placeholder modules exist so later phases can plug
     in without churning import paths."""
     # Import-side-effect-only check: the mere ``from crewday import …``
     # statement at the top of this file would already fail the test
     # if a module was missing; adding explicit references keeps the
     # intent auditable.
+    #
+    # ``_client`` graduated from a placeholder to a real module in
+    # cd-2ms7 — its public surface is now populated and tested in
+    # ``cli/tests/test_client.py``. ``_config`` and ``_output`` are
+    # still placeholders (cd-cksj, cd-1cfg).
     from crewday import _client, _config, _output
 
-    assert _client.__all__ == []
+    assert "CrewdayClient" in _client.__all__
+    assert "ApiError" in _client.__all__
     assert _config.__all__ == []
     assert _output.__all__ == []
 
