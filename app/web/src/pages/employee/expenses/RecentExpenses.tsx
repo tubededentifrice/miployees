@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
+import { fetchAllExpenseClaims } from "@/lib/expenses";
 import { formatMoney } from "@/lib/money";
 import { fmtDate } from "@/lib/dates";
 import { Loading } from "@/components/common";
-import type { Expense } from "@/types/api";
 import { STATUS_TONE } from "./lib/expenseHelpers";
 
 // "My recent expenses" — always visible below the form so the worker
@@ -12,11 +11,19 @@ import { STATUS_TONE } from "./lib/expenseHelpers";
 // without leaving the page. Pending / approved / reimbursed all flow
 // through the same list; the chip tone (`STATUS_TONE`) is the only
 // thing that distinguishes them.
+//
+// Reads `GET /api/v1/expenses` with no `user_id` — the cd-t6y2 service
+// defaults to the caller's own claims (per
+// `app.domain.expenses.claims.list_for_user`). The legacy
+// `?mine=true` query string was a mock-era artefact; the production
+// endpoint never honoured it, and FastAPI silently ignored the param.
+// Tracked separately under cd-qcj2 if "explicit self-list" semantics
+// ever resurface.
 
 export default function RecentExpenses() {
   const q = useQuery({
     queryKey: qk.expenses("mine"),
-    queryFn: () => fetchJson<Expense[]>("/api/v1/expenses?mine=true"),
+    queryFn: () => fetchAllExpenseClaims(),
   });
 
   return (
@@ -29,40 +36,24 @@ export default function RecentExpenses() {
       ) : (
         <ul className="expense-list">
           {q.data.map((x) => {
-            // Show the converted total only when the destination
-            // currency differs — if the worker filed in EUR and is
-            // paid in EUR, the second line is redundant noise.
-            const converted =
-              x.owed_currency &&
-              x.owed_amount_cents != null &&
-              x.owed_currency !== x.currency;
+            // Drafts have no `submitted_at`; fall back to the
+            // purchase date so the row always anchors to a moment.
+            const stamp = x.submitted_at ?? x.purchased_at;
             return (
               <li key={x.id} className="expense-row">
                 <div className="expense-row__main">
-                  <strong>{x.merchant}</strong>
-                  <span className="expense-row__note">{x.note}</span>
+                  <strong>{x.vendor}</strong>
+                  <span className="expense-row__note">{x.note_md}</span>
                   <span className="expense-row__time">
-                    {fmtDate(x.submitted_at)}
+                    {fmtDate(stamp)}
                   </span>
                 </div>
                 <div className="expense-row__side">
                   <span className="expense-row__amount">
-                    {formatMoney(x.amount_cents, x.currency)}
+                    {formatMoney(x.total_amount_cents, x.currency)}
                   </span>
-                  {converted && (
-                    <span
-                      className="expense-row__owed"
-                      title={`Snapped at approval: 1 ${x.currency} = ${x.owed_exchange_rate} ${x.owed_currency} (${x.owed_rate_source})`}
-                    >
-                      {/* `owed_amount_cents` and `owed_currency` are
-                          guaranteed non-null inside the `converted`
-                          branch above, but TS narrows on each access
-                          rather than on the boolean alias. */}
-                      = {formatMoney(x.owed_amount_cents!, x.owed_currency!)}
-                    </span>
-                  )}
-                  <span className={"chip chip--sm chip--" + STATUS_TONE[x.status]}>
-                    {x.status}
+                  <span className={"chip chip--sm chip--" + STATUS_TONE[x.state]}>
+                    {x.state}
                   </span>
                 </div>
               </li>

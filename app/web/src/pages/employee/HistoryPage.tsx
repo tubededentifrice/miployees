@@ -111,26 +111,33 @@ export default function HistoryPage() {
           {q.data.expenses.length === 0 ? (
             <li className="empty-state empty-state--quiet">No past expenses.</li>
           ) : (
-            q.data.expenses.map((x) => (
-              <li key={x.id} className="stack-row">
-                <div>
-                  <strong>
-                    {x.merchant} · {formatMoney(x.amount_cents, x.currency)}
-                  </strong>
-                  <div className="stack-row__sub">
-                    {fmtDate(x.submitted_at)} · {x.note}
+            q.data.expenses.map((x) => {
+              // History only carries decided rows, so `submitted_at`
+              // is never null; guard defensively in case the
+              // `/api/v1/history` endpoint (still mock-only, tracked
+              // separately) ever drifts.
+              const stamp = x.submitted_at ?? x.purchased_at;
+              return (
+                <li key={x.id} className="stack-row">
+                  <div>
+                    <strong>
+                      {x.vendor} · {formatMoney(x.total_amount_cents, x.currency)}
+                    </strong>
+                    <div className="stack-row__sub">
+                      {fmtDate(stamp)} · {x.note_md}
+                    </div>
                   </div>
-                </div>
-                <span
-                  className={
-                    "chip chip--sm chip--" +
-                    (x.status === "reimbursed" ? "moss" : "sky")
-                  }
-                >
-                  {cap(x.status)}
-                </span>
-              </li>
-            ))
+                  <span
+                    className={
+                      "chip chip--sm chip--" +
+                      (x.state === "reimbursed" ? "moss" : "sky")
+                    }
+                  >
+                    {cap(x.state)}
+                  </span>
+                </li>
+              );
+            })
           )}
         </ul>
       ) : (
