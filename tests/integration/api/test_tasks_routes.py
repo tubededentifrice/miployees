@@ -474,6 +474,107 @@ class TestSchedules:
             for row in body["data"]:
                 assert row["template_id"] in body["templates_by_id"]
 
+    def test_list_carries_default_assignee_id_and_rrule_human(
+        self,
+        session_factory: sessionmaker[Session],
+        seeded: dict[str, Any],
+    ) -> None:
+        """Each schedule row carries the SPA-facing derived fields.
+
+        ``default_assignee_id`` mirrors the wire-name the SPA's
+        ``Schedule`` TS type expects (the domain field is
+        ``default_assignee``); ``rrule_human`` is a short English
+        cadence label so the manager Schedules page renders the
+        recurrence column without reparsing the RRULE in TS.
+        """
+        with _client_for(session_factory, seeded["owner_ctx"]) as client:
+            template_id = self._create_template(client, name="Cadence parent")
+            # Schedule with a default assignee.
+            client.post(
+                "/api/v1/schedules",
+                json={
+                    "name": "Weekly Mondays",
+                    "template_id": template_id,
+                    "default_assignee": seeded["worker_id"],
+                    "rrule": "RRULE:FREQ=WEEKLY;BYDAY=MO",
+                    "dtstart_local": "2026-04-20T09:00",
+                    "active_from": "2026-04-20",
+                },
+            )
+            # Schedule with no default assignee (None on the wire).
+            client.post(
+                "/api/v1/schedules",
+                json={
+                    "name": "Daily turnover",
+                    "template_id": template_id,
+                    "rrule": "RRULE:FREQ=DAILY",
+                    "dtstart_local": "2026-04-21T07:00",
+                    "active_from": "2026-04-21",
+                },
+            )
+
+            r = client.get("/api/v1/schedules")
+            assert r.status_code == 200, r.text
+            body = r.json()
+
+            rows_by_name = {row["name"]: row for row in body["data"]}
+            assert set(rows_by_name) == {"Weekly Mondays", "Daily turnover"}
+
+            # Both fields are present on every row — never undefined,
+            # which is the SPA-side regression cd-r4gp tracks.
+            for row in body["data"]:
+                assert "default_assignee_id" in row
+                assert "rrule_human" in row
+                # ``default_assignee`` (the legacy domain field name) is
+                # NOT on the wire — the SPA reads ``_id``.
+                assert "default_assignee" not in row
+
+            mondays = rows_by_name["Weekly Mondays"]
+            assert mondays["default_assignee_id"] == seeded["worker_id"]
+            assert mondays["rrule_human"] == "Every Monday at 09:00"
+
+            daily = rows_by_name["Daily turnover"]
+            assert daily["default_assignee_id"] is None
+            assert daily["rrule_human"] == "Every day at 07:00"
+
+    def test_get_schedule_carries_default_assignee_id_and_rrule_human(
+        self,
+        session_factory: sessionmaker[Session],
+        seeded: dict[str, Any],
+    ) -> None:
+        """``GET /schedules/{id}`` and the create response share the shape.
+
+        The list envelope is the SPA's primary read path, but the
+        single-resource read + the ``201`` body must match — otherwise
+        an SPA cache priming on a POST or a refetch lands a different
+        wire shape. cd-r4gp's regression covers both surfaces.
+        """
+        with _client_for(session_factory, seeded["owner_ctx"]) as client:
+            template_id = self._create_template(client, name="Single read")
+            create = client.post(
+                "/api/v1/schedules",
+                json={
+                    "name": "Saturdays",
+                    "template_id": template_id,
+                    "default_assignee": seeded["worker_id"],
+                    "rrule": "RRULE:FREQ=WEEKLY;BYDAY=SA",
+                    "dtstart_local": "2026-04-18T08:00",
+                    "active_from": "2026-04-18",
+                },
+            )
+            assert create.status_code == 201, create.text
+            created_body = create.json()
+            assert created_body["default_assignee_id"] == seeded["worker_id"]
+            assert created_body["rrule_human"] == "Every Saturday at 08:00"
+            assert "default_assignee" not in created_body
+
+            r = client.get(f"/api/v1/schedules/{created_body['id']}")
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["default_assignee_id"] == seeded["worker_id"]
+            assert body["rrule_human"] == "Every Saturday at 08:00"
+            assert "default_assignee" not in body
+
     def test_list_sidecar_only_carries_referenced_templates(
         self,
         session_factory: sessionmaker[Session],
