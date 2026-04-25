@@ -55,18 +55,29 @@ export function OverrideDialog({
   const [ends, setEnds] = useState<string>("17:00");
   const [reason, setReason] = useState("");
 
+  // Re-init only when the dialog OPENS (iso flips from null to a date).
+  // We deliberately don't depend on `pattern`: once the dialog is open,
+  // an SSE-driven `["my-schedule"]` invalidation regenerates the merged
+  // weekly_availability payload (and hence the `pattern` reference) on
+  // every event — depending on it would clobber the worker's half-typed
+  // hours mid-edit. The pattern is read via a ref so the seed values
+  // come from whatever was current when the dialog opened, and the
+  // live `pattern` prop is still used at render time for `wouldNarrow`.
+  const patternRef = useRef(pattern);
+  patternRef.current = pattern;
   useEffect(() => {
     if (iso === null) return;
+    const seed = patternRef.current;
     setAvailable(true);
-    setStarts(pattern?.starts_local ?? "09:00");
-    setEnds(pattern?.ends_local ?? "17:00");
+    setStarts(seed?.starts_local ?? "09:00");
+    setEnds(seed?.ends_local ?? "17:00");
     setReason("");
     const d = dialogRef.current;
     if (d && !d.open) d.showModal();
     return () => {
       if (d && d.open) d.close();
     };
-  }, [iso, pattern]);
+  }, [iso]);
 
   const m = useMutation({
     mutationFn: (body: unknown) =>
@@ -190,6 +201,10 @@ export function LeaveDialog({
   const [category, setCategory] = useState<Leave["category"]>("vacation");
   const [note, setNote] = useState("");
 
+  // Re-init only when the dialog OPENS (iso flips). The seed values are
+  // derived from `iso` itself plus static defaults; no data-derived
+  // prop drives this effect, so an SSE-driven `["my-schedule"]`
+  // invalidation can't clobber a half-typed leave request.
   useEffect(() => {
     if (iso === null) return;
     setStarts(iso);
