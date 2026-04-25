@@ -362,3 +362,84 @@ class TestTenancy:
         r = client.post(f"/users/{sibling_id}/magic_link", json={})
         assert r.status_code == 404, r.text
         assert r.json()["detail"]["error"] == "employee_not_found"
+
+
+class TestPostMagicLinkOutboxOrdering:
+    """cd-9slq: SMTP send must run *after* the magic-link nonce +
+    audit are durable.
+
+    Mirrors :class:`tests.unit.auth.test_magic_link.TestRequestLinkOutboxOrdering`
+    at the manager-mediated reissue surface. The router opens its own
+    ``with make_uow() as session:`` block; if the commit fails (schema
+    drift, FK violation, transient driver error) the deferred SMTP
+    send is never invoked, so no working ``recover_passkey`` token
+    reaches the inbox without the matching nonce + audit row durable
+    on disk.
+    """
+
+    def test_commit_failure_before_deliver_does_not_send_email(
+        self,
+        owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+        mailer: InMemoryMailer,
+        throttle: Throttle,
+        settings: Settings,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Inject a commit failure into the router's UoW; assert the
+        recording mailer never fires.
+        """
+        from app.adapters.db import session as session_module
+        from app.adapters.db.session import UnitOfWorkImpl
+
+        ctx, factory, ws_id = owner_ctx
+        target_id = _seed_target_user(
+            factory,
+            workspace_id=ws_id,
+            email="outbox-target@example.com",
+            display_name="Outbox Target",
+        )
+        client = _client(
+            ctx, factory, mailer=mailer, throttle=throttle, settings=settings
+        )
+
+        # Install a wrapper around UnitOfWorkImpl that raises on
+        # commit. Mirrors the session-level commit override in
+        # :class:`tests.unit.auth.test_magic_link.TestRequestLinkOutboxOrdering`
+        # but applied at the ``make_uow`` factory layer because the
+        # router owns the UoW lifetime here.
+        original_uow_init = UnitOfWorkImpl.__init__
+
+        class _CommitFailingUoW(UnitOfWorkImpl):
+            def __exit__(
+                self,
+                exc_type: object,
+                exc_val: object,
+                exc_tb: object,
+            ) -> bool:
+                # Roll back to keep the session consistent (mirrors the
+                # real ``UnitOfWorkImpl.__exit__`` rollback path) then
+                # raise so the router's outer ``with`` propagates a
+                # commit-time failure.
+                if self._session is not None:
+                    try:
+                        self._session.rollback()
+                    finally:
+                        self._session.close()
+                        self._session = None
+                raise RuntimeError("simulated commit failure")
+
+        monkeypatch.setattr(session_module, "UnitOfWorkImpl", _CommitFailingUoW)
+        del original_uow_init
+
+        # The router will hit the failure inside its ``with
+        # make_uow():`` block; FastAPI's TestClient was built with
+        # ``raise_server_exceptions=False`` so the failure surfaces
+        # as a 500 instead of propagating into the test.
+        r = client.post(f"/users/{target_id}/magic_link", json={})
+        assert r.status_code == 500
+        # The mailer was never invoked — the queued reissue-template
+        # send is post-commit and the failure short-circuits it
+        # (cd-9slq invariant).
+        assert mailer.sent == [], (
+            f"mailer was invoked despite commit failure: {mailer.sent!r}"
+        )

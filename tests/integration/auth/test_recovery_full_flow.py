@@ -171,6 +171,8 @@ def client(
     settings: Settings,
 ) -> Iterator[TestClient]:
     """FastAPI :class:`TestClient` mounted on the recovery router."""
+    import app.adapters.db.session as _session_mod
+
     app = FastAPI()
     router = build_recovery_router(
         mailer=mailer,
@@ -194,8 +196,24 @@ def client(
             s.close()
 
     app.dependency_overrides[_db_session_dep] = _session
-    with TestClient(app) as c:
-        yield c
+
+    # cd-9slq: the router opens its own ``with make_uow():`` block to
+    # commit before firing the deferred SMTP send. ``make_uow`` reads
+    # the module-level default sessionmaker — without this redirect
+    # the router's UoW would bind to whatever DB the default factory
+    # was last built for instead of this test's per-test engine.
+    # Mirrors :mod:`tests.tenant.conftest` and the autouse fixture
+    # in :mod:`tests.unit.api.v1.identity.conftest`.
+    original_engine = _session_mod._default_engine
+    original_factory = _session_mod._default_sessionmaker_
+    _session_mod._default_engine = engine
+    _session_mod._default_sessionmaker_ = factory
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        _session_mod._default_engine = original_engine
+        _session_mod._default_sessionmaker_ = original_factory
 
     # Sweep committed rows so sibling tests see a clean table.
     with factory() as s:

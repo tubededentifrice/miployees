@@ -26,10 +26,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.audit.models import AuditLog
 from app.adapters.db.base import Base
-from app.adapters.db.identity.models import Invite
+from app.adapters.db.identity.models import Invite, MagicLinkNonce
 from app.adapters.db.session import make_engine
 from app.adapters.mail.ports import MailDeliveryError
 from app.auth._throttle import Throttle
+from app.auth.magic_link import PendingDispatch
 from app.config import Settings
 from app.domain.identity import membership
 from app.tenancy import registry
@@ -37,6 +38,7 @@ from app.tenancy.context import WorkspaceContext
 from app.tenancy.current import reset_current, set_current
 from app.tenancy.orm_filter import install_tenant_filter
 from app.util.clock import FrozenClock
+from tests._fakes.mailer import InMemoryMailer
 from tests.factories.identity import bootstrap_user, bootstrap_workspace
 
 _PINNED = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
@@ -229,3 +231,119 @@ class TestInviteMailDeliveryGuard:
         assert isinstance(diff, dict)
         # Plaintext never leaks through on the rollback-free path.
         assert "invitee@example.com" not in str(diff)
+
+
+class TestInviteOutboxOrdering:
+    """cd-9slq: SMTP send must run *after* invite + nonce + audit are
+    durable.
+
+    Mirrors :class:`tests.unit.auth.test_magic_link.TestRequestLinkOutboxOrdering`
+    at the membership-domain layer. Production callers (the
+    ``POST /users/invite`` HTTP router) sequence ``with UoW: invite()
+    → commit → dispatch.deliver()``; a commit failure short-circuits
+    the invite-flavoured SMTP send so no working ``grant_invite``
+    token reaches the inbox without the matching :class:`Invite`
+    row durable on disk.
+    """
+
+    def test_dispatch_collected_does_not_send_email_until_deliver(
+        self,
+        env: tuple[Session, WorkspaceContext],
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """``invite`` queues writes + the deferred send onto the
+        :class:`PendingDispatch`; the recording mailer stays
+        untouched until the caller invokes ``dispatch.deliver()``.
+        """
+        session, ctx = env
+        mailer = InMemoryMailer()
+        dispatch = PendingDispatch()
+        outcome = membership.invite(
+            session,
+            ctx,
+            email="lazy@example.com",
+            display_name="Lazy",
+            grants=[
+                {
+                    "scope_kind": "workspace",
+                    "scope_id": ctx.workspace_id,
+                    "grant_role": "worker",
+                }
+            ],
+            mailer=mailer,
+            throttle=throttle,
+            base_url=_BASE_URL,
+            settings=settings,
+            inviter_display_name="Owner",
+            workspace_name=ctx.workspace_slug,
+            dispatch=dispatch,
+        )
+        # Invite + magic-link nonce queued on the session.
+        assert session.get(Invite, outcome.id) is not None
+        nonces = session.scalars(select(MagicLinkNonce)).all()
+        assert len(nonces) == 1
+        # Mailer untouched until ``dispatch.deliver()`` fires.
+        assert mailer.sent == [], f"mailer fired before deliver(): {mailer.sent!r}"
+        dispatch.deliver()
+        assert len(mailer.sent) == 1
+
+    def test_commit_failure_before_deliver_does_not_send_email(
+        self,
+        env: tuple[Session, WorkspaceContext],
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """The cd-t2jz repro on the membership domain: commit fails
+        → no email goes out.
+        """
+        session, ctx = env
+        mailer = InMemoryMailer()
+        dispatch = PendingDispatch()
+        original_commit = session.commit
+
+        def _failing_commit() -> None:
+            session.rollback()
+            raise RuntimeError("simulated commit failure")
+
+        session.commit = _failing_commit  # type: ignore[method-assign]
+        try:
+            membership.invite(
+                session,
+                ctx,
+                email="outbox@example.com",
+                display_name="Outbox",
+                grants=[
+                    {
+                        "scope_kind": "workspace",
+                        "scope_id": ctx.workspace_id,
+                        "grant_role": "worker",
+                    }
+                ],
+                mailer=mailer,
+                throttle=throttle,
+                base_url=_BASE_URL,
+                settings=settings,
+                inviter_display_name="Owner",
+                workspace_name=ctx.workspace_slug,
+                dispatch=dispatch,
+            )
+            with pytest.raises(RuntimeError, match="simulated commit failure"):
+                session.commit()
+        finally:
+            session.commit = original_commit  # type: ignore[method-assign]
+
+        # Mailer never invoked — commit failure short-circuits
+        # ``dispatch.deliver()`` per cd-9slq.
+        assert mailer.sent == [], (
+            f"mailer was invoked despite commit failure: {mailer.sent!r}"
+        )
+        # The rolled-back invite + nonce + audit are gone.
+        assert session.scalars(select(Invite)).all() == []
+        assert session.scalars(select(MagicLinkNonce)).all() == []
+        assert (
+            session.scalars(
+                select(AuditLog).where(AuditLog.action == "user.invited")
+            ).all()
+            == []
+        )

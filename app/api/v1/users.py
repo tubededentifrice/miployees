@@ -59,7 +59,7 @@ from sqlalchemy.orm import Session
 from app.adapters.db.identity.models import User
 from app.adapters.db.session import make_uow
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
-from app.adapters.mail.ports import MailDeliveryError, Mailer
+from app.adapters.mail.ports import Mailer
 from app.api.deps import current_workspace_context, db_session
 from app.audit import write_audit
 from app.auth import magic_link as magic_link_module
@@ -478,16 +478,23 @@ def _issue_passkey_recovery_link(
     not get to override the hash anchor (the override on the HTTP
     surface only affects the destination of the rendered email, not
     the forensic identity of the link).
+
+    The magic-link send is intercepted by :class:`_CapturingMailer`
+    (an in-process intercept that stores the rendered URL without
+    touching SMTP), so firing it synchronously here is safe: no
+    real mail leaves the host. The outer manager-reissue template
+    is the actual SMTP touch and lives in the calling router, where
+    it is queued post-commit via :class:`PendingDispatch` (cd-9slq).
     """
     del target_email  # reserved for a future override-aware nonce hash
     capture = _CapturingMailer(base_url=base_url)
-    # cd-9i7z follow-up: deliver synchronously here so the
-    # capturing mailer fires inside the manager-mediated reissue
-    # flow's own UoW. The router-level commit-then-deliver fix
-    # (the cd-t2jz reproducer) is on the magic-link HTTP router
-    # only; lifting the deferred send across the manager-reissue
-    # surface is tracked separately. The exposure on this path is
-    # bounded by the manager-auth gate in the calling endpoint.
+    # The capturing mailer is a synchronous in-process intercept (no
+    # SMTP, no network) — its :meth:`send` only stores the rendered
+    # URL line. Firing :meth:`PendingMagicLink.deliver` here merely
+    # threads the URL through the closure and back to us via
+    # ``capture.captured_url``; no email leaves the host. The outer
+    # recovery-template send (which *does* hit SMTP) is queued
+    # post-commit on the calling router's :class:`PendingDispatch`.
     pending = magic_link_module.request_link(
         session,
         email=user.email,
@@ -621,9 +628,17 @@ def build_users_router(
         body: InviteRequest,
         request: Request,
         ctx: _Ctx,
-        session: _Db,
     ) -> InviteResponse:
-        """Create or refresh a pending invite and mail the magic link."""
+        """Create or refresh a pending invite and mail the magic link.
+
+        **Outbox ordering (cd-9slq).** Owns its own
+        :class:`UnitOfWork` instead of going through ``db_session``
+        so the invite-flavoured SMTP send fires only after the
+        invite row + magic-link nonce + ``user.invited`` audit are
+        durable. A commit failure short-circuits
+        ``dispatch.deliver()`` so no working invite token reaches
+        the inbox without the matching invite row.
+        """
         del request  # ip currently unused; magic_link re-derives internally
         if resolved_base_url is None:
             raise RuntimeError(
@@ -635,28 +650,40 @@ def build_users_router(
         memberships_payload: list[dict[str, Any]] = [
             gm.model_dump() for gm in (body.permission_group_memberships or [])
         ]
-        inviter_display_name = _resolve_inviter_display_name(
-            session, user_id=ctx.actor_id
-        )
-        workspace_name = _resolve_workspace_name(session, workspace_id=ctx.workspace_id)
 
+        dispatch = magic_link_module.PendingDispatch()
         try:
-            outcome = membership.invite(
-                session,
-                ctx,
-                email=body.email,
-                display_name=body.display_name,
-                grants=grants_payload,
-                group_memberships=memberships_payload,
-                mailer=mailer,
-                throttle=throttle,
-                base_url=resolved_base_url,
-                settings=cfg,
-                inviter_display_name=inviter_display_name,
-                workspace_name=workspace_name,
-            )
+            with make_uow() as session:
+                assert isinstance(session, Session)
+                inviter_display_name = _resolve_inviter_display_name(
+                    session, user_id=ctx.actor_id
+                )
+                workspace_name = _resolve_workspace_name(
+                    session, workspace_id=ctx.workspace_id
+                )
+
+                outcome = membership.invite(
+                    session,
+                    ctx,
+                    email=body.email,
+                    display_name=body.display_name,
+                    grants=grants_payload,
+                    group_memberships=memberships_payload,
+                    mailer=mailer,
+                    throttle=throttle,
+                    base_url=resolved_base_url,
+                    settings=cfg,
+                    inviter_display_name=inviter_display_name,
+                    workspace_name=workspace_name,
+                    dispatch=dispatch,
+                )
         except membership.InviteBodyInvalid as exc:
             raise _http_for_invite(exc) from exc
+
+        # ``with`` exited cleanly → UoW committed → invite + nonce +
+        # audit are durable on disk. Now fire the queued invite-
+        # flavoured template post-commit (cd-9slq).
+        dispatch.deliver()
 
         return InviteResponse(
             invite_id=outcome.id,
@@ -841,7 +868,6 @@ def build_users_router(
         body: MagicLinkReissueRequest | None,
         request: Request,
         ctx: _Ctx,
-        session: _Db,
     ) -> MagicLinkReissueResponse:
         """Re-mail a ``recover_passkey`` magic link to ``user_id``.
 
@@ -858,6 +884,13 @@ def build_users_router(
         subject user id. The magic-link service writes its own
         ``magic_link.sent`` row under an agnostic ctx — both rows
         land in the same UoW.
+
+        **Outbox ordering (cd-9slq).** Owns its own
+        :class:`UnitOfWork` instead of going through ``db_session``.
+        The reissue-template SMTP send fires only after the magic-
+        link nonce + audit rows commit; a commit failure short-
+        circuits ``dispatch.deliver()`` and no working magic-link
+        token reaches the user inbox without a matching nonce.
         """
         if resolved_base_url is None:
             raise RuntimeError(
@@ -865,64 +898,74 @@ def build_users_router(
                 "cannot build magic-link URLs"
             )
 
-        _assert_workspace_membership(session, ctx=ctx, user_id=user_id)
-        user = _load_user(session, user_id=user_id)
+        dispatch = magic_link_module.PendingDispatch()
+        with make_uow() as session:
+            assert isinstance(session, Session)
+            _assert_workspace_membership(session, ctx=ctx, user_id=user_id)
+            user = _load_user(session, user_id=user_id)
 
-        # ``email_to_use`` overrides the destination only — never the
-        # forensic anchor (the magic-link nonce always hashes the
-        # canonical user.email so abuse correlation joins cleanly).
-        target_email = (
-            body.email_to_use
-            if (body is not None and body.email_to_use)
-            else user.email
-        )
-
-        url = _issue_passkey_recovery_link(
-            session,
-            user=user,
-            target_email=target_email,
-            ip=_client_ip(request),
-            base_url=resolved_base_url,
-            throttle=throttle,
-            settings=cfg,
-        )
-
-        # Mailer outage must not fail the audit row — the link is
-        # already minted and committed (operator can re-render from
-        # the row). Mirrors the §15 swallow pattern in invite + magic
-        # link.
-        try:
-            _send_recovery_link_email(
-                mailer=mailer,
-                to_email=target_email,
-                display_name=user.display_name,
-                url=url,
-            )
-        except MailDeliveryError:
-            _log.warning(
-                "users magic_link reissue mail send failed for user %r; "
-                "swallowing so the link row commits and an operator can re-issue",
-                user_id,
-                exc_info=True,
+            # ``email_to_use`` overrides the destination only — never the
+            # forensic anchor (the magic-link nonce always hashes the
+            # canonical user.email so abuse correlation joins cleanly).
+            target_email = (
+                body.email_to_use
+                if (body is not None and body.email_to_use)
+                else user.email
             )
 
-        write_audit(
-            session,
-            ctx,
-            entity_kind="user",
-            entity_id=user_id,
-            action="user.magic_link.issued",
-            diff={
-                "subject_user_id": user_id,
-                "actor_user_id": ctx.actor_id,
-                "purpose": "recover_passkey",
-                # ``email_to_use`` is logged as a boolean discriminator
-                # — the plaintext lives in the magic-link nonce + this
-                # endpoint's mailer call, never in the audit diff
-                # (§15 PII minimisation).
-                "destination_overridden": bool(body is not None and body.email_to_use),
-            },
-        )
+            url = _issue_passkey_recovery_link(
+                session,
+                user=user,
+                target_email=target_email,
+                ip=_client_ip(request),
+                base_url=resolved_base_url,
+                throttle=throttle,
+                settings=cfg,
+            )
+
+            # Capture every input :func:`_send_recovery_link_email`
+            # needs at mint time so the deferred send is a parameter-
+            # free closure the dispatch can fire post-commit.
+            captured_mailer = mailer
+            captured_to_email = target_email
+            captured_display_name = user.display_name
+            captured_url = url
+
+            def _deferred_reissue_send() -> None:
+                _send_recovery_link_email(
+                    mailer=captured_mailer,
+                    to_email=captured_to_email,
+                    display_name=captured_display_name,
+                    url=captured_url,
+                )
+
+            dispatch.add_callback(_deferred_reissue_send)
+
+            write_audit(
+                session,
+                ctx,
+                entity_kind="user",
+                entity_id=user_id,
+                action="user.magic_link.issued",
+                diff={
+                    "subject_user_id": user_id,
+                    "actor_user_id": ctx.actor_id,
+                    "purpose": "recover_passkey",
+                    # ``email_to_use`` is logged as a boolean discriminator
+                    # — the plaintext lives in the magic-link nonce + this
+                    # endpoint's mailer call, never in the audit diff
+                    # (§15 PII minimisation).
+                    "destination_overridden": bool(
+                        body is not None and body.email_to_use
+                    ),
+                },
+            )
+        # ``with`` exited cleanly → UoW committed → magic-link nonce +
+        # ``user.magic_link.issued`` audit are durable on disk. Only
+        # now do we fire the reissue-template SMTP send (cd-9slq);
+        # :meth:`PendingDispatch.deliver` swallows MailDeliveryError
+        # so a relay outage doesn't shadow the 202.
+        dispatch.deliver()
 
         return MagicLinkReissueResponse(user_id=user_id)
 
@@ -937,7 +980,6 @@ def build_users_router(
         user_id: str,
         request: Request,
         ctx: _Ctx,
-        session: _Db,
     ) -> ResetPasskeyResponse:
         """Trigger an owner-initiated passkey reset for ``user_id``.
 
@@ -957,114 +999,135 @@ def build_users_router(
 
         Membership / 404 / 403 vocabulary matches the sibling
         ``/{user_id}/magic_link`` route.
-        """
-        # Owner-only gate, performed inline (not via the
-        # :class:`Permission` dependency) because the action key was
-        # added in this slice and we want the test to drive the
-        # default_allow=("owners",) path explicitly. Equivalent to
-        # ``Depends(Permission("users.reset_passkey", scope_kind="workspace"))``;
-        # kept inline so a future shift to the FastAPI dep is a single
-        # import swap without restructuring the body.
-        try:
-            require(
-                session,
-                ctx,
-                action_key="users.reset_passkey",
-                scope_kind="workspace",
-                scope_id=ctx.workspace_id,
-            )
-        except PermissionDenied as exc:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "permission_denied",
-                    "action_key": "users.reset_passkey",
-                },
-            ) from exc
 
+        **Outbox ordering (cd-9slq).** Owns its own
+        :class:`UnitOfWork` instead of going through ``db_session``
+        so both SMTP sends fire only after the magic-link nonce +
+        ``user.reset_passkey.initiated`` audit rows commit. A commit
+        failure short-circuits ``dispatch.deliver()`` so neither the
+        worker's claimable link nor the owner's notice leaves the
+        host with rolled-back state.
+        """
         if resolved_base_url is None:
             raise RuntimeError(
                 "base_url / settings.public_url is not set; "
                 "cannot build magic-link URLs"
             )
 
-        _assert_workspace_membership(session, ctx=ctx, user_id=user_id)
-        worker = _load_user(session, user_id=user_id)
-        owner = _load_user(session, user_id=ctx.actor_id)
-        workspace_name = _resolve_workspace_name(session, workspace_id=ctx.workspace_id)
+        dispatch = magic_link_module.PendingDispatch()
+        with make_uow() as session:
+            assert isinstance(session, Session)
+            # Owner-only gate, performed inline (not via the
+            # :class:`Permission` dependency) because the action key was
+            # added in this slice and we want the test to drive the
+            # default_allow=("owners",) path explicitly. Equivalent to
+            # ``Depends(Permission("users.reset_passkey", scope_kind="workspace"))``;
+            # kept inline so a future shift to the FastAPI dep is a single
+            # import swap without restructuring the body.
+            try:
+                require(
+                    session,
+                    ctx,
+                    action_key="users.reset_passkey",
+                    scope_kind="workspace",
+                    scope_id=ctx.workspace_id,
+                )
+            except PermissionDenied as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "error": "permission_denied",
+                        "action_key": "users.reset_passkey",
+                    },
+                ) from exc
 
-        # Mint the (single) consumable magic link for the worker. The
-        # owner's notification copy carries no token — it points at
-        # ``/recover/notice`` so a forwarded copy lands on a "this is
-        # the notice, not the link" page rather than a redeemable
-        # ceremony (§03).
-        worker_url = _issue_passkey_recovery_link(
-            session,
-            user=worker,
-            target_email=worker.email,
-            ip=_client_ip(request),
-            base_url=resolved_base_url,
-            throttle=throttle,
-            settings=cfg,
-        )
-        notice_url = f"{resolved_base_url.rstrip('/')}/recover/notice"
-        now = SystemClock().now()
-
-        # Send both emails. A failure on either is logged + swallowed
-        # so the audit row + magic-link nonce commit; an operator can
-        # re-render either side from the audit trail. We do NOT race
-        # the two sends — fail-fast on the worker side would leave the
-        # owner's notification missing forensic context, so each send
-        # is wrapped independently.
-        try:
-            _send_passkey_reset_worker_email(
-                mailer=mailer,
-                to_email=worker.email,
-                worker_display_name=worker.display_name,
-                owner_display_name=owner.display_name,
-                workspace_name=workspace_name,
-                url=worker_url,
-            )
-        except MailDeliveryError:
-            _log.warning(
-                "reset_passkey: worker mail send failed for user %r",
-                user_id,
-                exc_info=True,
-            )
-        try:
-            _send_passkey_reset_notice_email(
-                mailer=mailer,
-                to_email=owner.email,
-                owner_display_name=owner.display_name,
-                worker_display_name=worker.display_name,
-                worker_email_masked=_mask_email_for_notice(worker.email),
-                workspace_name=workspace_name,
-                timestamp=now.isoformat(),
-                notice_url=notice_url,
-            )
-        except MailDeliveryError:
-            _log.warning(
-                "reset_passkey: owner notification mail send failed for user %r",
-                user_id,
-                exc_info=True,
+            _assert_workspace_membership(session, ctx=ctx, user_id=user_id)
+            worker = _load_user(session, user_id=user_id)
+            owner = _load_user(session, user_id=ctx.actor_id)
+            workspace_name = _resolve_workspace_name(
+                session, workspace_id=ctx.workspace_id
             )
 
-        write_audit(
-            session,
-            ctx,
-            entity_kind="user",
-            entity_id=user_id,
-            action="user.reset_passkey.initiated",
-            diff={
-                "subject_user_id": user_id,
-                "actor_user_id": ctx.actor_id,
-                "workspace_id": ctx.workspace_id,
-                # No plaintext emails, no plaintext IPs — the magic-
-                # link nonce already carries the forensic hashes
-                # under its own audit row, and re-recording them here
-                # would double the PII surface for no gain.
-            },
-        )
+            # Mint the (single) consumable magic link for the worker. The
+            # owner's notification copy carries no token — it points at
+            # ``/recover/notice`` so a forwarded copy lands on a "this is
+            # the notice, not the link" page rather than a redeemable
+            # ceremony (§03).
+            worker_url = _issue_passkey_recovery_link(
+                session,
+                user=worker,
+                target_email=worker.email,
+                ip=_client_ip(request),
+                base_url=resolved_base_url,
+                throttle=throttle,
+                settings=cfg,
+            )
+            notice_url = f"{resolved_base_url.rstrip('/')}/recover/notice"
+            now = SystemClock().now()
+
+            # Capture every input the deferred sends need at mint time
+            # so the dispatch entries are parameter-free closures.
+            # :meth:`PendingDispatch.deliver` swallows per-entry
+            # MailDeliveryError so a relay failure on the worker side
+            # does NOT abort the owner's notification (and vice versa)
+            # — the same independent-send guarantee the prior
+            # try/except blocks gave us, now lifted post-commit.
+            captured_mailer = mailer
+            captured_worker_email = worker.email
+            captured_worker_display_name = worker.display_name
+            captured_owner_email = owner.email
+            captured_owner_display_name = owner.display_name
+            captured_worker_email_masked = _mask_email_for_notice(worker.email)
+            captured_workspace_name = workspace_name
+            captured_now_iso = now.isoformat()
+            captured_worker_url = worker_url
+            captured_notice_url = notice_url
+
+            def _deferred_worker_send() -> None:
+                _send_passkey_reset_worker_email(
+                    mailer=captured_mailer,
+                    to_email=captured_worker_email,
+                    worker_display_name=captured_worker_display_name,
+                    owner_display_name=captured_owner_display_name,
+                    workspace_name=captured_workspace_name,
+                    url=captured_worker_url,
+                )
+
+            def _deferred_owner_send() -> None:
+                _send_passkey_reset_notice_email(
+                    mailer=captured_mailer,
+                    to_email=captured_owner_email,
+                    owner_display_name=captured_owner_display_name,
+                    worker_display_name=captured_worker_display_name,
+                    worker_email_masked=captured_worker_email_masked,
+                    workspace_name=captured_workspace_name,
+                    timestamp=captured_now_iso,
+                    notice_url=captured_notice_url,
+                )
+
+            dispatch.add_callback(_deferred_worker_send)
+            dispatch.add_callback(_deferred_owner_send)
+
+            write_audit(
+                session,
+                ctx,
+                entity_kind="user",
+                entity_id=user_id,
+                action="user.reset_passkey.initiated",
+                diff={
+                    "subject_user_id": user_id,
+                    "actor_user_id": ctx.actor_id,
+                    "workspace_id": ctx.workspace_id,
+                    # No plaintext emails, no plaintext IPs — the magic-
+                    # link nonce already carries the forensic hashes
+                    # under its own audit row, and re-recording them here
+                    # would double the PII surface for no gain.
+                },
+            )
+        # ``with`` exited cleanly → UoW committed → magic-link nonce +
+        # ``user.reset_passkey.initiated`` audit are durable. Now fire
+        # the two queued SMTP sends post-commit (cd-9slq).
+        dispatch.deliver()
 
         return ResetPasskeyResponse(user_id=user_id)
 

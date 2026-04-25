@@ -163,6 +163,35 @@ def throttle() -> Throttle:
     return Throttle()
 
 
+@pytest.fixture(autouse=True)
+def _redirect_default_uow_to_test_engine(
+    engine: Engine,
+    session_factory: sessionmaker[Session],
+) -> Iterator[None]:
+    """Redirect ``make_uow`` to the per-test engine.
+
+    The cd-9slq commit-before-send shape on
+    ``POST /me/email/change_request`` and ``POST /auth/email/verify``
+    opens its own ``with make_uow() as session:`` block so the SMTP
+    sends fire post-commit. ``make_uow`` reads the module-level
+    default sessionmaker — without this redirect the router's UoW
+    would bind to whatever DB the default factory was last built for
+    instead of the per-test in-memory engine. Mirrors
+    :func:`tests.unit.auth.test_recovery.redirect_default_engine`.
+    """
+    import app.adapters.db.session as _session_mod
+
+    original_engine = _session_mod._default_engine
+    original_factory = _session_mod._default_sessionmaker_
+    _session_mod._default_engine = engine
+    _session_mod._default_sessionmaker_ = session_factory
+    try:
+        yield
+    finally:
+        _session_mod._default_engine = original_engine
+        _session_mod._default_sessionmaker_ = original_factory
+
+
 @pytest.fixture
 def client(
     engine: Engine,

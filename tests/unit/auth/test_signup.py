@@ -13,6 +13,7 @@ without WebAuthn noise.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -57,6 +58,69 @@ from app.capabilities import Capabilities, DeploymentSettings, Features
 from app.config import Settings
 
 _PINNED = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
+
+
+# cd-9slq reshaped :func:`app.auth.signup.start_signup` to return a
+# :class:`PendingDispatch` whose :meth:`deliver` fires the deferred
+# magic-link send post-commit. Production callers (the signup HTTP
+# router) sandwich a ``UoW.__exit__`` between the two calls so a
+# commit failure short-circuits the send. The unit tests in this
+# module exercise the domain function in isolation against an
+# in-memory engine — none of them sit behind a UoW that needs that
+# ordering — so we wrap the ``signup`` module's ``start_signup``
+# attribute in a per-module proxy that folds the immediate deliver
+# back into a single call. Tests that *do* want to stress the
+# deferred-send invariant import :data:`_raw_start_signup` directly
+# (see :class:`TestStartSignupOutboxOrdering`).
+_raw_start_signup = signup.start_signup
+_real_signup_module = signup
+
+
+class _SignupModuleProxy:
+    """Per-module proxy that folds ``start_signup``'s dispatch deliver.
+
+    Wraps the real :mod:`app.auth.signup` namespace; every attribute
+    other than ``start_signup`` falls through unchanged. We rebind the
+    test module's local ``signup`` name to this proxy so the existing
+    ``signup.start_signup(...)`` call sites keep working without
+    monkey-patching the shared module (which would leak into other
+    test modules running under xdist's process-shared import).
+    """
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(_real_signup_module, name)
+
+    def start_signup(self, *args: object, **kwargs: object) -> None:
+        dispatch = _raw_start_signup(*args, **kwargs)  # type: ignore[arg-type]
+        dispatch.deliver()
+
+
+# Rebind the local module name. Callers of ``signup.start_signup``
+# below transparently route through the proxy.
+signup = _SignupModuleProxy()  # type: ignore[assignment]
+
+
+# cd-9slq: the signup HTTP router opens its own ``with make_uow():``
+# block to commit before firing the magic-link send. ``make_uow``
+# reads the module-level default sessionmaker — without this redirect
+# the router's UoW would open against whatever DB the default factory
+# was last built for instead of the per-test in-memory engine. Mirrors
+# the helper in :mod:`tests.unit.auth.test_recovery` and
+# :mod:`tests.tenant.conftest`.
+@contextlib.contextmanager
+def _redirect_default_engine_to(engine: Engine) -> Iterator[None]:
+    import app.adapters.db.session as _session_mod
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+    original_engine = _session_mod._default_engine
+    original_factory = _session_mod._default_sessionmaker_
+    _session_mod._default_engine = engine
+    _session_mod._default_sessionmaker_ = factory
+    try:
+        yield
+    finally:
+        _session_mod._default_engine = original_engine
+        _session_mod._default_sessionmaker_ = original_factory
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +707,7 @@ class TestRouterSlugTakenBody:
                 s.commit()
 
         app.dependency_overrides[db_session] = _db
-        with TestClient(app) as c:
+        with _redirect_default_engine_to(engine), TestClient(app) as c:
             yield c
 
     def test_slug_taken_returns_409_with_suggested_alternative(
@@ -920,6 +984,112 @@ class TestStartSignupEnumerationGuard:
             select(AuditLog).where(AuditLog.action == "magic_link.sent")
         ).all()
         assert len(magic_audits) == 1
+
+
+class TestStartSignupOutboxOrdering:
+    """cd-9slq: SMTP send must run *after* signup_attempt + nonce + audit
+    are durable.
+
+    Mirrors :class:`tests.unit.auth.test_magic_link.TestRequestLinkOutboxOrdering`
+    at the signup-domain layer. Production callers (the signup HTTP
+    router) sequence ``with UoW: start_signup() → commit →
+    dispatch.deliver()``; a commit failure short-circuits the SMTP
+    send entirely, so no working signup-verify token leaves the host
+    with a rolled-back ``SignupAttempt`` / ``MagicLinkNonce`` /
+    ``audit.signup.requested`` row.
+    """
+
+    def test_pending_returned_does_not_send_email_until_deliver(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+        capabilities_enabled: Capabilities,
+    ) -> None:
+        """``start_signup`` queues the writes + the deferred send; mailer
+        stays untouched until the caller invokes
+        :meth:`PendingDispatch.deliver`.
+        """
+        dispatch = _raw_start_signup(
+            session,
+            email="lazy@example.com",
+            desired_slug="villa-lazy",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            throttle=throttle,
+            capabilities=capabilities_enabled,
+            now=_PINNED,
+            settings=settings,
+        )
+        # Writes queued on the session — visible pre-commit because
+        # the inserts have flushed.
+        attempts = session.scalars(select(SignupAttempt)).all()
+        assert len(attempts) == 1
+        nonces = session.scalars(select(MagicLinkNonce)).all()
+        assert len(nonces) == 1
+        # Mailer is untouched until ``dispatch.deliver()`` fires.
+        assert mailer.sent == [], f"mailer fired before deliver(): {mailer.sent!r}"
+        dispatch.deliver()
+        assert len(mailer.sent) == 1
+
+    def test_commit_failure_before_deliver_does_not_send_email(
+        self,
+        session: Session,
+        engine: Engine,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+        capabilities_enabled: Capabilities,
+    ) -> None:
+        """The cd-t2jz repro on the signup domain: commit fails → no
+        email goes out. Mirrors
+        :meth:`tests.unit.auth.test_magic_link.TestRequestLinkOutboxOrdering.test_commit_failure_before_deliver_does_not_send_email`.
+        """
+        original_commit = session.commit
+
+        def _failing_commit() -> None:
+            session.rollback()
+            raise RuntimeError("simulated commit failure")
+
+        session.commit = _failing_commit  # type: ignore[method-assign]
+        dispatch = None
+        try:
+            dispatch = _raw_start_signup(
+                session,
+                email="outbox@example.com",
+                desired_slug="villa-outbox",
+                ip="127.0.0.1",
+                mailer=mailer,
+                base_url="https://crew.day",
+                throttle=throttle,
+                capabilities=capabilities_enabled,
+                now=_PINNED,
+                settings=settings,
+            )
+            # Production routers commit BEFORE
+            # ``dispatch.deliver()`` — the failure here propagates.
+            with pytest.raises(RuntimeError, match="simulated commit failure"):
+                session.commit()
+        finally:
+            session.commit = original_commit  # type: ignore[method-assign]
+
+        # Mailer was never invoked — the commit failure short-
+        # circuits ``dispatch.deliver()`` per cd-9slq.
+        assert mailer.sent == [], (
+            f"mailer was invoked despite commit failure: {mailer.sent!r}"
+        )
+        # The rolled-back signup_attempt + nonce + audit are gone.
+        assert session.scalars(select(SignupAttempt)).all() == []
+        assert session.scalars(select(MagicLinkNonce)).all() == []
+        assert (
+            session.scalars(
+                select(AuditLog).where(AuditLog.action == "signup.requested")
+            ).all()
+            == []
+        )
+        assert dispatch is not None
 
 
 class TestStartSignupAudit:
@@ -1658,7 +1828,7 @@ class TestRouterSignupDisabled:
                 yield s
 
         app.dependency_overrides[db_session] = _db
-        with TestClient(app) as c:
+        with _redirect_default_engine_to(engine), TestClient(app) as c:
             yield c
 
     def test_start_returns_404(self, client: TestClient) -> None:
@@ -1730,7 +1900,7 @@ class TestRouterStartErrors:
                 s.commit()
 
         app.dependency_overrides[db_session] = _db
-        with TestClient(app) as c:
+        with _redirect_default_engine_to(engine), TestClient(app) as c:
             yield c
 
     def test_reserved_slug_returns_409(self, client: TestClient) -> None:

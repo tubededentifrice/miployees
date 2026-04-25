@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.adapters.db.identity.models import User
+from app.adapters.db.session import make_uow
 from app.adapters.mail.ports import Mailer
 from app.api.deps import db_session
 from app.auth import session as auth_session
@@ -57,6 +58,7 @@ from app.auth.magic_link import (
     AlreadyConsumed,
     ConsumeLockout,
     InvalidToken,
+    PendingDispatch,
     PurposeMismatch,
     RateLimited,
     TokenExpired,
@@ -327,7 +329,6 @@ def build_email_change_router(
     def post_change_request(
         body: EmailChangeRequestBody,
         request: Request,
-        session: _Db,
         session_cookie_primary: Annotated[
             str | None,
             Cookie(alias=auth_session.SESSION_COOKIE_NAME),
@@ -337,41 +338,57 @@ def build_email_change_router(
             Cookie(alias=DEV_SESSION_COOKIE_NAME),
         ] = None,
     ) -> EmailChangeRequestResponse:
-        """Mint the new-address magic link + send the old-address notice."""
+        """Mint the new-address magic link + send the old-address notice.
+
+        **Outbox ordering (cd-9slq).** Owns its own
+        :class:`UnitOfWork` instead of going through ``db_session``
+        so both SMTP sends (the new-address magic link + the
+        old-address notice) fire only after the
+        ``email_change_pending`` row + magic-link nonce + audit
+        rows commit. A commit failure short-circuits
+        ``dispatch.deliver()`` so no working email-change token
+        reaches the new mailbox without a matching pending row.
+        """
         if resolved_base_url is None:
             raise RuntimeError(
                 "base_url / settings.public_url is not set; "
                 "cannot build email-change URLs"
             )
         _refuse_bearer_token(request)
-        user_id = _resolve_session_user(
-            session,
-            request=request,
-            cookie_primary=session_cookie_primary,
-            cookie_dev=session_cookie_dev,
-        )
 
-        with tenant_agnostic():
-            user = session.get(User, user_id)
-        if user is None:
-            # Session row points at a hard-deleted user — treat as
-            # unauth, mirroring :mod:`app.api.v1.auth.me`.
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={"error": "session_invalid"},
-            )
-
+        dispatch = PendingDispatch()
+        outcome: EmailChangeOutcome | None = None
         try:
-            outcome: EmailChangeOutcome = request_change(
-                session,
-                user=user,
-                new_email=body.new_email,
-                ip=_client_ip(request),
-                mailer=mailer,
-                base_url=resolved_base_url,
-                throttle=throttle,
-                settings=cfg,
-            )
+            with make_uow() as session:
+                assert isinstance(session, Session)
+                user_id = _resolve_session_user(
+                    session,
+                    request=request,
+                    cookie_primary=session_cookie_primary,
+                    cookie_dev=session_cookie_dev,
+                )
+
+                with tenant_agnostic():
+                    user = session.get(User, user_id)
+                if user is None:
+                    # Session row points at a hard-deleted user — treat
+                    # as unauth, mirroring :mod:`app.api.v1.auth.me`.
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail={"error": "session_invalid"},
+                    )
+
+                outcome = request_change(
+                    session,
+                    user=user,
+                    new_email=body.new_email,
+                    ip=_client_ip(request),
+                    mailer=mailer,
+                    base_url=resolved_base_url,
+                    throttle=throttle,
+                    settings=cfg,
+                    dispatch=dispatch,
+                )
         except InvalidEmail as exc:
             # 422 — Pydantic / Starlette rename ``UNPROCESSABLE_ENTITY``
             # to ``UNPROCESSABLE_CONTENT`` mid-rollout; we use the
@@ -395,7 +412,11 @@ def build_email_change_router(
             # :func:`request_link`. Map through the same vocabulary
             # the magic-link router uses.
             raise _http_for_token(exc) from exc
-
+        # ``with`` exited cleanly → UoW committed → pending row +
+        # nonce + audit are durable on disk. Fire the queued sends
+        # (cd-9slq).
+        dispatch.deliver()
+        assert outcome is not None
         return EmailChangeRequestResponse(pending_id=outcome.pending_id)
 
     # -----------------------------------------------------------------
@@ -419,7 +440,6 @@ def build_email_change_router(
     def post_verify(
         body: EmailVerifyBody,
         request: Request,
-        session: _Db,
         session_cookie_primary: Annotated[
             str | None,
             Cookie(alias=auth_session.SESSION_COOKIE_NAME),
@@ -429,31 +449,46 @@ def build_email_change_router(
             Cookie(alias=DEV_SESSION_COOKIE_NAME),
         ] = None,
     ) -> EmailVerifyResponse:
-        """Verify the magic link, swap email atomically, mail the revert link."""
+        """Verify the magic link, swap email atomically, mail the revert link.
+
+        **Outbox ordering (cd-9slq).** Owns its own
+        :class:`UnitOfWork` instead of going through ``db_session``
+        so the post-swap confirmation + revert-link sends fire only
+        after the email swap + revert nonce + audit rows commit.
+        A commit failure short-circuits ``dispatch.deliver()`` so
+        no working revert token reaches the old mailbox without a
+        matching revert nonce on disk.
+        """
         if resolved_base_url is None:
             raise RuntimeError(
                 "base_url / settings.public_url is not set; "
                 "cannot build email-change URLs"
             )
         _refuse_bearer_token(request)
-        user_id = _resolve_session_user(
-            session,
-            request=request,
-            cookie_primary=session_cookie_primary,
-            cookie_dev=session_cookie_dev,
-        )
 
+        dispatch = PendingDispatch()
+        outcome: EmailVerifyOutcome | None = None
         try:
-            outcome: EmailVerifyOutcome = verify_change(
-                session,
-                token=body.token,
-                session_user_id=user_id,
-                ip=_client_ip(request),
-                mailer=mailer,
-                base_url=resolved_base_url,
-                throttle=throttle,
-                settings=cfg,
-            )
+            with make_uow() as session:
+                assert isinstance(session, Session)
+                user_id = _resolve_session_user(
+                    session,
+                    request=request,
+                    cookie_primary=session_cookie_primary,
+                    cookie_dev=session_cookie_dev,
+                )
+
+                outcome = verify_change(
+                    session,
+                    token=body.token,
+                    session_user_id=user_id,
+                    ip=_client_ip(request),
+                    mailer=mailer,
+                    base_url=resolved_base_url,
+                    throttle=throttle,
+                    settings=cfg,
+                    dispatch=dispatch,
+                )
         except SessionUserMismatch as exc:
             # The session user is not the user the token was issued
             # for. Spec §03 step 2: "Requires an active passkey
@@ -480,6 +515,11 @@ def build_email_change_router(
         except _TokenError as exc:
             raise _http_for_token(exc) from exc
 
+        # ``with`` exited cleanly → UoW committed → swap +
+        # revert nonce + audit are durable. Fire the queued sends
+        # (confirmation to new + revert link to old) post-commit.
+        dispatch.deliver()
+        assert outcome is not None
         return EmailVerifyResponse(
             user_id=outcome.user_id,
             pending_id=outcome.pending_id,

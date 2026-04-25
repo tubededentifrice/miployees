@@ -55,6 +55,7 @@ from app.auth.magic_link import (
     AlreadyConsumed,
     ConsumeLockout,
     InvalidToken,
+    PendingDispatch,
     PurposeMismatch,
     RateLimited,
     TokenExpired,
@@ -373,7 +374,6 @@ def build_recovery_router(
     def post_request(
         body: RecoveryRequestBody,
         request: Request,
-        session: _Db,
     ) -> RecoveryRequestResponse:
         """Kick off a recovery request.
 
@@ -382,22 +382,33 @@ def build_recovery_router(
         ``Retry-After`` header when the per-IP / per-email / global
         cap trips; the audit trail distinguishes the two branches
         via ``audit.recovery.requested`` (``hit=True/False``).
+
+        **Outbox ordering (cd-9slq).** Owns its own
+        :class:`UnitOfWork` instead of going through ``db_session``
+        so the SMTP send fires only after the recovery audit + nonce
+        rows are durable. A commit failure short-circuits the
+        :meth:`PendingDispatch.deliver` call below so no recovery
+        magic-link or no-account notice leaves the host with
+        rolled-back state.
         """
         if resolved_base_url is None:
             raise RuntimeError(
                 "base_url / settings.public_url is not set; cannot build recovery URLs"
             )
         ip = _client_ip(request)
+        dispatch: PendingDispatch | None = None
         try:
-            recovery.request_recovery(
-                session,
-                email=body.email,
-                ip=ip,
-                mailer=mailer,
-                base_url=resolved_base_url,
-                throttle=throttle,
-                settings=cfg,
-            )
+            with make_uow() as uow_session:
+                assert isinstance(uow_session, Session)
+                dispatch = recovery.request_recovery(
+                    uow_session,
+                    email=body.email,
+                    ip=ip,
+                    mailer=mailer,
+                    base_url=resolved_base_url,
+                    throttle=throttle,
+                    settings=cfg,
+                )
         except RecoveryRateLimited as exc:
             # Derive hashes here so the refusal audit carries the same
             # forensic fields as a successful-request audit row —
@@ -439,6 +450,11 @@ def build_recovery_router(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail={"error": "rate_limited"},
             ) from exc
+        # ``with`` exited cleanly → UoW committed → recovery audit +
+        # magic-link nonce are durable on disk. Only now do we fire
+        # the SMTP sends queued on the dispatch (cd-9slq).
+        if dispatch is not None:
+            dispatch.deliver()
         return RecoveryRequestResponse()
 
     @router.get(

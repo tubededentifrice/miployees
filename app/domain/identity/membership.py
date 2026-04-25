@@ -114,6 +114,7 @@ from app.auth import magic_link
 from app.auth._hashing import hash_with_pepper
 from app.auth._throttle import Throttle
 from app.auth.keys import derive_subkey
+from app.auth.magic_link import PendingDispatch
 from app.config import Settings, get_settings
 from app.domain.identity.permission_groups import (
     LastOwnerMember,
@@ -578,6 +579,7 @@ def invite(
     now: datetime | None = None,
     settings: Settings | None = None,
     clock: Clock | None = None,
+    dispatch: PendingDispatch | None = None,
 ) -> InviteOutcome:
     """Insert (or refresh) a pending :class:`Invite` and mail the magic link.
 
@@ -607,6 +609,17 @@ def invite(
     ``settings`` is optional for tests; when ``None`` the module
     falls back to :func:`app.config.get_settings` (the same
     convention the sibling magic-link / signup services use).
+
+    **Outbox ordering (cd-9slq).** When ``dispatch`` is supplied the
+    invite-flavoured template is queued onto it for post-commit
+    delivery, mirroring the cd-9i7z pattern: the calling HTTP router
+    runs this function inside ``with make_uow() as session:`` and
+    invokes :meth:`PendingDispatch.deliver` only after the ``with``
+    exits, so a commit failure short-circuits the SMTP send. When
+    ``dispatch`` is ``None`` the function falls back to the legacy
+    synchronous send for tests / direct callers that own the commit
+    boundary themselves; production wiring always supplies a
+    :class:`PendingDispatch`.
     """
     resolved_now = now if now is not None else _now(clock)
     email_lower = canonicalise_email(email)
@@ -723,31 +736,52 @@ def invite(
     # up the same outbox seam without re-discovering it.
     invite_link.deliver()
     url = invite_link.url
-    # Invite is manager-gated, so this isn't an enumeration-guard path
-    # per se — but a mailer outage must not fail the write. The invite
-    # row, the magic-link nonce, and the audit row all need to commit
-    # so an operator can re-issue the email from the invite UI once
-    # SMTP recovers. Swallow :class:`MailDeliveryError` the same way
-    # the recovery / magic-link surfaces do; log loudly so the outage
-    # is visible in ops logs even though the caller sees 2xx. Sibling
-    # of the §15 enumeration guard; same try/except shape so the
-    # behaviour is uniform across auth-adjacent mail sends.
-    try:
+    # Capture every input :func:`_send_invite_email` needs at mint
+    # time so the deferred entry is a parameter-free closure. The
+    # outbox shape (cd-9slq) ensures the SMTP send fires only after
+    # the invite + nonce + audit rows are durable on disk; a commit
+    # failure short-circuits :meth:`PendingDispatch.deliver` so no
+    # working invite token reaches the user inbox without the
+    # matching invite row.
+    captured_invite_mailer = mailer
+    captured_invite_url = url
+    captured_invitee_email = email_lower
+    captured_invitee_display_name = display_name
+    captured_inviter_display_name = inviter_display_name
+    captured_workspace_name = workspace_name
+
+    def _deferred_invite_send() -> None:
         _send_invite_email(
-            mailer=mailer,
-            captured_url=url,
-            to_email=email_lower,
-            invitee_display_name=display_name,
-            inviter_display_name=inviter_display_name,
-            workspace_name=workspace_name,
+            mailer=captured_invite_mailer,
+            captured_url=captured_invite_url,
+            to_email=captured_invitee_email,
+            invitee_display_name=captured_invitee_display_name,
+            inviter_display_name=captured_inviter_display_name,
+            workspace_name=captured_workspace_name,
         )
-    except MailDeliveryError:
-        _log.warning(
-            "invite mail send failed for invite %r; swallowing so the "
-            "invite row commits and an operator can re-issue",
-            invite_id,
-            exc_info=True,
-        )
+
+    if dispatch is not None:
+        # Production path — calling router commits then drains the
+        # dispatch. Invite is manager-gated, so this isn't an
+        # enumeration-guard path per se; but a mailer outage must
+        # not fail the write so the invite row + nonce + audit can
+        # commit and an operator can re-issue from the invite UI.
+        # :meth:`PendingDispatch.deliver` swallows MailDeliveryError
+        # uniformly across auth-adjacent mail sends.
+        dispatch.add_callback(_deferred_invite_send)
+    else:
+        # Legacy fallback for tests / direct callers that own their
+        # own commit boundary. Same swallow-and-log policy as the
+        # sibling magic-link / recovery flows.
+        try:
+            _deferred_invite_send()
+        except MailDeliveryError:
+            _log.warning(
+                "invite mail send failed for invite %r; swallowing so the "
+                "invite row commits and an operator can re-issue",
+                invite_id,
+                exc_info=True,
+            )
 
     write_audit(
         session,

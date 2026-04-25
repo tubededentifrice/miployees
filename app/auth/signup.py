@@ -73,6 +73,7 @@ from app.auth import magic_link, passkey
 from app.auth._hashing import hash_with_pepper
 from app.auth._throttle import Throttle
 from app.auth.keys import derive_subkey
+from app.auth.magic_link import PendingDispatch
 from app.capabilities import Capabilities
 from app.config import Settings, get_settings
 from app.domain.llm.budget import new_ledger_row
@@ -590,7 +591,7 @@ def start_signup(
     now: datetime | None = None,
     settings: Settings | None = None,
     clock: Clock | None = None,
-) -> None:
+) -> PendingDispatch:
     """Kick off a self-serve signup attempt.
 
     Spec §03 "Self-serve signup" step 1. Steps, in order:
@@ -624,8 +625,14 @@ def start_signup(
     9. Audit ``signup.requested`` with ``email_hash`` / ``ip_hash`` /
        ``desired_slug`` only — PII never lands in the diff.
 
-    Returns ``None``. The caller's UoW owns the transaction; the
-    router commits on 202.
+    Returns a :class:`PendingDispatch` carrying the deferred SMTP
+    send for the freshly-minted magic link (cd-9slq outbox boundary).
+    The caller's HTTP router runs this function inside an explicit
+    ``with make_uow() as session:`` block (replacing the shared
+    ``db_session`` FastAPI dep), then invokes
+    :meth:`PendingDispatch.deliver` after the ``with`` exits — a
+    commit failure short-circuits the SMTP send, so no working token
+    leaves the host without a matching nonce on disk.
     """
     _ensure_signup_enabled(capabilities)
 
@@ -725,17 +732,6 @@ def start_signup(
     # magic-link service's own TTL cap already pins ``signup_verify``
     # at 15 minutes, matching :data:`_SIGNUP_TTL`; passing the ttl
     # explicitly keeps the two in sync if the cap shifts.
-    #
-    # cd-9i7z follow-up: we invoke ``deliver()`` here, *before* the
-    # caller's UoW commits — so the SMTP send still races a
-    # commit-time failure on this call site. The fail-open repro
-    # documented on cd-9i7z lives only on the magic-link HTTP router
-    # (which now commits before delivering); the signup flow is
-    # behind the disposable-domain + CAPTCHA + per-IP throttle
-    # gates, so the residual exposure is bounded. Closing it here
-    # requires lifting the deferred send all the way back to the
-    # signup HTTP handler — tracked separately so this fix stays
-    # focused.
     pending = magic_link.request_link(
         session,
         email=email_lower,
@@ -750,8 +746,6 @@ def start_signup(
         clock=clock,
         subject_id=signup_attempt_id,
     )
-    if pending is not None:
-        pending.deliver()
 
     # Audit row lands on the caller's UoW so it commits iff the rest
     # of the insert commits. Pre-tenant context — see
@@ -769,6 +763,15 @@ def start_signup(
         },
         clock=clock,
     )
+
+    # cd-9slq outbox boundary: queue the magic-link deferred send so
+    # the HTTP router fires it only after the UoW commits. A commit
+    # failure on the caller's side never reaches
+    # :meth:`PendingDispatch.deliver`, so no working token leaves the
+    # host with a rolled-back nonce.
+    dispatch = PendingDispatch()
+    dispatch.add_pending(pending)
+    return dispatch
 
 
 # ---------------------------------------------------------------------------

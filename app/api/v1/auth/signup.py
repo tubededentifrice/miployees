@@ -54,6 +54,7 @@ from app.auth.magic_link import (
     AlreadyConsumed,
     ConsumeLockout,
     InvalidToken,
+    PendingDispatch,
     PurposeMismatch,
     RateLimited,
     TokenExpired,
@@ -529,7 +530,6 @@ def build_signup_router(
     def post_start(
         body: SignupStartBody,
         request: Request,
-        session: _Db,
     ) -> SignupStartResponse:
         """Kick off the signup flow — abuse gates + domain service.
 
@@ -548,6 +548,18 @@ def build_signup_router(
         5. :func:`signup.start_signup` — slug validation, attempt
            insert, magic link mint. Its own errors carry the
            existing mapping.
+
+        **Outbox ordering (cd-9slq).** This handler manages its own
+        :class:`UnitOfWork` instead of going through the shared
+        :func:`db_session` FastAPI dep — we need to commit the
+        signup-attempt + magic-link nonce + audit rows *before*
+        dispatching the SMTP send. The shared dep commits at handler
+        return, which would put the SMTP send before the commit and
+        leave a working magic-link token in the user's inbox while
+        the system rolled back its matching nonce on a commit-time
+        failure. With the explicit UoW we sequence: domain call
+        (queues writes + returns :class:`PendingDispatch`) →
+        ``UoW.__exit__`` (commits) → ``dispatch.deliver()`` (SMTP).
         """
         if resolved_base_url is None:
             raise RuntimeError(
@@ -607,20 +619,30 @@ def build_signup_router(
             )
             raise _http_for_abuse(exc) from exc
 
+        dispatch: PendingDispatch | None = None
         try:
-            signup.start_signup(
-                session,
-                email=body.email,
-                desired_slug=body.desired_slug,
-                ip=ip,
-                mailer=mailer,
-                base_url=resolved_base_url,
-                throttle=throttle,
-                capabilities=capabilities,
-                settings=cfg,
-            )
+            with make_uow() as uow_session:
+                assert isinstance(uow_session, Session)
+                dispatch = signup.start_signup(
+                    uow_session,
+                    email=body.email,
+                    desired_slug=body.desired_slug,
+                    ip=ip,
+                    mailer=mailer,
+                    base_url=resolved_base_url,
+                    throttle=throttle,
+                    capabilities=capabilities,
+                    settings=cfg,
+                )
+            # ``with`` exited cleanly → UoW committed → signup_attempt +
+            # nonce + audit are durable on disk. Only now do we fire
+            # the SMTP send. A commit failure on the line above raises
+            # out of this ``try`` and ``dispatch.deliver()`` is never
+            # reached — no email leaves the host with a stale nonce.
         except _StartDomainError as exc:
             raise _http_for_start(exc) from exc
+        if dispatch is not None:
+            dispatch.deliver()
         return SignupStartResponse()
 
     @router.post(

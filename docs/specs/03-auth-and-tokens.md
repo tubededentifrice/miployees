@@ -923,6 +923,22 @@ user whose unused-code count drops below 3 until they re-mint.
 - Single use (`jti` recorded on successful consumption).
 - Open attempts after consumption or expiry show a polite re-request
   page, and rate-limit the offending IP (§15).
+- **Commit-before-send invariant.** Every flow that mints a magic
+  link — `/auth/magic/request`, signup start, recovery request,
+  manager-mediated reissue (`POST /users/{id}/magic_link`),
+  owner-initiated worker passkey reset, invite, self-service email
+  change request and verify — is required to commit the matching
+  `magic_link_nonce` row + `audit.magic_link.sent` row to disk
+  *before* the SMTP send is dispatched. The minting service queues
+  the deferred sends onto an in-process outbox; the calling HTTP
+  router opens its own `with make_uow():` block, lets the UoW
+  commit at block exit, and only then drains the outbox. A
+  commit-time failure (schema drift, FK violation, transient
+  driver error) short-circuits every queued send so no working
+  token reaches the user inbox without a matching nonce on disk.
+  This is the §15 "no working token without a committed nonce"
+  invariant; cd-9i7z lifted it across the bare-host magic-link
+  router and cd-9slq extended it to every other caller.
 
 ## WebAuthn specifics
 

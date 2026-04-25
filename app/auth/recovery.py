@@ -110,13 +110,14 @@ from app.adapters.db.identity.models import (
 )
 from app.adapters.db.session import make_uow
 from app.adapters.db.workspace.models import Workspace
-from app.adapters.mail.ports import MailDeliveryError, Mailer
+from app.adapters.mail.ports import Mailer
 from app.audit import write_audit
 from app.auth import magic_link, passkey
 from app.auth import session as session_module
 from app.auth._hashing import hash_with_pepper
 from app.auth._throttle import RecoveryRateLimited, Throttle
 from app.auth.keys import derive_subkey
+from app.auth.magic_link import PendingDispatch
 from app.config import Settings, get_settings
 from app.mail.templates import recovery_new_link as recovery_new_link_template
 from app.mail.templates import recovery_unknown as recovery_unknown_template
@@ -651,7 +652,7 @@ def request_recovery(
     now: datetime | None = None,
     settings: Settings | None = None,
     clock: Clock | None = None,
-) -> None:
+) -> PendingDispatch:
     """Kick off a self-service recovery request.
 
     Spec §03 "Self-service lost-device recovery" + §15 abuse
@@ -691,8 +692,17 @@ def request_recovery(
        operators see the refusal distinctly from a normal "no
        recovery happened yet" row.
 
-    Returns ``None`` in every success path. The caller's UoW owns
-    the transaction; this function does not commit.
+    Returns a :class:`PendingDispatch` carrying every deferred SMTP
+    send queued for the request — the recovery-flavoured magic-link
+    template (hit branch) or the no-account notice (miss branch).
+    The caller's HTTP router runs this function inside an explicit
+    ``with make_uow() as session:`` block (replacing the shared
+    ``db_session`` FastAPI dep) and invokes
+    :meth:`PendingDispatch.deliver` only after the ``with`` exits —
+    a commit failure short-circuits every queued send (cd-9slq).
+    The dispatch is empty when the kill-switch branch fires (the
+    forensic audit row already landed on a fresh UoW; nothing to
+    send to the user).
 
     Note: the magic-link service's own ``recovery_new_link`` template
     selection lives inside :func:`_send_recovery_link`, not in
@@ -703,6 +713,7 @@ def request_recovery(
     proxy the send. This keeps the magic-link module's template
     dispatch single-purpose.
     """
+    dispatch = PendingDispatch()
     resolved_now = now if now is not None else _now(clock)
     pepper = _pepper(settings)
     email_lower = canonicalise_email(email)
@@ -739,61 +750,59 @@ def request_recovery(
             email_hash=email_hash,
             ip_hash=ip_hash,
         )
-        return
+        # Empty dispatch — the kill-switch branch sends nothing to the
+        # user. The forensic audit row already landed on a fresh UoW
+        # in :func:`_audit_recovery_disabled_by_workspace`.
+        return dispatch
 
     # Enumeration guard (§15 "constant-time responses"): both branches
     # must produce an identical observable response regardless of
-    # mailer outcome. A :class:`MailDeliveryError` here (SMTP down, DNS
-    # fail, relay refusal) must not short-circuit the audit row or
-    # surface as a 5xx — the caller always sees 202. The row minted by
-    # the hit branch inside :func:`magic_link.request_link` still
-    # commits so the link is usable once SMTP recovers (an operator
-    # can re-render from the row or the user can re-request); the
-    # miss branch has nothing to commit. Log loudly so operators notice
-    # a relay outage even though the wire stays silent.
+    # mailer outcome. The hit-branch sends are queued onto the
+    # outbox dispatch so the HTTP router fires them post-commit
+    # (cd-9slq); a :class:`MailDeliveryError` inside any queued send
+    # is logged and swallowed by :meth:`PendingDispatch.deliver` so
+    # the caller still sees 202 and the nonce row stays redeemable.
     if user is not None:
-        # Hit branch — mint the magic link + send the recovery template.
-        # The mint + nonce-insert reuses :func:`magic_link.request_link`;
-        # the send is handled by the recovery module so we can use the
-        # recovery-specific template (which calls out the destructive
-        # side-effect). See :func:`_mint_and_send_recovery_link` for
-        # the capturing-mailer seam.
-        try:
-            _mint_and_send_recovery_link(
-                session,
-                user=user,
-                ip=ip,
-                mailer=mailer,
-                base_url=base_url,
-                throttle=throttle,
-                now=resolved_now,
-                settings=settings,
-                clock=clock,
-            )
-        except MailDeliveryError:
-            _log.warning(
-                "recovery mail send failed (hit branch); swallowing "
-                "per §15 enumeration guard",
-                exc_info=True,
-            )
+        # Hit branch — mint the magic link + queue the recovery
+        # template. The mint + nonce-insert reuses
+        # :func:`magic_link.request_link`; the send is handled by the
+        # recovery module so we can use the recovery-specific template
+        # (which calls out the destructive side-effect). See
+        # :func:`_mint_and_send_recovery_link` for the capturing-mailer
+        # seam — the magic-link send is intercepted in-process to
+        # extract the token, so only the outer recovery template
+        # actually leaves the host post-commit.
+        _mint_and_send_recovery_link(
+            session,
+            user=user,
+            ip=ip,
+            mailer=mailer,
+            base_url=base_url,
+            throttle=throttle,
+            now=resolved_now,
+            settings=settings,
+            clock=clock,
+            dispatch=dispatch,
+        )
     else:
         # Miss branch — burn matching CPU so the HMAC-sign cost the hit
         # branch pays inside ``magic_link.request_link`` doesn't show
-        # up as a timing channel, then send the no-account notice to
+        # up as a timing channel, then queue the no-account notice to
         # keep the mailer-send cost identical between the two branches.
         # The residual gap is the one DB INSERT the hit branch performs
         # on the nonce row (documented in :func:`_burn_cpu_for_miss_branch`
         # — writing a throwaway row to balance it is worse than the
         # sub-millisecond residual leak).
         _burn_cpu_for_miss_branch(pepper)
-        try:
-            _send_unknown_email(mailer=mailer, to_email=email)
-        except MailDeliveryError:
-            _log.warning(
-                "recovery mail send failed (miss branch); swallowing "
-                "per §15 enumeration guard",
-                exc_info=True,
-            )
+        # Capture the (immutable) plaintext destination for the
+        # deferred send; rendering happens at deliver time.
+        miss_to_email = email
+        miss_mailer = mailer
+
+        def _deferred_unknown_send() -> None:
+            _send_unknown_email(mailer=miss_mailer, to_email=miss_to_email)
+
+        dispatch.add_callback(_deferred_unknown_send)
 
     # Audit lands in the caller's UoW — committing or rolling back
     # with the rest of the request's state. The ``hit`` discriminator
@@ -812,6 +821,8 @@ def request_recovery(
         },
         clock=clock,
     )
+
+    return dispatch
 
 
 @dataclass
@@ -873,15 +884,25 @@ def _mint_and_send_recovery_link(
     now: datetime,
     settings: Settings | None,
     clock: Clock | None,
+    dispatch: PendingDispatch,
 ) -> None:
-    """Mint the recovery magic link + send the recovery-specific template.
+    """Mint the recovery magic link + queue the recovery-specific template.
 
     Reuses :func:`magic_link.request_link` for the token mint +
     nonce insert + ``audit.magic_link.sent`` audit row (one source
     of truth for token layout + single-use enforcement). Swaps the
     magic-link template for the recovery-specific template by
     capturing the generic send through :class:`_CapturingMailer` and
-    re-sending with :func:`_send_recovery_link`.
+    queueing :func:`_send_recovery_link` onto ``dispatch`` for
+    post-commit delivery (cd-9slq).
+
+    The :class:`_CapturingMailer` is fired in-process via
+    :meth:`PendingMagicLink.deliver` so the captured token can be
+    folded into the deferred recovery template — the capture is
+    *not* a real SMTP send, so firing it pre-commit is safe. Only
+    the outer :func:`_send_recovery_link` actually leaves the host;
+    that queue entry waits for the caller's UoW to commit before
+    firing.
 
     The magic-link service also advances its own rate-limit
     (:meth:`Throttle.check_request`); a trip there raises
@@ -892,13 +913,12 @@ def _mint_and_send_recovery_link(
     layering (signup already does the same).
     """
     capture = _CapturingMailer(base_url=base_url)
-    # cd-9i7z follow-up: we deliver synchronously here so the
-    # capturing mailer fires and yields ``captured_token`` we then
-    # re-frame with the recovery template. Lifting the deferred send
-    # past the recovery flow's caller-side commit is tracked
-    # separately; the bug fix on this branch is bounded to the
-    # magic-link HTTP router that drove cd-t2jz, where the SMTP send
-    # now waits for the UoW commit.
+    # The capturing mailer is a synchronous in-process intercept (no
+    # SMTP, no network) — its :meth:`send` only stores the token from
+    # the rendered body. Firing it *now* yields the token we need to
+    # build the deferred recovery-template send below; the actual
+    # outbound mail is the one we queue on ``dispatch`` for delivery
+    # after the caller's UoW commits (cd-9slq).
     pending = magic_link.request_link(
         session,
         email=user.email,
@@ -932,14 +952,26 @@ def _mint_and_send_recovery_link(
         magic_link._TTL_BY_PURPOSE["recover_passkey"],
     )
 
-    _send_recovery_link(
-        mailer=mailer,
-        to_email=user.email,
-        display_name=user.display_name,
-        base_url=base_url,
-        token=capture.captured_token,
-        ttl=effective_ttl,
-    )
+    # Capture every input :func:`_send_recovery_link` needs at mint
+    # time so the deferred entry is a parameter-free closure.
+    captured_mailer = mailer
+    captured_to_email = user.email
+    captured_display_name = user.display_name
+    captured_base_url = base_url
+    captured_token = capture.captured_token
+    captured_ttl = effective_ttl
+
+    def _deferred_recovery_send() -> None:
+        _send_recovery_link(
+            mailer=captured_mailer,
+            to_email=captured_to_email,
+            display_name=captured_display_name,
+            base_url=captured_base_url,
+            token=captured_token,
+            ttl=captured_ttl,
+        )
+
+    dispatch.add_callback(_deferred_recovery_send)
 
 
 # ---------------------------------------------------------------------------

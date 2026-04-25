@@ -138,6 +138,44 @@ def build_client(
     return TestClient(app, raise_server_exceptions=False)
 
 
+@pytest.fixture(autouse=True)
+def _redirect_default_uow_to_test_engine(
+    factory: sessionmaker[Session],
+) -> Iterator[None]:
+    """Redirect ``make_uow`` to the per-test engine for handler use.
+
+    Routers that open their own ``with make_uow() as session:`` block
+    (e.g. the cd-9slq commit-before-send shape on
+    ``POST /users/{id}/magic_link``) read
+    :data:`app.adapters.db.session._default_sessionmaker_` to bind a
+    session. Without this fixture they would hit whatever DB the
+    default factory was last built for instead of the per-test
+    in-memory engine. We redirect autouse-style and restore on
+    teardown so a sibling test in the same xdist worker (e.g.
+    ``tests/unit/auth/test_session.py``) sees the original default
+    when the fixture exits.
+
+    Mirrors :func:`tests.unit.auth.test_recovery.redirect_default_engine`
+    and :mod:`tests.tenant.conftest`.
+    """
+    import app.adapters.db.session as _session_mod
+
+    bound_engine = factory.kw.get("bind")
+    assert isinstance(bound_engine, Engine), (
+        "identity conftest factory must be sessionmaker-bound to an Engine; "
+        f"got {bound_engine!r}"
+    )
+    original_engine = _session_mod._default_engine
+    original_factory = _session_mod._default_sessionmaker_
+    _session_mod._default_engine = bound_engine
+    _session_mod._default_sessionmaker_ = factory
+    try:
+        yield
+    finally:
+        _session_mod._default_engine = original_engine
+        _session_mod._default_sessionmaker_ = original_factory
+
+
 @pytest.fixture
 def owner_ctx(
     factory: sessionmaker[Session],

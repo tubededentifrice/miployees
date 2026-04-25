@@ -104,6 +104,7 @@ from app.auth.keys import derive_subkey
 from app.auth.magic_link import (
     AlreadyConsumed,
     InvalidToken,
+    PendingDispatch,
     PurposeMismatch,
     TokenExpired,
 )
@@ -501,6 +502,7 @@ def request_change(
     now: datetime | None = None,
     settings: Settings | None = None,
     clock: Clock | None = None,
+    dispatch: PendingDispatch | None = None,
 ) -> EmailChangeOutcome:
     """Mint the magic link for ``new_email``; persist + notify; audit.
 
@@ -528,6 +530,18 @@ def request_change(
 
     The caller's UoW owns the transaction; this function never
     calls ``session.commit()``.
+
+    **Outbox ordering (cd-9slq).** When ``dispatch`` is supplied
+    every SMTP send (the magic-link template to the new address +
+    the informational notice to the old one) is queued onto it for
+    post-commit delivery, mirroring the cd-9i7z pattern. The
+    calling HTTP router runs this function inside ``with make_uow()
+    as session:`` and invokes :meth:`PendingDispatch.deliver` only
+    after the ``with`` exits, so a commit failure short-circuits
+    every queued send. When ``dispatch`` is ``None`` the function
+    falls back to the legacy synchronous behaviour for tests /
+    direct callers that own the commit boundary themselves;
+    production wiring always supplies a :class:`PendingDispatch`.
     """
     resolved_now = now if now is not None else _now(clock)
     pepper = _pepper(settings)
@@ -546,18 +560,12 @@ def request_change(
         )
 
     # Mint the magic link. The magic-link service already handles
-    # the rate-limit, nonce insert, and SMTP send — passing
+    # the rate-limit, nonce insert, and audit row — passing
     # ``subject_id=user.id`` short-circuits its own user-lookup
     # branch (which would otherwise key off ``new_email`` that has
-    # no matching ``User`` row).
-    #
-    # cd-9i7z follow-up: we deliver synchronously here, before the
-    # caller's UoW commits — same residual exposure documented at
-    # the signup / recovery sites. The router-level commit-then-
-    # deliver fix lives only on the magic-link HTTP router (the
-    # cd-t2jz reproducer); lifting the deferred send across the
-    # email-change HTTP layer is tracked separately so this fix
-    # stays focused.
+    # no matching ``User`` row). The SMTP send is deferred via the
+    # returned :class:`PendingMagicLink` and queued onto
+    # ``dispatch`` below for post-commit delivery (cd-9slq).
     confirm_link = magic_link.request_link(
         session,
         email=new_email_clean,
@@ -578,7 +586,6 @@ def request_change(
     # a typed error: the caller cannot recover, only report.
     if confirm_link is None:  # pragma: no cover - defensive
         raise RuntimeError("request_link returned None despite explicit subject_id")
-    confirm_link.deliver()
     confirm_url = confirm_link.url
 
     # Recover the jti from the URL — the magic-link service does not
@@ -611,17 +618,36 @@ def request_change(
         session.add(pending)
         session.flush()
 
-    # Send the informational notice to the old address. The mailer
-    # outage policy (swallow + log) lives in :func:`_send_notice_to_old`
-    # so the row + audit still commit on a relay miss.
-    _send_notice_to_old(
-        mailer=mailer,
-        old_email=user.email,
-        display_name=user.display_name,
-        masked_new_email=_mask_email(new_email_clean),
-        ip_prefix=_ip_prefix(ip),
-        ttl_minutes=15,
-    )
+    # Capture the inputs the notice send needs at mint time so the
+    # deferred entry is parameter-free.
+    captured_notice_mailer = mailer
+    captured_old_email = user.email
+    captured_display_name = user.display_name
+    captured_masked_new_email = _mask_email(new_email_clean)
+    captured_ip_prefix = _ip_prefix(ip)
+
+    def _deferred_notice_send() -> None:
+        _send_notice_to_old(
+            mailer=captured_notice_mailer,
+            old_email=captured_old_email,
+            display_name=captured_display_name,
+            masked_new_email=captured_masked_new_email,
+            ip_prefix=captured_ip_prefix,
+            ttl_minutes=15,
+        )
+
+    if dispatch is not None:
+        # Production path — the calling router commits then drains
+        # the dispatch. Both the magic-link send and the old-address
+        # notice fire only after the pending row + audit are durable.
+        dispatch.add_pending(confirm_link)
+        dispatch.add_callback(_deferred_notice_send)
+    else:
+        # Legacy fallback for tests / direct callers that own their
+        # own commit boundary. Mailer outage policy (swallow + log)
+        # lives in :func:`_send_notice_to_old` itself.
+        confirm_link.deliver()
+        _deferred_notice_send()
 
     new_hash = _email_hash(new_email_clean, pepper)
     old_hash = _email_hash(user.email, pepper)
@@ -668,6 +694,7 @@ def verify_change(
     now: datetime | None = None,
     settings: Settings | None = None,
     clock: Clock | None = None,
+    dispatch: PendingDispatch | None = None,
 ) -> EmailVerifyOutcome:
     """Consume the new-address magic link; swap ``users.email``; mint revert.
 
@@ -702,6 +729,18 @@ def verify_change(
     :class:`TokenExpired`, :class:`AlreadyConsumed`,
     :class:`SessionUserMismatch`, :class:`EmailInUse`,
     :class:`PendingNotFound`.
+
+    **Outbox ordering (cd-9slq).** When ``dispatch`` is supplied the
+    confirmation-to-new and revert-link-to-old SMTP sends are queued
+    onto it for post-commit delivery. The calling HTTP router runs
+    this function inside ``with make_uow() as session:`` and invokes
+    :meth:`PendingDispatch.deliver` only after the ``with`` exits,
+    so a commit failure short-circuits both sends — no working
+    revert token reaches the old mailbox without the matching
+    revert nonce + verified-pending row durable on disk. When
+    ``dispatch`` is ``None`` the function falls back to the legacy
+    synchronous send for tests / direct callers that own the commit
+    boundary themselves.
     """
     resolved_now = now if now is not None else _now(clock)
     pepper = _pepper(settings)
@@ -838,23 +877,51 @@ def verify_change(
     with tenant_agnostic():
         session.flush()
 
-    # Send the two notices. Confirmation to the new address (no
-    # link); revert link to the old address.
-    _send_confirmation_to_new(
-        mailer=mailer,
-        new_email=new_email,
-        display_name=user.display_name,
-        masked_old_email=_mask_email(old_email),
-    )
-    _send_revert_link_to_old(
-        mailer=mailer,
-        old_email=old_email,
-        display_name=user.display_name,
-        masked_new_email=_mask_email(new_email),
-        base_url=base_url,
-        token=revert_token,
-        ttl=timedelta(hours=72),
-    )
+    # Capture every input the deferred sends need at mint time so
+    # the dispatch entries are parameter-free closures. Each send
+    # is independent: a relay miss on the confirmation MUST NOT
+    # abort the revert-link send (and vice versa), matching the
+    # prior swallow-and-log behaviour now lifted post-commit.
+    captured_verify_mailer = mailer
+    captured_new_email = new_email
+    captured_old_email = old_email
+    captured_display_name = user.display_name
+    captured_masked_old_email = _mask_email(old_email)
+    captured_masked_new_email = _mask_email(new_email)
+    captured_base_url = base_url
+    captured_revert_token = revert_token
+
+    def _deferred_confirmation_send() -> None:
+        _send_confirmation_to_new(
+            mailer=captured_verify_mailer,
+            new_email=captured_new_email,
+            display_name=captured_display_name,
+            masked_old_email=captured_masked_old_email,
+        )
+
+    def _deferred_revert_send() -> None:
+        _send_revert_link_to_old(
+            mailer=captured_verify_mailer,
+            old_email=captured_old_email,
+            display_name=captured_display_name,
+            masked_new_email=captured_masked_new_email,
+            base_url=captured_base_url,
+            token=captured_revert_token,
+            ttl=timedelta(hours=72),
+        )
+
+    if dispatch is not None:
+        # Production path — calling router commits then drains the
+        # dispatch. Both sends fire only after the swap +
+        # ``email_change_pending`` row (with stamped revert_jti) +
+        # audit are durable on disk (cd-9slq).
+        dispatch.add_callback(_deferred_confirmation_send)
+        dispatch.add_callback(_deferred_revert_send)
+    else:
+        # Legacy fallback for tests / direct callers that own their
+        # own commit boundary.
+        _deferred_confirmation_send()
+        _deferred_revert_send()
 
     old_hash = _email_hash(old_email, pepper)
     new_hash = _email_hash(new_email, pepper)

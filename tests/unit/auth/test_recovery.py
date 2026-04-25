@@ -63,15 +63,34 @@ from app.auth.recovery import (
     complete_recovery,
     is_self_service_recovery_disabled,
     prune_expired_recovery_sessions,
-    request_recovery,
     verify_recovery,
 )
+from app.auth.recovery import request_recovery as _raw_request_recovery
 from app.auth.webauthn import VerifiedRegistration
 from app.config import Settings
 from app.util.ulid import new_ulid
 from tests.factories.identity import bootstrap_user
 
 _PINNED = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
+
+
+def request_recovery(*args: object, **kwargs: object) -> None:
+    """Module-local shim: call the real :func:`request_recovery` then deliver.
+
+    cd-9slq reshaped the production :func:`request_recovery` to return
+    a :class:`PendingDispatch` whose :meth:`deliver` fires every
+    queued SMTP send post-commit. Production callers (the recovery
+    HTTP router) sandwich a ``UoW.__exit__`` between the two calls so
+    a commit failure short-circuits the send. The unit tests in this
+    module exercise the domain function in isolation against an
+    in-memory engine — none of them sit behind a UoW that needs that
+    ordering — so we shim the import to fold the immediate deliver
+    back into a single call. Tests that *do* want to stress the
+    deferred-send invariant import :func:`_raw_request_recovery`
+    directly.
+    """
+    dispatch = _raw_request_recovery(*args, **kwargs)  # type: ignore[arg-type]
+    dispatch.deliver()
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +757,154 @@ class TestRequestRecoveryEnumerationGuard:
         ).all()
         assert len(audits) == 1
         assert isinstance(audits[0].diff, dict) and audits[0].diff["hit"] is False
+
+
+class TestRequestRecoveryOutboxOrdering:
+    """cd-9slq: SMTP send must run *after* recovery audit + nonce
+    are durable.
+
+    Mirrors :class:`tests.unit.auth.test_magic_link.TestRequestLinkOutboxOrdering`
+    at the recovery-domain layer. Production callers (the recovery
+    HTTP router) sequence ``with UoW: request_recovery() → commit →
+    dispatch.deliver()``; a commit failure short-circuits both queued
+    sends (the recovery template on the hit branch + the no-account
+    notice on the miss branch), so neither leaves the host with a
+    rolled-back ``MagicLinkNonce`` / ``audit.recovery.requested``
+    row.
+    """
+
+    def test_pending_returned_does_not_send_email_until_deliver(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """``request_recovery`` queues writes + the deferred sends; mailer
+        stays untouched until the caller invokes
+        :meth:`PendingDispatch.deliver`.
+        """
+        bootstrap_user(session, email="lazy@example.com", display_name="Lazy")
+        dispatch = _raw_request_recovery(
+            session,
+            email="lazy@example.com",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        # Nonce + audit queued on the session — visible pre-commit.
+        nonces = session.scalars(select(MagicLinkNonce)).all()
+        assert len(nonces) == 1
+        # Recording mailer is untouched until ``dispatch.deliver()``
+        # fires (the in-process capturing mailer fired but doesn't
+        # send anything outbound).
+        assert mailer.sent == [], (
+            f"recording mailer fired before deliver(): {mailer.sent!r}"
+        )
+        dispatch.deliver()
+        assert len(mailer.sent) == 1
+
+    def test_commit_failure_before_deliver_does_not_send_email(
+        self,
+        session: Session,
+        engine: Engine,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """The cd-t2jz repro on the recovery domain: commit fails →
+        no email goes out (hit branch).
+        """
+        bootstrap_user(session, email="outbox@example.com", display_name="Outbox")
+        original_commit = session.commit
+
+        def _failing_commit() -> None:
+            session.rollback()
+            raise RuntimeError("simulated commit failure")
+
+        session.commit = _failing_commit  # type: ignore[method-assign]
+        dispatch = None
+        try:
+            dispatch = _raw_request_recovery(
+                session,
+                email="outbox@example.com",
+                ip="127.0.0.1",
+                mailer=mailer,
+                base_url="https://crew.day",
+                now=_PINNED,
+                throttle=throttle,
+                settings=settings,
+            )
+            with pytest.raises(RuntimeError, match="simulated commit failure"):
+                session.commit()
+        finally:
+            session.commit = original_commit  # type: ignore[method-assign]
+
+        # Recording mailer was never invoked — the recovery template
+        # send is queued post-commit and the failure short-circuits
+        # ``dispatch.deliver()`` per cd-9slq.
+        assert mailer.sent == [], (
+            f"mailer was invoked despite commit failure: {mailer.sent!r}"
+        )
+        # The rolled-back nonce + audit are gone.
+        assert session.scalars(select(MagicLinkNonce)).all() == []
+        assert (
+            session.scalars(
+                select(AuditLog).where(AuditLog.action == "recovery.requested")
+            ).all()
+            == []
+        )
+        assert dispatch is not None
+
+    def test_commit_failure_on_miss_branch_does_not_send_email(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """Miss branch: a commit failure short-circuits the no-account
+        notice send. The §15 enumeration guard relies on identical
+        cadence between hit + miss; the outbox boundary applies on
+        both sides.
+        """
+        original_commit = session.commit
+
+        def _failing_commit() -> None:
+            session.rollback()
+            raise RuntimeError("simulated commit failure")
+
+        session.commit = _failing_commit  # type: ignore[method-assign]
+        try:
+            _raw_request_recovery(
+                session,
+                email="ghost@example.com",  # no user row → miss branch
+                ip="127.0.0.1",
+                mailer=mailer,
+                base_url="https://crew.day",
+                now=_PINNED,
+                throttle=throttle,
+                settings=settings,
+            )
+            with pytest.raises(RuntimeError, match="simulated commit failure"):
+                session.commit()
+        finally:
+            session.commit = original_commit  # type: ignore[method-assign]
+
+        # No mail leaves on either branch when commit fails.
+        assert mailer.sent == [], (
+            f"miss-branch mailer was invoked despite commit failure: {mailer.sent!r}"
+        )
+        # The rolled-back audit row is gone.
+        assert (
+            session.scalars(
+                select(AuditLog).where(AuditLog.action == "recovery.requested")
+            ).all()
+            == []
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -190,6 +190,8 @@ def client(
     because the integration test's whole point is to let each step
     *commit* so the next step sees the row.
     """
+    import app.adapters.db.session as _session_mod
+
     app = FastAPI()
     router = build_signup_router(
         mailer=mailer,
@@ -214,8 +216,21 @@ def client(
             s.close()
 
     app.dependency_overrides[_db_session_dep] = _session
-    with TestClient(app) as c:
-        yield c
+
+    # cd-9slq: ``POST /signup/start`` opens its own
+    # ``with make_uow():`` block so the magic-link SMTP send fires
+    # post-commit. Redirect the module-level default sessionmaker to
+    # the per-test engine so the router's UoW binds correctly.
+    original_engine = _session_mod._default_engine
+    original_factory = _session_mod._default_sessionmaker_
+    _session_mod._default_engine = engine
+    _session_mod._default_sessionmaker_ = factory
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        _session_mod._default_engine = original_engine
+        _session_mod._default_sessionmaker_ = original_factory
 
     # Clean up committed rows so sibling integration tests see a
     # clean table. Strictly scoped: only the ones we know this flow

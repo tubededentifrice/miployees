@@ -109,17 +109,22 @@ deferred-send shape sidesteps that: the caller's UoW commits via
 its existing path (the FastAPI ``db_session`` dep at handler exit),
 and only *then* does the router fire :meth:`deliver`.
 
-Note (cd-9i7z follow-up): the **non-router** callers
-(``signup.start``, ``recovery.request_recovery``,
-``email_change.request_change`` / ``request_revert``,
-``membership.invite``, ``users.reissue_magic_link``) still wrap the
-returned :class:`PendingMagicLink` in their own
-``with`` / ``try`` / ``finally`` plumbing because their commit
-boundary is the FastAPI ``db_session`` dep, not the domain
-function. Each of those flows owns its own deferred-send call;
-see the per-caller comments. The single shared invariant: nobody
-calls :meth:`PendingMagicLink.deliver` before the UoW that holds
-the matching nonce row has committed.
+**Outbox ordering for non-router callers (cd-9slq).** The other
+flows that mint magic links — :func:`app.auth.signup.start_signup`,
+:func:`app.auth.recovery.request_recovery`,
+:func:`app.domain.identity.email_change.request_change` /
+:func:`~app.domain.identity.email_change.verify_change`,
+:func:`app.domain.identity.membership.invite`, and the manager-
+mediated reissue in :mod:`app.api.v1.users` — return a
+:class:`PendingDispatch` (the outbox queue for one or more
+deferred sends) instead of calling :meth:`PendingMagicLink.deliver`
+themselves. Each calling HTTP router runs the domain call inside an
+explicit ``with make_uow() as session:`` block (replacing the
+shared ``db_session`` FastAPI dep) and invokes
+:meth:`PendingDispatch.deliver` only after the ``with`` exits
+cleanly — a commit failure short-circuits every queued send. The
+single shared invariant: nobody fires SMTP for a magic-link token
+before the UoW that holds the matching nonce row has committed.
 """
 
 from __future__ import annotations
@@ -161,6 +166,7 @@ __all__ = [
     "InvalidToken",
     "MagicLinkOutcome",
     "MagicLinkPurpose",
+    "PendingDispatch",
     "PendingMagicLink",
     "PurposeMismatch",
     "RateLimited",
@@ -379,6 +385,112 @@ class PendingMagicLink:
                 "magic-link mail send failed; swallowing per §15 enumeration guard",
                 exc_info=True,
             )
+
+
+@dataclass(eq=False, slots=True)
+class PendingDispatch:
+    """Outbox collector for one or more deferred SMTP sends (cd-9slq).
+
+    The non-router callers of :func:`request_link` (signup, recovery,
+    invite, email-change, manager-mediated reissue) typically need to
+    send more than one email per request — the magic-link send plus
+    a flow-specific template (recovery notice, invite copy, revert
+    link). They also stack on top of the magic-link service's own
+    :class:`PendingMagicLink`. This dataclass is the seam those
+    callers return to their HTTP router so the router can sequence
+    ``with UoW: domain_call() → commit → dispatch.deliver()``,
+    matching the cd-9i7z fix at the magic-link router.
+
+    The router calls :meth:`deliver` once after the UoW commits; this
+    fires every queued send in registration order. Each individual
+    send is wrapped so a :class:`MailDeliveryError` on one entry is
+    logged and swallowed (§15 enumeration guard) without aborting the
+    rest — a recovery flow must still ship the unknown-email notice
+    even when the magic-link mailer happens to fail at the same
+    moment, and an invite must still ship its flavoured template even
+    if the magic-link side hiccupped.
+
+    **Append semantics.** :meth:`add_callback` and :meth:`add_pending`
+    extend the queue. The order is preserved so callers that need a
+    specific sequencing (magic-link first, sibling notice second)
+    just register in that order. :meth:`add_pending` stores the
+    :class:`PendingMagicLink` whole — :meth:`deliver` invokes its
+    own :meth:`PendingMagicLink.deliver` so its idempotency / repr /
+    swallow guarantees apply uniformly.
+
+    **Single-fire on :meth:`deliver`.** Each entry is consumed at most
+    once: the dispatch clears its queue after iterating, so a buggy
+    retry path that calls ``dispatch.deliver()`` twice doesn't ship
+    duplicate emails. A second call is a silent no-op.
+    """
+
+    _entries: list[Callable[[], None]] = field(default_factory=list)
+
+    def add_callback(self, callback: Callable[[], None]) -> None:
+        """Register one parameter-free deferred send.
+
+        Use this for sibling templates the domain caller renders by
+        hand (recovery notice, invite copy, revert link). Wrap any
+        captured state at the call site so this dispatch sees a
+        zero-arg closure.
+        """
+        self._entries.append(callback)
+
+    def add_pending(self, pending: PendingMagicLink | None) -> None:
+        """Register a :class:`PendingMagicLink` for post-commit delivery.
+
+        ``None`` is a no-op so callers can pipe the
+        :func:`request_link` return value directly without a guard
+        (the enumeration-guard short-circuit returns ``None``).
+        :meth:`deliver` invokes the pending's own
+        :meth:`PendingMagicLink.deliver` so the idempotency + token-
+        redacting repr + MailDeliveryError swallow on that class apply.
+        """
+        if pending is None:
+            return
+        self._entries.append(pending.deliver)
+
+    def deliver(self) -> None:
+        """Fire every queued send. Idempotent across repeat calls.
+
+        MUST be called *after* the caller's UoW commits. If commit
+        failed, the caller never reaches here and no email leaves the
+        host — that's the §15 invariant: no working magic-link token
+        in a user's inbox without a matching nonce + audit_log row
+        durable on disk.
+
+        Each entry's :class:`MailDeliveryError` is logged and swallowed
+        so one relay miss does not abort sibling sends queued behind
+        it. Other exception types propagate — a programming bug in a
+        deferred closure should fail loud, not silently drop the
+        rest of the dispatch.
+        """
+        # Snapshot + clear up front so a re-entrant ``deliver()`` call
+        # (e.g. inside a swallowed entry's logging path) sees an empty
+        # queue and returns immediately. Mirrors the
+        # :class:`PendingMagicLink` single-fire shape.
+        entries = self._entries
+        self._entries = []
+        for entry in entries:
+            try:
+                entry()
+            except MailDeliveryError:
+                _log.warning(
+                    "deferred mail send failed; swallowing per §15 enumeration guard",
+                    exc_info=True,
+                )
+
+    def __repr__(self) -> str:
+        """Render the dispatch without leaking captured tokens.
+
+        The closures we collect typically capture signed magic-link
+        tokens by reference; the default dataclass ``__repr__`` would
+        render the closure's ``__qualname__`` + the captured frame,
+        which is enough to leak tokens via stray log lines or
+        tracebacks. We collapse to a count to keep debug output
+        useful without that surface (§15 redaction posture).
+        """
+        return f"PendingDispatch(entries={len(self._entries)})"
 
 
 # ---------------------------------------------------------------------------
