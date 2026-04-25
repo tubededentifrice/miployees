@@ -14,6 +14,12 @@ from app.tenancy.current import (
     set_current,
     tenant_agnostic,
 )
+from app.tenancy.deployment import (
+    DEPLOYMENT_SCOPE_CATALOG,
+    DEPLOYMENT_SCOPE_PREFIX,
+    DeploymentActorKind,
+    DeploymentContext,
+)
 from app.tenancy.registry import is_scoped, register, scoped_tables
 from app.tenancy.slug import (
     RESERVED_SLUGS,
@@ -27,10 +33,14 @@ from app.tenancy.slug import (
 )
 
 __all__ = [
+    "DEPLOYMENT_SCOPE_CATALOG",
+    "DEPLOYMENT_SCOPE_PREFIX",
     "RESERVED_SLUGS",
     "SLUG_PATTERN",
     "ActorGrantRole",
     "ActorKind",
+    "DeploymentActorKind",
+    "DeploymentContext",
     "InvalidSlug",
     "WorkspaceContext",
     "get_current",

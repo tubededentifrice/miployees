@@ -568,6 +568,50 @@ Authorisation accepts two principals only:
    deployment grants as well as whichever workspace grants that user
    happens to hold.
 
+**FastAPI dep contract** (cd-xgmu).
+`current_deployment_admin_principal` is the auth seam for every
+admin route under `/admin/api/v1/...`. It returns a frozen
+`DeploymentContext(principal, user_id, actor_kind, deployment_scopes)`
+dataclass on success and otherwise:
+
+* **404 `not_found`** for every "not authorised" path — no auth
+  material at all, an unknown / expired / revoked / fingerprint-
+  mismatch session cookie, a session whose user holds no active
+  deployment `role_grant`, a malformed / unknown / revoked / expired
+  bearer token, a delegated token whose delegating user is not a
+  deployment admin, a personal access token (PATs are forbidden
+  here), or a scoped token whose `scope_json` carries no
+  `deployment:*` keys at all. The 404 envelope is the canonical
+  RFC 7807 problem+json shape with `error = "not_found"`; the
+  surface stays invisible to tenants.
+* **422 `deployment_scope_conflict`** — and only this — when a
+  scoped token's `scope_json` carries at least one `deployment:*`
+  key together with at least one non-`deployment:*` key. The
+  caller has already proved knowledge of a real token, so leaking
+  the typed code does not enumerate tenant data, and the operator
+  needs the signal to fix the misconfigured mint.
+
+`DeploymentContext.actor_kind ∈ {"user", "delegated", "agent"}`
+mirrors the principal arms: `user` for a passkey-session admin,
+`delegated` for an inherited-grant agent token, `agent` for a
+scoped token with explicit `deployment:*` scopes.
+
+`deployment_scopes` is a `frozenset[str]` of granted scope keys.
+Session and delegated principals carry the **full** scope catalog
+above (the spec collapses every fine-grained admin capability onto
+the single `scope_kind='deployment'` grant in v1); scoped tokens
+carry only the subset their row pins. Per-route scope gating uses
+the companion factory `require_deployment_scope("deployment.X:Y")`
+which 404s — never 403s — on a scope miss so the surface stays
+flat.
+
+The dep is mounted per-route; the `/admin/api/v1` prefix stays in
+the workspace tenancy middleware's `SKIP_PATHS` so no slug
+resolution runs for an admin-tree request. A throwaway
+`GET /admin/api/v1/_ping` route is the cd-xgmu integration probe
+(hidden from OpenAPI; superseded by `GET /admin/api/v1/me`,
+cd-yj4k).
+
 ```
 # Caller identity
 GET    /admin/api/v1/me                              # deployment-admin caller's identity + capabilities

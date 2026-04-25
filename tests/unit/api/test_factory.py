@@ -266,22 +266,34 @@ class TestContextRouterMount:
     def test_admin_router_is_the_mounted_instance(self) -> None:
         """The factory mounts :data:`app.api.admin.admin_router` verbatim.
 
-        The router is empty today so no concrete path resolves; the
-        stable assertion is that :func:`create_app` does not swap the
-        admin_router reference mid-factory — the downstream admin
-        Beads tasks (cd-jlms et al.) will import ``admin_router``
-        from the same module and add routes to it, expecting those to
-        reach the live app.
+        The stable assertion is that :func:`create_app` does not
+        swap the ``admin_router`` reference mid-factory — the
+        downstream admin Beads tasks (cd-jlms et al.) will import
+        ``admin_router`` from the same module and add routes to it,
+        expecting those to reach the live app. cd-xgmu landed a
+        single throwaway ``GET /_ping`` probe used by the auth-dep
+        integration tests; the route is hidden from OpenAPI and
+        does not change the public surface.
         """
         # Defensive: ensure the module-level admin_router is still an
         # APIRouter (not replaced by the factory).
         from fastapi import APIRouter
+        from fastapi.routing import APIRoute
 
         from app.api.admin import admin_router as admin_router_module
 
         assert isinstance(admin_router_module, APIRouter)
-        # Route table on ``admin_router`` itself — empty at cd-ika7.
-        assert list(admin_router_module.routes) == []
+        # The throwaway cd-xgmu probe route is the only route on the
+        # admin_router today. Pin its presence + hidden-schema flag
+        # so a future regression that exposes it on /api/openapi.json
+        # trips this test loudly.
+        ping_routes = [
+            r
+            for r in admin_router_module.routes
+            if isinstance(r, APIRoute) and r.path == "/_ping"
+        ]
+        assert len(ping_routes) == 1
+        assert ping_routes[0].include_in_schema is False
 
     def test_unknown_admin_api_path_returns_json_404(self) -> None:
         """The admin mount answers 404 with the RFC 7807 envelope (§12)."""
