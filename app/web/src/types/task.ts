@@ -3,6 +3,7 @@
 
 import type { Booking } from "./booking";
 import type { Leave } from "./employee";
+import type { InventoryEffect } from "./inventory";
 
 export type TaskStatus = "scheduled" | "pending" | "in_progress" | "completed" | "skipped" | "cancelled" | "overdue";
 export type TaskPriority = "low" | "normal" | "high" | "urgent";
@@ -81,6 +82,7 @@ export interface TaskTemplate {
   photo_evidence: PhotoEvidence;
   priority: TaskPriority;
   checklist: ChecklistItem[];
+  inventory_effects: InventoryEffect[];
 }
 
 export interface Schedule {

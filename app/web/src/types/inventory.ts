@@ -24,3 +24,12 @@ export interface InventoryItem {
   unit: string;
   area: string;
 }
+
+// Per-template inventory hook — see §06 task templates / §08 inventory.
+// `item_ref` is a soft string ref (sku or id, depending on caller); the
+// task generator resolves it at materialise time.
+export interface InventoryEffect {
+  item_ref: string;
+  kind: "consume" | "produce";
+  qty: number;
+}
