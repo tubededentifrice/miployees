@@ -27,32 +27,29 @@ main task is coupled to its selfreview; parallel implementation
 breaks that coupling (reviews would batch, context bleeds across
 changes, and failures can't be attributed cleanly).
 
-Get the prioritised queue with **`bv --robot-triage | jq .triage.recommendations`**
-— returns up to the top 10 ready tasks. Keep that list in your
-working memory and **pick the next task from the top of it** each
-iteration; do **not** re-run the command after every pair (the
-output is verbose and rarely changes mid-batch). Only refresh the
-list when you've worked through it (or when a graph edit you just
-made invalidates it). (Do **not** use `bv --robot-next`: it
-currently returns no task even when the queue has plenty left.)
-Replaces raw `bd ready` for task selection.
+Get the prioritised queue with **`bd ready`** — returns the
+unblocked tasks in priority order. Keep that list in your working
+memory and **pick the next task from the top of it** each iteration;
+do **not** re-run the command after every pair (the output is
+verbose and rarely changes mid-batch). Only refresh the list when
+you've worked through it (or when a graph edit you just made
+invalidates it).
 
-**`bv --robot-triage` does not return paired selfreview tasks.** For
-every main task you pick, locate its paired selfreview (search Beads
-for one that blocks / is blocked by the main task, e.g.
-`bd list --status open | rg -i selfreview`). If none exists, create
-one via `/beads` **before** closing the main task. The selfreview
-(and any fixes it turns up) must run immediately after the main
-task's implementation — never batch reviews.
+**`bd ready` does not surface paired selfreview tasks** — they are
+blocked by their main task and only become ready once the main task
+closes. For every main task you pick, locate its paired selfreview
+(search Beads for one that blocks / is blocked by the main task,
+e.g. `bd list --status open | rg -i selfreview`). If none exists,
+create one via `/beads` **before** closing the main task. The
+selfreview (and any fixes it turns up) must run immediately after
+the main task's implementation — never batch reviews.
 
-When the cached list is exhausted, re-run
-`bv --robot-triage | jq .triage.recommendations` to refresh it —
-closed tasks often unblock new ones.
+When the cached list is exhausted, re-run `bd ready` to refresh it
+— closed tasks often unblock new ones.
 
 You only stop when:
 
-- a refreshed `bv --robot-triage | jq .triage.recommendations`
-  returns no actionable item, **or**
+- a refreshed `bd ready` returns no actionable item, **or**
 - a non-obvious decision with long-lasting impact appears — in that
   case use `AskUserQuestion` with enough context and a clear
   recommendation for the user to decide.
@@ -78,10 +75,9 @@ and ships implementation + review fixes + `.beads/` delta in a single
 signed-off commit. Closure and commit are atomic.
 
 ```
-DIRECTOR: pick top task from the cached recommendations list
-    │       (run `bv --robot-triage | jq .triage.recommendations`
-    │        once to seed the list; take the next entry each loop;
-    │        only refresh when the list runs out)
+DIRECTOR: pick top task from the cached ready list
+    │       (run `bd ready` once to seed the list; take the next
+    │        entry each loop; only refresh when the list runs out)
     ▼
 1. DIRECTOR: `bd show <id>` → sanity-check dependencies.
    • If a prerequisite is obviously missing (e.g. an API task whose
@@ -112,11 +108,10 @@ DIRECTOR: pick top task from the cached recommendations list
     │       Single atomic step: closure ships with the commit.
     │
     ▼
-5. DIRECTOR: pick the next entry from your cached recommendations
-   list and loop to step 1. Only re-run
-   `bv --robot-triage | jq .triage.recommendations` when the list
-   is empty (or stale because of a graph edit). Stop only when a
-   refreshed list returns nothing.
+5. DIRECTOR: pick the next entry from your cached ready list and
+   loop to step 1. Only re-run `bd ready` when the list is empty
+   (or stale because of a graph edit). Stop only when a refreshed
+   list returns nothing.
 ```
 
 **No Reviewer or Documenter agents.** Review = paired selfreview task
@@ -189,11 +184,10 @@ Read, in order:
   before CLI, foundational refactor before consumers), add the
   dependency *before* starting: `bd dep <blocker> --blocks <blocked>`.
   Then **drop the picked task** — it's now blocked — and pick the
-  next entry from your cached recommendations list (refresh via
-  `bv --robot-triage | jq .triage.recommendations` only if the list
-  is empty). Wrong-order picks waste a coder run and leave the
-  graph misleading. The dep edit ships with the next commit
-  (commiter's `bd sync` covers it).
+  next entry from your cached ready list (refresh via `bd ready`
+  only if the list is empty). Wrong-order picks waste a coder run
+  and leave the graph misleading. The dep edit ships with the next
+  commit (commiter's `bd sync` covers it).
 
 ## Invoking agents
 
@@ -270,16 +264,14 @@ Before delegating implementation:
 ## Beads workflow
 
 ```bash
-bv --robot-triage | jq .triage.recommendations
-                                      # top ~10 prioritised ready tasks; cache
-                                      # the list and take entries off the top
-                                      # one at a time. Don't re-run after every
-                                      # pair — the output is verbose. Refresh
-                                      # only when the cached list runs out.
-                                      # (Avoid `bv --robot-next` — it currently
-                                      # returns no task even when the queue has
-                                      # plenty left.)
-                                      # NB: selfreview tasks are NOT returned —
+bd ready                              # unblocked tasks in priority order;
+                                      # cache the list and take entries off
+                                      # the top one at a time. Don't re-run
+                                      # after every pair — the output is
+                                      # verbose. Refresh only when the cached
+                                      # list runs out.
+                                      # NB: selfreview tasks are NOT surfaced
+                                      # (blocked by their main task) —
                                       # find or create the pair for each main
 bd show <id>                          # full context
 bd update <id> --claim                # claim it (in_progress)
@@ -290,7 +282,5 @@ bd sync                               # export jsonl after ANY bd mutation
                                       # this before `git add` so the .beads/
                                       # delta ships in the same commit
 ```
-
-Fall back to `bd ready` only if `bv` is unavailable.
 
 See [`../beads/SKILL.md`](../beads/SKILL.md) for task quality standards.
