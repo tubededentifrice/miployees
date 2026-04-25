@@ -12,18 +12,17 @@ import { STATUS_TONE } from "./lib/expenseHelpers";
 // through the same list; the chip tone (`STATUS_TONE`) is the only
 // thing that distinguishes them.
 //
-// Reads `GET /api/v1/expenses` with no `user_id` — the cd-t6y2 service
-// defaults to the caller's own claims (per
-// `app.domain.expenses.claims.list_for_user`). The legacy
-// `?mine=true` query string was a mock-era artefact; the production
-// endpoint never honoured it, and FastAPI silently ignored the param.
-// Tracked separately under cd-qcj2 if "explicit self-list" semantics
-// ever resurface.
+// Reads `GET /api/v1/expenses?mine=true` (cd-qcj2). The explicit
+// `mine=true` form pins the server-side listing to the caller and
+// short-circuits the manager-cap branch so a plain worker without
+// `expenses.approve` is never 403'd. Without the flag the server
+// still defaults to "caller's own claims" today, but stating intent
+// at the call site protects this panel from a future default flip.
 
 export default function RecentExpenses() {
   const q = useQuery({
     queryKey: qk.expenses("mine"),
-    queryFn: () => fetchAllExpenseClaims(),
+    queryFn: () => fetchAllExpenseClaims({ mine: true }),
   });
 
   return (

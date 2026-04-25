@@ -505,6 +505,18 @@ def list_expense_claims_route(
     ctx: _Ctx,
     session: _Db,
     user_id: Annotated[str | None, Query(max_length=64)] = None,
+    mine: Annotated[
+        bool,
+        Query(
+            description=(
+                "When ``true``, narrow the result to the caller's own "
+                "claims (equivalent to ``user_id=<caller>``) without "
+                "requiring ``expenses.approve``. Mutually exclusive "
+                "with an explicit ``user_id`` — supplying both surfaces "
+                "422 ``mine_user_id_conflict``. Defaults to ``false``."
+            ),
+        ),
+    ] = False,
     state: Annotated[str | None, Query(max_length=32)] = None,
     cursor: PageCursorQuery = None,
     limit: LimitQuery = DEFAULT_LIMIT,
@@ -514,18 +526,38 @@ def list_expense_claims_route(
     ``user_id`` defaults to the caller; targeting another user
     requires ``expenses.approve`` (the service raises
     :class:`ClaimPermissionDenied`, which the router translates to
-    403). ``state`` filters by the lifecycle state. The cursor is
-    the last-returned claim's id encoded via
+    403). ``mine=true`` is the explicit "my own claims only" form
+    the SPA's worker surface uses (see
+    ``app/web/src/pages/employee/expenses/RecentExpenses.tsx``); it
+    pins the listing to ``ctx.actor_id`` and skips the manager-cap
+    branch so a worker without ``expenses.approve`` always succeeds.
+    Combining ``mine=true`` with an explicit ``user_id`` is rejected
+    with 422 ``mine_user_id_conflict`` — the two filters answer
+    different questions and silently picking one would let a bug
+    in the caller leak the wrong listing.
+
+    ``state`` filters by the lifecycle state. The cursor is the
+    last-returned claim's id encoded via
     :func:`app.api.pagination.encode_cursor`; the underlying service
     sorts by ``id DESC`` so "next page" means "older claim".
     """
+    if mine and user_id is not None:
+        raise _http(
+            422,
+            "mine_user_id_conflict",
+            message=(
+                "mine=true cannot be combined with an explicit user_id; "
+                "drop one of them"
+            ),
+        )
+    target_user_id = ctx.actor_id if mine else user_id
     state_literal = _validate_state_filter(state)
     after_id = decode_cursor(cursor)
     try:
         rows, next_raw = list_for_user(
             session,
             ctx,
-            user_id=user_id,
+            user_id=target_user_id,
             state=state_literal,
             limit=limit,
             cursor=after_id,

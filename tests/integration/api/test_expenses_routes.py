@@ -621,6 +621,167 @@ class TestListing:
             r = client.get(f"/api/v1/expenses/{cid}")
             assert r.status_code == 404, r.text
 
+    def test_mine_true_returns_only_caller_claims(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        # Worker files two of their own claims; the peer (a separate
+        # worker in the same workspace) files one. ``mine=true`` must
+        # surface exactly the worker's two — never the peer's.
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            for i in range(2):
+                client.post(
+                    "/api/v1/expenses",
+                    json=_create_body(
+                        work_engagement_id=seeded["worker_eng_id"],
+                        vendor=f"Worker vendor {i}",
+                    ),
+                )
+
+        with _client_for(session_factory, seeded["peer_ctx"], storage) as client:
+            client.post(
+                "/api/v1/expenses",
+                json=_create_body(
+                    work_engagement_id=seeded["peer_eng_id"],
+                    vendor="Peer vendor",
+                ),
+            )
+
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get("/api/v1/expenses", params={"mine": "true"})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert len(body["data"]) == 2
+            vendors = {row["vendor"] for row in body["data"]}
+            assert vendors == {"Worker vendor 0", "Worker vendor 1"}
+            # Envelope keys are the standard cd-t6y2 shape.
+            assert body["has_more"] is False
+            assert body["next_cursor"] is None
+
+    def test_mine_true_empty_returns_envelope_with_data_empty(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        # Worker has filed nothing yet — the envelope is well-formed
+        # with an empty ``data`` list, NOT a 404 / 204.
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get("/api/v1/expenses", params={"mine": "true"})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body == {
+                "data": [],
+                "next_cursor": None,
+                "has_more": False,
+            }
+
+    def test_mine_true_worker_authorized(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        # A plain worker (no ``expenses.approve`` capability) reads
+        # ``mine=true`` successfully — the explicit self-only filter
+        # short-circuits the manager-cap branch in
+        # :func:`list_expense_claims_route`.
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            client.post(
+                "/api/v1/expenses",
+                json=_create_body(
+                    work_engagement_id=seeded["worker_eng_id"],
+                    vendor="Solo claim",
+                ),
+            )
+            r = client.get("/api/v1/expenses", params={"mine": "true"})
+            assert r.status_code == 200, r.text
+            data = r.json()["data"]
+            assert len(data) == 1
+            assert data[0]["vendor"] == "Solo claim"
+
+    def test_mine_true_filters_other_users_in_same_workspace(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        # Owner + manager + peer + worker all file a claim — the
+        # worker's ``mine=true`` listing must hold exactly the worker
+        # row; cross-engagement claims sharing the same workspace are
+        # filtered out.
+        for ctx_key, eng_key, vendor in (
+            ("owner_ctx", "owner_eng_id", "Owner expense"),
+            ("manager_ctx", "manager_eng_id", "Manager expense"),
+            ("peer_ctx", "peer_eng_id", "Peer expense"),
+            ("worker_ctx", "worker_eng_id", "Worker expense"),
+        ):
+            with _client_for(session_factory, seeded[ctx_key], storage) as client:
+                client.post(
+                    "/api/v1/expenses",
+                    json=_create_body(
+                        work_engagement_id=seeded[eng_key],
+                        vendor=vendor,
+                    ),
+                )
+
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get("/api/v1/expenses", params={"mine": "true"})
+            assert r.status_code == 200, r.text
+            data = r.json()["data"]
+            assert [row["vendor"] for row in data] == ["Worker expense"]
+
+    def test_mine_true_cross_workspace_blocked(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        # The worker files a claim in the home workspace. Listing
+        # ``mine=true`` from the foreign workspace context (same actor
+        # has no engagement there) returns an empty envelope — every
+        # claim is workspace-scoped at rest, so cross-tenant probes
+        # collapse to "no rows" rather than leaking the home claim.
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            client.post(
+                "/api/v1/expenses",
+                json=_create_body(
+                    work_engagement_id=seeded["worker_eng_id"],
+                    vendor="Home-only",
+                ),
+            )
+
+        # The owner's foreign workspace is the cross-tenant probe
+        # surface — the seeded fixture only wires ``foreign_ctx`` for
+        # the owner. ``mine=true`` there narrows to the owner's own
+        # claims in that workspace; nothing was filed, so the envelope
+        # is empty and the worker's home-workspace claim is invisible.
+        with _client_for(session_factory, seeded["foreign_ctx"], storage) as client:
+            r = client.get("/api/v1/expenses", params={"mine": "true"})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["data"] == []
+            assert body["has_more"] is False
+
+    def test_mine_true_with_explicit_user_id_is_422(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: InMemoryStorage,
+        seeded: dict[str, Any],
+    ) -> None:
+        # The two filters answer different questions; combining them
+        # is a caller bug we want to surface loudly, not silently
+        # privilege one over the other.
+        with _client_for(session_factory, seeded["worker_ctx"], storage) as client:
+            r = client.get(
+                "/api/v1/expenses",
+                params={"mine": "true", "user_id": seeded["worker_id"]},
+            )
+            assert r.status_code == 422, r.text
+            assert r.json()["detail"]["error"] == "mine_user_id_conflict"
+
 
 # ---------------------------------------------------------------------------
 # Manager flow

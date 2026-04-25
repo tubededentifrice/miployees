@@ -1147,7 +1147,13 @@ POST   /payslips/{id}/mark_paid
 POST   /payslips/{id}/void
 POST   /payslips/{id}/payout_manifest     # OWNER/MANAGER SESSION ONLY (interactive-session-only, §11). Streams decrypted account numbers JIT; not cached in the idempotency store; returns 410 once secrets are purged.
 
-GET    /expenses
+GET    /expenses                   # ?user_id=…&mine=true|false&state=…&cursor=…&limit=…
+                                   # default: caller's own claims (no cap).
+                                   # mine=true is the explicit "my claims only" form
+                                   #   (forces user_id=<caller>, skips the manager-cap branch)
+                                   #   used by the SPA worker surface.
+                                   # user_id=<other> -> requires expenses.approve.
+                                   # mine=true + user_id together -> 422 mine_user_id_conflict.
 GET    /expenses/pending_reimbursement   # ?user_id=me|<id>; returns approved-but-not-reimbursed totals grouped by owed_currency (§09)
 POST   /expenses                   # multipart for receipts
 POST   /expenses/{id}/submit

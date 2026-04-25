@@ -196,6 +196,41 @@ describe("fetchExpenseClaimsPage", () => {
     }
   });
 
+  it("emits ?mine=true when the explicit self-only flag is set (cd-qcj2)", async () => {
+    // The worker "Recent expenses" panel passes `mine: true` so the
+    // server pins the listing to the caller without checking the
+    // `expenses.approve` cap. Pin the URL exactly so a regression
+    // (param renamed, default flipped) shows up here.
+    const env = installFetch([
+      { body: { data: [], next_cursor: null, has_more: false } },
+    ]);
+    try {
+      await fetchExpenseClaimsPage({ mine: true });
+      expect(env.calls[0]!.url).toBe("/w/acme/api/v1/expenses?mine=true");
+    } finally {
+      env.restore();
+    }
+  });
+
+  it("does not emit ?mine= when the flag is omitted or false", async () => {
+    // `mine: false` is the same as omission — neither emits the
+    // param, since the server's default is already "caller's own
+    // claims". Sending `mine=false` would still be valid but would
+    // bloat the URL and create cache-key drift in TanStack Query.
+    const env = installFetch([
+      { body: { data: [], next_cursor: null, has_more: false } },
+      { body: { data: [], next_cursor: null, has_more: false } },
+    ]);
+    try {
+      await fetchExpenseClaimsPage();
+      await fetchExpenseClaimsPage({ mine: false });
+      expect(env.calls[0]!.url).toBe("/w/acme/api/v1/expenses");
+      expect(env.calls[1]!.url).toBe("/w/acme/api/v1/expenses");
+    } finally {
+      env.restore();
+    }
+  });
+
   it("emits the bare /api/v1/expenses path when no filters are set", async () => {
     const env = installFetch([
       { body: { data: [], next_cursor: null, has_more: false } },
@@ -288,6 +323,29 @@ describe("fetchAllExpenseClaims", () => {
       );
       expect(env.calls[1]!.url).toBe(
         "/w/acme/api/v1/expenses?state=submitted&cursor=cur-2",
+      );
+    } finally {
+      env.restore();
+    }
+  });
+
+  it("carries mine=true across every page during a multi-page walk (cd-qcj2)", async () => {
+    // Regression guard: if the per-page call ever drops `mine: true`
+    // on the second page, a worker with >1 page of claims would 403
+    // mid-walk (since the second page would silently fall through to
+    // the workspace-wide branch). Pin both URLs.
+    const a = payload({ id: "a" });
+    const b = payload({ id: "b" });
+    const env = installFetch([
+      { body: { data: [a], next_cursor: "cur-2", has_more: true } },
+      { body: { data: [b], next_cursor: null, has_more: false } },
+    ]);
+    try {
+      const out = await fetchAllExpenseClaims({ mine: true });
+      expect(out).toHaveLength(2);
+      expect(env.calls[0]!.url).toBe("/w/acme/api/v1/expenses?mine=true");
+      expect(env.calls[1]!.url).toBe(
+        "/w/acme/api/v1/expenses?mine=true&cursor=cur-2",
       );
     } finally {
       env.restore();

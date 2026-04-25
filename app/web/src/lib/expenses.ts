@@ -133,6 +133,11 @@ export function mapExpenseClaimPayload(payload: ExpenseClaimPayload): Expense {
  * Build the query string for `GET /api/v1/expenses`.
  *
  * Server-side query params (per `list_expense_claims_route`):
+ * - `mine` — explicit "caller's own claims only" form; pins
+ *   `user_id=<caller>` and skips the manager-cap branch so a worker
+ *   without `expenses.approve` is never 403'd. Mutually exclusive
+ *   with `user_id` — combining them surfaces 422
+ *   `mine_user_id_conflict`.
  * - `user_id` — list someone else's claims (requires `expenses.approve`).
  * - `state` — narrow by lifecycle state.
  * - `cursor` / `limit` — pagination.
@@ -142,6 +147,7 @@ export function mapExpenseClaimPayload(payload: ExpenseClaimPayload): Expense {
  */
 function buildListQuery(opts: ListExpenseClaimsOptions): string {
   const params = new URLSearchParams();
+  if (opts.mine === true) params.set("mine", "true");
   if (opts.userId !== undefined) params.set("user_id", opts.userId);
   if (opts.state !== undefined) params.set("state", opts.state);
   if (opts.cursor !== undefined) params.set("cursor", opts.cursor);
@@ -151,6 +157,19 @@ function buildListQuery(opts: ListExpenseClaimsOptions): string {
 }
 
 export interface ListExpenseClaimsOptions {
+  /**
+   * Explicit "my own claims only" filter. When `true`, the server
+   * pins the listing to the caller and skips the `expenses.approve`
+   * gate — the worker-side recent-expenses panel uses this so it
+   * never trips the manager-cap branch. Mutually exclusive with
+   * `userId`; combining them yields 422 `mine_user_id_conflict`.
+   *
+   * Omitting both still defaults to "caller's own claims" on the
+   * server (per `app.domain.expenses.claims.list_for_user`), but
+   * passing `mine: true` makes the intent explicit and survives
+   * future server-side default changes.
+   */
+  mine?: boolean;
   /**
    * Target a different user's claims. Omit (the default) to read the
    * caller's own claims. Cross-user reads require `expenses.approve`
