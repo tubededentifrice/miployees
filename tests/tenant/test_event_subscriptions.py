@@ -103,9 +103,12 @@ def _sentinel_value_for(field_name: str, annotation: object) -> object:
     (``overdue_since``, ``arrives_at``, ``ended_at``), a handful of
     :data:`~typing.Literal` enums (``action`` / ``kind`` /
     ``reimbursed_via``), one ``list[str]`` field
-    (``mentioned_user_ids``), and a small set of free-text strings
-    guarded by a publish-time validator (``reason`` on
-    :class:`~app.events.types.TaskUnassigned` /
+    (``mentioned_user_ids`` on
+    :class:`~app.events.types.TaskCommentAdded`), one
+    ``tuple[str, ...]`` field (``changed_fields`` on
+    :class:`~app.events.types.TaskUpdated`), and a small set of
+    free-text strings guarded by a publish-time validator (``reason``
+    on :class:`~app.events.types.TaskUnassigned` /
     :class:`~app.events.types.TaskSkipped` /
     :class:`~app.events.types.TaskCancelled`).
 
@@ -132,7 +135,9 @@ def _sentinel_value_for(field_name: str, annotation: object) -> object:
       ``field_name == …`` branch above the ULID fallback, returning
       a member that satisfies the constraint;
     * a new collection / nested model needs its own branch — the
-      ULID fallback won't satisfy ``list[...]`` / submodel parsers.
+      ULID fallback won't satisfy ``list[...]`` / ``tuple[...]`` /
+      submodel parsers (witness: the ``mentioned_user_ids`` and
+      ``changed_fields`` branches below).
 
     Each branch carries the publishing event class in its comment so
     the next coder can verify the chosen sentinel matches the
@@ -188,6 +193,17 @@ def _sentinel_value_for(field_name: str, annotation: object) -> object:
     # having to invent ULID sentinels for the list body.
     if field_name == "mentioned_user_ids":
         return []
+    # Tuple-valued payload fields on events registered today
+    # (``changed_fields`` on :class:`TaskUpdated`, declared
+    # ``tuple[str, ...]``). An empty tuple is a valid no-op delta
+    # under the field's annotation and keeps the cross-tenant
+    # routing assertion focused on ``workspace_id`` rather than the
+    # diff body — same posture as the ``mentioned_user_ids`` branch
+    # above. The ULID fallback below would fail Pydantic's
+    # ``tuple[str, ...]`` parser (a bare string is not a sequence
+    # of strings), so this branch is required, not cosmetic.
+    if field_name == "changed_fields":
+        return ()
     # Default: a ULID-shaped string — satisfies every ``*_id`` field
     # in the registry today (``task_id``, ``shift_id``, ``user_id``,
     # ``stay_id``, ``expense_id``, ``assigned_to``, ``completed_by``,
