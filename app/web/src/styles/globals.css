@@ -438,6 +438,16 @@
 .evidence__picker-cta { font-weight: 600; font-family: "Fraunces", serif; }
 .evidence__picker-sub { color: var(--ink-3); font-size: 12px; }
 .evidence__note-hint { margin: 4px 2px 0; font-size: 13px; line-height: 1.5; }
+/* Inline failure notice rendered above the picker after a failed
+   /expenses/scan call — RFC 7807 `type` keys (blob_*, scan_not_configured,
+   extraction_*) get mapped to plain-English lines in
+   `messageForScanError`. Same rust-soft tone as `.login__notice--danger`
+   so the alarm reads consistently across the app. */
+.evidence__error {
+  margin: 0 0 4px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--rust); background: var(--rust-soft);
+  color: var(--ink-1); font-size: 13px; line-height: 1.5;
+}
 
 /* ── Task detail ──────────────────────────────────────────── */
 .task-detail__head { margin-top: 8px; }

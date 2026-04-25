@@ -36,6 +36,14 @@ export default function MyExpensesPage() {
     setPhase("review");
   }, []);
 
+  const handleScanFailed = useCallback(() => {
+    // Revert to `upload` so the panel re-renders its picker — the
+    // panel surfaces the failure message itself via local state, so
+    // the parent only owns the phase transition.
+    setScan(null);
+    setPhase("upload");
+  }, []);
+
   const handleManualEntry = useCallback(() => {
     setScan(null);
     setPhase("review");
@@ -80,6 +88,7 @@ export default function MyExpensesPage() {
           phase={phase}
           onScanResult={handleScanResult}
           onScanStarted={handleScanStarted}
+          onScanFailed={handleScanFailed}
         />
         {phase === "review" && (
           <SubmitExpenseForm
