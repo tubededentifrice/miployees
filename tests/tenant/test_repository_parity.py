@@ -347,6 +347,24 @@ COVERED_METHODS: frozenset[str] = frozenset(
         "app.domain.identity.role_grants.list_grants",
         "app.domain.identity.role_grants.grant",
         "app.domain.identity.role_grants.revoke",
+        # cd-5l5f: user_work_roles, work_engagements, work_roles —
+        # CRUD surfaces filter by ``workspace_id`` through ``_load_row``
+        # / ``list_*`` SELECTs; the ORM-filter seam covers them
+        # end-to-end.
+        "app.domain.identity.user_work_roles.create_user_work_role",
+        "app.domain.identity.user_work_roles.delete_user_work_role",
+        "app.domain.identity.user_work_roles.get_user_work_role",
+        "app.domain.identity.user_work_roles.list_user_work_roles",
+        "app.domain.identity.user_work_roles.update_user_work_role",
+        "app.domain.identity.work_engagements.archive_work_engagement",
+        "app.domain.identity.work_engagements.get_work_engagement",
+        "app.domain.identity.work_engagements.list_work_engagements",
+        "app.domain.identity.work_engagements.reinstate_work_engagement",
+        "app.domain.identity.work_engagements.update_work_engagement",
+        "app.domain.identity.work_roles.create_work_role",
+        "app.domain.identity.work_roles.get_work_role",
+        "app.domain.identity.work_roles.list_work_roles",
+        "app.domain.identity.work_roles.update_work_role",
         # tasks context
         "app.domain.tasks.templates.read",
         "app.domain.tasks.templates.list_templates",
@@ -361,6 +379,20 @@ COVERED_METHODS: frozenset[str] = frozenset(
         "app.domain.tasks.schedules.resume",
         "app.domain.tasks.schedules.delete",
         "app.domain.tasks.oneoff.create_oneoff",
+        # cd-5l5f: oneoff read / update load the occurrence through a
+        # ``workspace_id``-scoped SELECT and mutate fields on the
+        # loaded row — covered by the ORM-filter seam.
+        "app.domain.tasks.oneoff.read_task",
+        "app.domain.tasks.oneoff.update_task",
+        # cd-5l5f: comments service. Every entry point loads the
+        # comment / occurrence through a ``workspace_id``-scoped
+        # SELECT (``_load_comment`` / ``_load_occurrence``); writes
+        # mutate fields on the loaded row.
+        "app.domain.tasks.comments.delete_comment",
+        "app.domain.tasks.comments.edit_comment",
+        "app.domain.tasks.comments.get_comment",
+        "app.domain.tasks.comments.list_comments",
+        "app.domain.tasks.comments.post_comment",
         # cd-7am7: completion service. Every entry point loads the
         # task through ``_load_task`` which scopes the SELECT by
         # ``ctx.workspace_id`` (see ``app/domain/tasks/completion.py``);
@@ -371,6 +403,11 @@ COVERED_METHODS: frozenset[str] = frozenset(
         "app.domain.tasks.completion.skip",
         "app.domain.tasks.completion.cancel",
         "app.domain.tasks.completion.revert_overdue",
+        # cd-5l5f: completion evidence read / write paths load the
+        # task through ``_load_task`` (``workspace_id``-scoped) before
+        # touching :class:`Evidence` rows.
+        "app.domain.tasks.completion.add_note_evidence",
+        "app.domain.tasks.completion.list_evidence",
         # time context
         "app.domain.time.shifts.open_shift",
         "app.domain.time.shifts.close_shift",
@@ -422,6 +459,45 @@ COVERED_METHODS: frozenset[str] = frozenset(
         # :class:`LlmUsage` row keyed on ``ctx.workspace_id``. The
         # ORM-filter seam covers the whole surface.
         "app.domain.expenses.autofill.run_extraction",
+        # cd-5l5f: expense claim approval / submission flows load the
+        # claim through a ``workspace_id``-scoped SELECT; transitions
+        # mutate fields on the loaded row and the pending list filters
+        # by ``workspace_id`` directly.
+        "app.domain.expenses.approval.approve_claim",
+        "app.domain.expenses.approval.list_pending",
+        "app.domain.expenses.approval.mark_reimbursed",
+        "app.domain.expenses.approval.reject_claim",
+        # cd-5l5f: expense claims CRUD + receipt attach/detach all
+        # filter by ``workspace_id`` via ``_load_row`` / ``list_*``
+        # SELECTs; covered by the ORM-filter seam.
+        "app.domain.expenses.claims.attach_receipt",
+        "app.domain.expenses.claims.cancel_claim",
+        "app.domain.expenses.claims.create_claim",
+        "app.domain.expenses.claims.detach_receipt",
+        "app.domain.expenses.claims.get_claim",
+        "app.domain.expenses.claims.list_for_user",
+        "app.domain.expenses.claims.list_for_workspace",
+        "app.domain.expenses.claims.submit_claim",
+        "app.domain.expenses.claims.update_claim",
+        # cd-5l5f: messaging push tokens — register / unregister /
+        # list filter by ``workspace_id`` (and ``user_id``) through
+        # the ORM filter; ``get_vapid_public_key`` reads a
+        # workspace-scoped settings row.
+        "app.domain.messaging.push_tokens.get_vapid_public_key",
+        "app.domain.messaging.push_tokens.list_for_user",
+        "app.domain.messaging.push_tokens.register",
+        "app.domain.messaging.push_tokens.unregister",
+        # cd-5l5f: stays ical_service. Every entry point loads the
+        # feed through ``_load_row`` which scopes by ``workspace_id``;
+        # ``list_feeds`` / ``register_feed`` / ``probe_feed`` go
+        # through the ORM filter as well.
+        "app.domain.stays.ical_service.delete_feed",
+        "app.domain.stays.ical_service.disable_feed",
+        "app.domain.stays.ical_service.get_plaintext_url",
+        "app.domain.stays.ical_service.list_feeds",
+        "app.domain.stays.ical_service.probe_feed",
+        "app.domain.stays.ical_service.register_feed",
+        "app.domain.stays.ical_service.update_feed",
     }
 )
 
