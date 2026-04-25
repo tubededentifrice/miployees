@@ -468,6 +468,52 @@ Append-only, see §02. Guaranteed invariants:
 - Worker job `audit_integrity_check` runs daily, verifying
   monotonic ULID ordering and no gaps in `correlation_id` blocks.
 
+### Scope partition: workspace vs deployment
+
+Every `audit_log` row carries a `scope_kind` tag that splits the
+table into two universes (cd-kgcc):
+
+- **`scope_kind = 'workspace'`** (legacy default) — the row records
+  a mutation against tenant data. `workspace_id` is NOT NULL; the
+  ORM tenant filter pins reads to the active `WorkspaceContext`.
+  The per-workspace timeline feed (`GET /w/<slug>/api/v1/audit`,
+  §12) and the manager Audit page consume this partition.
+- **`scope_kind = 'deployment'`** — the row records an admin
+  mutation whose subject is the deployment itself: API token mint
+  / revoke against an operator identity, `deployment_setting`
+  edit, signup-policy change, key rotation, and the auto-emitted
+  events from `rotate_root_key` and `audit_verify`. `workspace_id`
+  is NULL; the `GET /admin/api/v1/audit` feed (§12) reads this
+  partition under `tenant_agnostic()` because there is no tenant
+  to pin to.
+
+A biconditional CHECK constraint enforces the pairing at the DB
+level — `(scope_kind = 'deployment' AND workspace_id IS NULL) OR
+(scope_kind = 'workspace' AND workspace_id IS NOT NULL)` — so a
+deployment row can never carry a `workspace_id`, and a workspace
+row can never omit one. The application's writer
+(`app.audit.write_deployment_audit` for the deployment surface,
+`app.audit.write_audit` for the workspace surface) is the first
+line of defence; the CHECK is the defence-in-depth backstop. A
+composite index on `(scope_kind, created_at)` backs the deployment
+feed, mirroring the per-workspace `(workspace_id, created_at)`
+index on the workspace partition.
+
+**Cross-partition leakage is impossible by construction.** A
+workspace-scoped read rewrites every query with
+`WHERE workspace_id = :ctx.workspace_id`; deployment rows carry
+`workspace_id IS NULL`, which never matches a value, so a tenant
+timeline never surfaces a deployment row even if a caller tried to
+query the table directly. The cross-tenant regression test (§17,
+§"Cross-tenant regression test") covers the inverse direction: a
+deployment-scope query never surfaces a workspace row either,
+because the admin reader explicitly filters
+`WHERE scope_kind = 'deployment'`.
+
+Both partitions share one redaction seam, one clock, one ULID
+strategy, and one Unit-of-Work boundary; the `scope_kind` tag is
+the only structural difference between them.
+
 ### Tamper detection
 
 Every `audit_log` row carries a `prev_hash` and a `row_hash` column

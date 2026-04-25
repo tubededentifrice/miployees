@@ -942,7 +942,8 @@ Append-only. Written in the same transaction as every mutation.
 | column             | type    | notes                                 |
 |--------------------|---------|---------------------------------------|
 | id                 | ULID PK |                                       |
-| workspace_id       | ULID FK |                                       |
+| workspace_id       | ULID FK?| NULL for `scope_kind = 'deployment'`; NOT NULL for `scope_kind = 'workspace'`. The biconditional CHECK enforces the pairing at the DB level (cd-kgcc). |
+| scope_kind         | text    | `workspace \| deployment` — `workspace` is the legacy default and applies to every per-tenant mutation. `deployment` (cd-kgcc) tags admin mutations whose subject is the deployment itself: API token mint/revoke against an operator identity, `deployment_setting` edits, signup-policy changes, key rotation, and worker-emitted `audit_verify` rows. The `GET /admin/api/v1/audit` feed (§12) reads this partition under `tenant_agnostic()`. |
 | correlation_id     | ULID    | request-level by default; groups multi-row edits |
 | occurred_at        | tstz    |                                       |
 | actor_kind         | text    | `user`, `agent`, `system`. Every human action — whether the user holds an `owner`, `manager`, `worker`, or `client` grant — is logged as `user`; the grant under which the action was taken is captured in `actor_grant_role` below. `agent` is used only for standalone scoped-token callers (delegated-token requests log as `user`). |
