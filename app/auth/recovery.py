@@ -892,7 +892,14 @@ def _mint_and_send_recovery_link(
     layering (signup already does the same).
     """
     capture = _CapturingMailer(base_url=base_url)
-    magic_link.request_link(
+    # cd-9i7z follow-up: we deliver synchronously here so the
+    # capturing mailer fires and yields ``captured_token`` we then
+    # re-frame with the recovery template. Lifting the deferred send
+    # past the recovery flow's caller-side commit is tracked
+    # separately; the bug fix on this branch is bounded to the
+    # magic-link HTTP router that drove cd-t2jz, where the SMTP send
+    # now waits for the UoW commit.
+    pending = magic_link.request_link(
         session,
         email=user.email,
         purpose="recover_passkey",
@@ -906,6 +913,8 @@ def _mint_and_send_recovery_link(
         clock=clock,
         subject_id=user.id,
     )
+    if pending is not None:
+        pending.deliver()
 
     if capture.captured_token is None:
         # Defensive — :func:`_CapturingMailer.send` raises on an

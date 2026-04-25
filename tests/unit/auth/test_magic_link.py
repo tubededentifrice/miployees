@@ -45,6 +45,7 @@ from app.auth.magic_link import (
     AlreadyConsumed,
     ConsumeLockout,
     InvalidToken,
+    PendingMagicLink,
     PurposeMismatch,
     RateLimited,
     Throttle,
@@ -53,9 +54,9 @@ from app.auth.magic_link import (
     _subkey,
     consume_link,
     reason_for_exception,
-    request_link,
     write_rejected_audit,
 )
+from app.auth.magic_link import request_link as _raw_request_link
 from app.config import Settings
 from tests.factories.identity import bootstrap_user
 
@@ -188,6 +189,32 @@ def _extract_token(message: _SentMessage) -> str:
         if stripped.startswith("https://"):
             return stripped.rsplit("/", 1)[-1]
     raise AssertionError(f"no magic-link URL in body: {message.body_text!r}")
+
+
+def request_link(*args: object, **kwargs: object) -> str | None:
+    """Module-local shim: call the real :func:`request_link` then deliver.
+
+    cd-9i7z reshaped the production :func:`request_link` to return a
+    :class:`PendingMagicLink` whose :meth:`PendingMagicLink.deliver`
+    fires the SMTP send. Production callers (the magic-link HTTP
+    router) commit *between* ``request_link`` and ``deliver`` to close
+    the fail-open the cd-t2jz repro showed. The unit tests in this
+    module exercise the domain function in isolation against an
+    in-memory engine — none of them sit behind a UoW that needs
+    that ordering — so we shim the import to fold the immediate
+    deliver back into a single call. Tests that *do* want to stress
+    the deferred-send invariant import :func:`_raw_request_link`
+    directly (see :class:`TestRequestLinkOutboxOrdering`).
+
+    Returns the signed URL on success, or ``None`` on the
+    enumeration-guard short-circuit. Matches the pre-cd-9i7z
+    signature so the bulk of the test bodies stay untouched.
+    """
+    pending: PendingMagicLink | None = _raw_request_link(*args, **kwargs)  # type: ignore[arg-type]
+    if pending is None:
+        return None
+    pending.deliver()
+    return pending.url
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +512,365 @@ class TestRequestLinkEnumerationGuard:
             select(AuditLog).where(AuditLog.action == "magic_link.sent")
         ).all()
         assert len(audits) == 1
+
+
+class TestRequestLinkOutboxOrdering:
+    """cd-9i7z: SMTP send must run *after* the nonce + audit are durable.
+
+    The cd-t2jz reproducer was: schema drift on ``audit_log`` → caller
+    UoW commit fails → pre-fix code had already shipped the email
+    inline → user has a working token, system has no nonce → fail-open.
+    The fix splits :func:`request_link` into "queue writes" + return a
+    :class:`PendingMagicLink` whose :meth:`PendingMagicLink.deliver`
+    runs the SMTP send. Production callers (the magic-link HTTP
+    router) sequence ``request_link`` → caller commit →
+    :meth:`deliver`, so a commit failure short-circuits the send.
+
+    These tests exercise the seam directly via :func:`_raw_request_link`
+    (the production-shaped function); the rest of the module uses the
+    :func:`request_link` shim that folds the immediate-deliver back
+    into a single call for the in-isolation tests that don't drive a
+    UoW.
+    """
+
+    def test_pending_returned_does_not_send_email_until_deliver(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """``request_link`` queues the writes and the URL but never sends.
+
+        This is the cd-9i7z core invariant in unit form: invoking
+        :func:`_raw_request_link` writes the nonce + audit on the
+        caller's session AND returns a usable URL, but does **not**
+        contact the mailer. The mailer fires only when the caller
+        invokes :meth:`PendingMagicLink.deliver`. Production routers
+        sandwich ``session.commit()`` between the two calls, so a
+        commit failure stops the SMTP send entirely.
+        """
+        bootstrap_user(session, email="lazy@example.com", display_name="Lazy")
+
+        pending = _raw_request_link(
+            session,
+            email="lazy@example.com",
+            purpose="recover_passkey",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        assert pending is not None
+        assert isinstance(pending, PendingMagicLink)
+        # The URL is minted (signed, ready to ship) but the mailer
+        # is untouched until the caller invokes ``deliver``.
+        assert pending.url.startswith("https://crew.day/auth/magic/")
+        assert mailer.sent == [], f"mailer fired before deliver(): {mailer.sent!r}"
+        # The nonce + audit rows are queued on the caller's session
+        # — visible in the same session even before commit because
+        # the inserts have been flushed.
+        nonces = session.scalars(select(MagicLinkNonce)).all()
+        assert len(nonces) == 1
+        # Now fire the deferred send.
+        pending.deliver()
+        assert len(mailer.sent) == 1
+
+    def test_commit_failure_before_deliver_does_not_send_email(
+        self,
+        session: Session,
+        engine: Engine,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """The cd-t2jz repro in unit form: commit fails → no email goes out.
+
+        We mirror the production router's ``with UoW: request_link() →
+        commit → deliver()`` ordering and inject a commit-time failure.
+        ``request_link`` returns a :class:`PendingMagicLink`; the
+        ``UoW.__exit__`` commit raises (simulating schema drift on
+        ``audit_log``, an FK violation, a transient driver error,
+        anything that would have rolled back inside the caller's UoW);
+        we never reach :meth:`deliver`; the mailer stays untouched and
+        no row remains durable on the engine. The invariant: "no email
+        leaves the host when the outbox commit fails", regardless of
+        *why* it failed.
+        """
+        bootstrap_user(session, email="outbox@example.com", display_name="Outbox")
+
+        original_commit = session.commit
+
+        def _failing_commit() -> None:
+            # Mirror what a real ``UnitOfWorkImpl.__exit__`` does on
+            # a commit-time exception: roll back so the session is
+            # still usable for the post-condition query below.
+            session.rollback()
+            raise RuntimeError("simulated commit failure")
+
+        session.commit = _failing_commit  # type: ignore[method-assign]
+        pending: PendingMagicLink | None = None
+        try:
+            pending = _raw_request_link(
+                session,
+                email="outbox@example.com",
+                purpose="recover_passkey",
+                ip="127.0.0.1",
+                mailer=mailer,
+                base_url="https://crew.day",
+                now=_PINNED,
+                throttle=throttle,
+                settings=settings,
+            )
+            # Production routers commit BEFORE ``deliver()``. The
+            # commit failure here propagates and the next line is
+            # never reached.
+            with pytest.raises(RuntimeError, match="simulated commit failure"):
+                session.commit()
+            # Defensive: make sure the test enforces the ordering
+            # even if a future refactor reorders the lines below.
+            # ``deliver()`` MUST NOT fire on the failure path.
+        finally:
+            session.commit = original_commit  # type: ignore[method-assign]
+
+        # The fix: mailer was never invoked. The pre-fix code shipped
+        # the email *before* the commit and would fail this assertion.
+        assert mailer.sent == [], (
+            f"mailer was invoked despite commit failure: {mailer.sent!r}"
+        )
+        # And the rolled-back nonce + audit are gone — no leak.
+        durable_nonces = session.scalars(select(MagicLinkNonce)).all()
+        assert durable_nonces == [], (
+            f"nonce row leaked past commit failure: {durable_nonces!r}"
+        )
+        durable_audits = session.scalars(
+            select(AuditLog).where(AuditLog.action == "magic_link.sent")
+        ).all()
+        assert durable_audits == [], (
+            f"audit row leaked past commit failure: {durable_audits!r}"
+        )
+        # The pending URL was minted (the function ran far enough to
+        # mint a token) but it never reached the user.
+        assert pending is not None
+        assert pending.url.startswith("https://crew.day/auth/magic/")
+
+    def test_deliver_swallows_mail_delivery_error_after_commit(
+        self,
+        session: Session,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """An SMTP failure inside :meth:`deliver` is swallowed per §15.
+
+        With the outbox ordering, the nonce + audit are committed
+        before :meth:`deliver` fires. A :class:`MailDeliveryError`
+        from the mailer must (a) be swallowed (no propagation, no
+        5xx leak on the recovery / email-change paths), and (b)
+        leave the already-committed nonce + audit untouched so the
+        link is redeemable once SMTP recovers and the audit trail
+        records the request regardless of the relay's outcome.
+        """
+        from app.adapters.mail.ports import MailDeliveryError
+
+        bootstrap_user(session, email="post@example.com", display_name="Post")
+
+        failing_mailer = _ExplodingMailer(MailDeliveryError("relay down"))
+        pending = _raw_request_link(
+            session,
+            email="post@example.com",
+            purpose="recover_passkey",
+            ip="127.0.0.1",
+            mailer=failing_mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        assert pending is not None
+
+        # ``deliver`` MUST NOT raise — the §15 guard catches the
+        # MailDeliveryError. The pre-fix code had this swallow too;
+        # we re-assert it here against the new function shape so a
+        # future refactor can't drop it without tripping a test.
+        pending.deliver()
+
+        # Nonce + audit rows are still queued on the session (the
+        # caller hasn't committed in this unit test; production
+        # router commits before deliver). The point of the assertion
+        # below is that ``deliver``'s swallow doesn't roll them back.
+        nonces = session.scalars(select(MagicLinkNonce)).all()
+        assert len(nonces) == 1
+        audits = session.scalars(
+            select(AuditLog).where(AuditLog.action == "magic_link.sent")
+        ).all()
+        assert len(audits) == 1
+
+    def test_pending_with_send_email_false_has_noop_deliver(
+        self,
+        session: Session,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """``send_email=False`` returns a pending whose ``deliver`` is a no-op.
+
+        The invite + manager-reissue flows pass ``send_email=False``
+        because they render their own template. The deferred-send
+        protocol still gives them a :class:`PendingMagicLink` (so the
+        deliver-after-commit shape stays uniform), but its
+        :meth:`deliver` does nothing: the caller is responsible for
+        sending the flow-specific template itself.
+        """
+        bootstrap_user(session, email="invite@example.com", display_name="Inv")
+
+        pending = _raw_request_link(
+            session,
+            email="invite@example.com",
+            purpose="recover_passkey",
+            ip="127.0.0.1",
+            mailer=None,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+            send_email=False,
+        )
+        assert pending is not None
+        # No exception, no work — the deliver is intentionally a no-op.
+        pending.deliver()
+
+    def test_deliver_is_idempotent_against_double_call(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """Calling :meth:`deliver` twice must not send the email twice.
+
+        A buggy retry path (``try: pending.deliver() … except: …
+        finally: pending.deliver()`` or a future bulk-retry helper
+        that calls every ``PendingMagicLink`` in a list without
+        tracking which were already sent) would otherwise ship two
+        copies of the same magic link to the user. The dataclass
+        clears its callback after the first successful send so the
+        second call is a silent no-op.
+        """
+        bootstrap_user(session, email="once@example.com", display_name="Once")
+
+        pending = _raw_request_link(
+            session,
+            email="once@example.com",
+            purpose="recover_passkey",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        assert pending is not None
+        pending.deliver()
+        pending.deliver()
+        pending.deliver()
+        assert len(mailer.sent) == 1, (
+            f"deliver() fired the SMTP send more than once: {mailer.sent!r}"
+        )
+
+    def test_deliver_clears_callback_even_on_mail_delivery_error(
+        self,
+        session: Session,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """A swallowed :class:`MailDeliveryError` still arms the no-double-fire
+        guard.
+
+        The relay outage is recorded in the audit trail by the prior
+        :func:`request_link` write, and a sibling caller-driven retry
+        of ``deliver`` would just be a second futile SMTP attempt
+        without a fresh nonce. The route to deliver again is to call
+        :func:`request_link` afresh.
+        """
+        from app.adapters.mail.ports import MailDeliveryError
+
+        bootstrap_user(session, email="boom@example.com", display_name="Boom")
+
+        attempts: list[None] = []
+
+        class _CountingExploder:
+            def send(
+                self,
+                *,
+                to: Sequence[str],
+                subject: str,
+                body_text: str,
+                body_html: str | None = None,
+                headers: Mapping[str, str] | None = None,
+                reply_to: str | None = None,
+            ) -> str:
+                del to, subject, body_text, body_html, headers, reply_to
+                attempts.append(None)
+                raise MailDeliveryError("relay down")
+
+        pending = _raw_request_link(
+            session,
+            email="boom@example.com",
+            purpose="recover_passkey",
+            ip="127.0.0.1",
+            mailer=_CountingExploder(),
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        assert pending is not None
+        pending.deliver()
+        pending.deliver()
+        assert len(attempts) == 1, (
+            f"deliver() retried the SMTP send after MailDeliveryError: {attempts!r}"
+        )
+
+    def test_repr_redacts_token(
+        self,
+        session: Session,
+        mailer: _RecordingMailer,
+        throttle: Throttle,
+        settings: Settings,
+    ) -> None:
+        """:meth:`__repr__` must not leak the signed token.
+
+        The default dataclass ``__repr__`` would render the full
+        ``url`` (which contains the magic-link token). A stray log
+        line, traceback, or ``print(pending)`` would then ship the
+        token to whatever sink consumes that output — the same
+        forensic surface §15 forbids for plaintext email and IP. We
+        assert the token segment is replaced with ``<redacted>`` and
+        does not appear anywhere in the repr.
+        """
+        bootstrap_user(session, email="repr@example.com", display_name="Repr")
+
+        pending = _raw_request_link(
+            session,
+            email="repr@example.com",
+            purpose="recover_passkey",
+            ip="127.0.0.1",
+            mailer=mailer,
+            base_url="https://crew.day",
+            now=_PINNED,
+            throttle=throttle,
+            settings=settings,
+        )
+        assert pending is not None
+        token = pending.url.rsplit("/", 1)[-1]
+        # Sanity: the token was actually minted (not empty).
+        assert len(token) > 20
+        rendered = repr(pending)
+        assert token not in rendered, f"repr leaked the token: {rendered!r}"
+        assert "<redacted>" in rendered
+        # The base path stays visible so debug output is still useful.
+        assert "https://crew.day/auth/magic" in rendered
 
 
 # ---------------------------------------------------------------------------

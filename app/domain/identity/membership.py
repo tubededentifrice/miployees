@@ -689,7 +689,7 @@ def invite(
     # the generic magic-link mailer and hands us the signed URL so
     # :func:`_send_invite_email` can ship it with the invite-flavoured
     # template (workspace + inviter in the subject, TTL in hours).
-    url = magic_link.request_link(
+    invite_link = magic_link.request_link(
         session,
         email=email_lower,
         purpose="grant_invite",
@@ -707,7 +707,7 @@ def invite(
         subject_id=invite_id,
         send_email=False,
     )
-    if url is None:
+    if invite_link is None:
         # Defensive: ``request_link`` only returns ``None`` when
         # :func:`_resolve_subject_id` finds no subject — here we pass
         # ``subject_id=invite_id`` explicitly, so a ``None`` would
@@ -716,6 +716,13 @@ def invite(
         raise RuntimeError(
             f"magic_link.request_link returned None for invite {invite_id!r}"
         )
+    # ``send_email=False`` so ``deliver()`` is a no-op; we send the
+    # invite-flavoured template ourselves below. Calling it anyway
+    # keeps the deferred-send protocol consistent across call sites
+    # so a future template-routing refactor on this surface lights
+    # up the same outbox seam without re-discovering it.
+    invite_link.deliver()
+    url = invite_link.url
     # Invite is manager-gated, so this isn't an enumeration-guard path
     # per se — but a mailer outage must not fail the write. The invite
     # row, the magic-link nonce, and the audit row all need to commit

@@ -725,7 +725,18 @@ def start_signup(
     # magic-link service's own TTL cap already pins ``signup_verify``
     # at 15 minutes, matching :data:`_SIGNUP_TTL`; passing the ttl
     # explicitly keeps the two in sync if the cap shifts.
-    magic_link.request_link(
+    #
+    # cd-9i7z follow-up: we invoke ``deliver()`` here, *before* the
+    # caller's UoW commits — so the SMTP send still races a
+    # commit-time failure on this call site. The fail-open repro
+    # documented on cd-9i7z lives only on the magic-link HTTP router
+    # (which now commits before delivering); the signup flow is
+    # behind the disposable-domain + CAPTCHA + per-IP throttle
+    # gates, so the residual exposure is bounded. Closing it here
+    # requires lifting the deferred send all the way back to the
+    # signup HTTP handler — tracked separately so this fix stays
+    # focused.
+    pending = magic_link.request_link(
         session,
         email=email_lower,
         purpose="signup_verify",
@@ -739,6 +750,8 @@ def start_signup(
         clock=clock,
         subject_id=signup_attempt_id,
     )
+    if pending is not None:
+        pending.deliver()
 
     # Audit row lands on the caller's UoW so it commits iff the rest
     # of the insert commits. Pre-tenant context — see

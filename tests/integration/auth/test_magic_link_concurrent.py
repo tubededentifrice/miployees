@@ -128,7 +128,11 @@ class TestConcurrentConsume:
         # Mint the nonce in a committed transaction so both worker
         # threads see the row.
         with factory() as s:
-            request_link(
+            # cd-9i7z: ``request_link`` returns a deferred-send
+            # pending. Production routers commit before delivering;
+            # we mirror that here so the recording mailer captures
+            # the body only after the nonce row is durable.
+            pending = request_link(
                 s,
                 email="concurrent@example.com",
                 purpose="signup_verify",
@@ -140,6 +144,8 @@ class TestConcurrentConsume:
                 settings=settings,
             )
             s.commit()
+            assert pending is not None
+            pending.deliver()
             minted_jti = s.scalars(select(MagicLinkNonce.jti)).one()
         token = _extract_token(mailer.sent[0][2])
 
@@ -222,7 +228,8 @@ class TestRequestConsumeRoundTrip:
         settings: Settings,
     ) -> None:
         mailer = _RecordingMailer()
-        request_link(
+        # cd-9i7z: ``request_link`` returns a deferred-send pending.
+        pending = request_link(
             db_session,
             email="rt@example.com",
             purpose="signup_verify",
@@ -234,6 +241,8 @@ class TestRequestConsumeRoundTrip:
             settings=settings,
         )
         db_session.flush()
+        assert pending is not None
+        pending.deliver()
         token = _extract_token(mailer.sent[0][2])
 
         outcome = consume_link(

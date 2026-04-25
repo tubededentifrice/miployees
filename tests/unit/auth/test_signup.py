@@ -1021,7 +1021,9 @@ class TestConsumeVerifyErrors:
             )
         )
         session.flush()
-        magic_link.request_link(
+        # cd-9i7z: ``request_link`` returns a deferred-send pending;
+        # fire the send so the recording mailer captures the body.
+        pending = magic_link.request_link(
             session,
             email="rec@example.com",
             purpose="recover_passkey",
@@ -1032,6 +1034,8 @@ class TestConsumeVerifyErrors:
             throttle=throttle,
             settings=settings,
         )
+        assert pending is not None
+        pending.deliver()
         token = _extract_token(mailer.sent[0])
         with pytest.raises(magic_link.PurposeMismatch):
             signup.consume_verify(

@@ -267,7 +267,10 @@ def _seed_invite(
             s.add(invite_row)
             s.flush()
 
-        url = magic_link.request_link(
+        # cd-9i7z: ``request_link`` returns a deferred-send pending.
+        # ``send_email=False`` makes ``deliver()`` a no-op, so we
+        # skip it here and just lift the URL.
+        pending = magic_link.request_link(
             s,
             email=invitee_email,
             purpose="grant_invite",
@@ -286,8 +289,8 @@ def _seed_invite(
             send_email=False,
         )
         s.commit()
-        assert url is not None
-        token = url.rsplit("/", 1)[-1]
+        assert pending is not None
+        token = pending.url.rsplit("/", 1)[-1]
         return invite_id, token, invitee_id
 
 

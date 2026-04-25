@@ -548,9 +548,17 @@ def request_change(
     # Mint the magic link. The magic-link service already handles
     # the rate-limit, nonce insert, and SMTP send — passing
     # ``subject_id=user.id`` short-circuits its own user-lookup
-    # branch (which would otherwise key off ``email`` and we'd be
-    # handing it ``new_email`` that has no matching ``User`` row).
-    confirm_url = magic_link.request_link(
+    # branch (which would otherwise key off ``new_email`` that has
+    # no matching ``User`` row).
+    #
+    # cd-9i7z follow-up: we deliver synchronously here, before the
+    # caller's UoW commits — same residual exposure documented at
+    # the signup / recovery sites. The router-level commit-then-
+    # deliver fix lives only on the magic-link HTTP router (the
+    # cd-t2jz reproducer); lifting the deferred send across the
+    # email-change HTTP layer is tracked separately so this fix
+    # stays focused.
+    confirm_link = magic_link.request_link(
         session,
         email=new_email_clean,
         purpose="email_change_confirm",
@@ -568,8 +576,10 @@ def request_change(
     # branch via ``subject_id=user.id``, so a ``None`` here would be
     # a programming error. Asserting this rather than mapping it to
     # a typed error: the caller cannot recover, only report.
-    if confirm_url is None:  # pragma: no cover - defensive
+    if confirm_link is None:  # pragma: no cover - defensive
         raise RuntimeError("request_link returned None despite explicit subject_id")
+    confirm_link.deliver()
+    confirm_url = confirm_link.url
 
     # Recover the jti from the URL — the magic-link service does not
     # surface the freshly-minted nonce id directly. The URL layout
@@ -789,7 +799,7 @@ def verify_change(
     # Mint the revert magic link (72-hour TTL). Same throttle bucket
     # as the confirm flow — abuse via repeated revert attempts
     # against a hijacked old mailbox cannot bypass the lockout.
-    revert_url = magic_link.request_link(
+    revert_link = magic_link.request_link(
         session,
         email=old_email,
         purpose="email_change_revert",
@@ -810,8 +820,14 @@ def verify_change(
         subject_id=user.id,
         send_email=False,
     )
-    if revert_url is None:  # pragma: no cover - defensive
+    if revert_link is None:  # pragma: no cover - defensive
         raise RuntimeError("revert request_link returned None")
+    # ``send_email=False`` so ``deliver()`` is a no-op — kept
+    # explicit to mirror the deferred-send protocol the cd-9i7z
+    # outbox fix introduced; future revert-template work can lift
+    # the actual send through the same seam.
+    revert_link.deliver()
+    revert_url = revert_link.url
     revert_token = revert_url.rsplit("/", 1)[-1]
     revert_jti = magic_link.inspect_token_jti(revert_token, settings=settings)
     revert_expires_at = resolved_now + timedelta(hours=72)

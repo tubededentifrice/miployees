@@ -481,7 +481,14 @@ def _issue_passkey_recovery_link(
     """
     del target_email  # reserved for a future override-aware nonce hash
     capture = _CapturingMailer(base_url=base_url)
-    magic_link_module.request_link(
+    # cd-9i7z follow-up: deliver synchronously here so the
+    # capturing mailer fires inside the manager-mediated reissue
+    # flow's own UoW. The router-level commit-then-deliver fix
+    # (the cd-t2jz reproducer) is on the magic-link HTTP router
+    # only; lifting the deferred send across the manager-reissue
+    # surface is tracked separately. The exposure on this path is
+    # bounded by the manager-auth gate in the calling endpoint.
+    pending = magic_link_module.request_link(
         session,
         email=user.email,
         purpose="recover_passkey",
@@ -492,6 +499,8 @@ def _issue_passkey_recovery_link(
         settings=settings,
         subject_id=user.id,
     )
+    if pending is not None:
+        pending.deliver()
     if capture.captured_url is None:  # pragma: no cover - defensive
         raise RuntimeError("users router: magic-link service produced no URL")
     return capture.captured_url

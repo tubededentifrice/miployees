@@ -240,7 +240,6 @@ def build_magic_router(
     def post_request(
         body: MagicRequestBody,
         request: Request,
-        session: _Db,
     ) -> MagicRequestAcceptedResponse:
         """Mint + send one magic-link email.
 
@@ -254,25 +253,49 @@ def build_magic_router(
         budget is exhausted; the throttle fires **before** the DB or
         mailer are touched, so a 429 is cheap and leaks no
         information about whether the email exists.
+
+        **Outbox ordering (cd-9i7z).** This handler manages its own
+        :class:`UnitOfWork` instead of going through the shared
+        :func:`db_session` FastAPI dep — we need to commit the nonce
+        + audit rows *before* dispatching the SMTP send. The shared
+        dep commits at handler return, which would put the SMTP send
+        before the commit and reintroduce the cd-t2jz fail-open
+        (commit fails → user has a working token, system has no
+        nonce). With the explicit UoW we can sequence:
+        ``request_link`` (queues writes) → ``UoW.__exit__`` (commits)
+        → ``pending.deliver()`` (SMTP send).
         """
         if resolved_base_url is None:
             raise RuntimeError(
                 "base_url / settings.public_url is not set; "
                 "cannot build magic-link URLs"
             )
+        pending = None
         try:
-            request_link(
-                session,
-                email=body.email,
-                purpose=body.purpose,
-                ip=_client_ip(request),
-                mailer=mailer,
-                base_url=resolved_base_url,
-                throttle=throttle,
-                settings=cfg,
-            )
+            with make_uow() as session:
+                assert isinstance(session, Session)
+                pending = request_link(
+                    session,
+                    email=body.email,
+                    purpose=body.purpose,
+                    ip=_client_ip(request),
+                    mailer=mailer,
+                    base_url=resolved_base_url,
+                    throttle=throttle,
+                    settings=cfg,
+                )
+            # ``with`` block exited cleanly → UoW committed →
+            # nonce + audit are durable on disk. Only now do we fire
+            # the SMTP send. A commit failure on the line above
+            # raises out of this ``try`` and ``pending.deliver()`` is
+            # never reached → no email leaves the host with a stale
+            # nonce. SMTP failures inside ``deliver()`` are swallowed
+            # per §15 (the link is redeemable once the relay
+            # recovers, and the audit row is durable).
         except _DomainError as exc:
             raise _http_for(exc) from exc
+        if pending is not None:
+            pending.deliver()
         # 202 body is informational — the spec doesn't mandate a shape
         # beyond "accepted"; a status-only reply tells the SPA nothing
         # about whether the email existed, which is the whole point.

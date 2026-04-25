@@ -814,7 +814,10 @@ class TestVerifyRecoveryTokenErrors:
         from app.auth.magic_link import request_link
 
         bootstrap_user(session, email="xref@example.com", display_name="Xref")
-        request_link(
+        # cd-9i7z: ``request_link`` now returns a deferred-send
+        # :class:`PendingMagicLink`; fire the send immediately so
+        # the test's recording mailer captures the body.
+        pending = request_link(
             session,
             email="xref@example.com",
             purpose="signup_verify",
@@ -825,6 +828,8 @@ class TestVerifyRecoveryTokenErrors:
             throttle=throttle,
             settings=settings,
         )
+        assert pending is not None
+        pending.deliver()
         token = _extract_magic_token(mailer.sent[0])
         with pytest.raises(PurposeMismatch):
             verify_recovery(

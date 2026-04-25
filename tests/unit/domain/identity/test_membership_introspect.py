@@ -150,8 +150,11 @@ def _mint_invite(
 
     # Mint the magic link directly so the test owns the signed token.
     # ``request_link`` with ``send_email=False`` avoids the mailer
-    # branch and returns the URL we can extract the token from.
-    url = magic_link.request_link(
+    # branch and returns a :class:`PendingMagicLink` whose ``url``
+    # we can extract the token from. cd-9i7z replaced the old
+    # str-returning shape with the deferred-send pending so the
+    # SMTP send can be sequenced after a router-level commit.
+    pending = magic_link.request_link(
         session,
         email=invitee_email,
         purpose="grant_invite",
@@ -166,8 +169,8 @@ def _mint_invite(
         subject_id=invite_id,
         send_email=False,
     )
-    assert url is not None
-    token = url.rsplit("/", 1)[-1]
+    assert pending is not None
+    token = pending.url.rsplit("/", 1)[-1]
     return invite_id, token
 
 

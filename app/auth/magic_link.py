@@ -78,12 +78,55 @@ audit independently of whatever state the primary UoW left behind.
 Forensic value: pre-signup magic-link abuse (signature forgeries,
 cross-purpose replays, brute-force consumes) has no other trail —
 the nonce row either never existed or stays pending under rollback.
+
+**Outbox ordering for ``request`` (cd-9i7z).** :func:`request_link`
+mints the token and queues the nonce + ``audit.magic_link.sent``
+rows on the caller's session, then returns a :class:`PendingMagicLink`
+whose :meth:`PendingMagicLink.deliver` runs the SMTP send. The
+caller (today, the magic-link HTTP router) is responsible for
+committing the UoW *before* invoking :meth:`deliver` — that
+ordering is the outbox boundary the bug fix relies on.
+
+The original failure mode this closes: the SMTP send used to run
+*inside* :func:`request_link`, so it fired before the caller's UoW
+commit at HTTP-handler exit. A commit-time failure (schema drift on
+``audit_log`` was the cd-t2jz repro, but FK violations or any
+sibling-write rollback work the same way) then rolled back the
+nonce *after* the mailer had already shipped a working token —
+fail-open, not the §15 enumeration-guard intent. With the deferred
+:meth:`deliver` the nonce is durable on disk before the mailer is
+touched: an SMTP failure is then a no-leak event (caught by the
+§15 swallow inside :meth:`deliver`), and a commit failure
+short-circuits the send entirely (the caller never reaches
+:meth:`deliver`).
+
+We do not use a *separate* UoW for the nonce write — SQLite
+serialises writers via a database-wide lock, so opening a sibling
+session from inside the caller's open write transaction would
+deadlock against itself (the sibling's INSERT would wait for the
+caller's lock; the caller is mid-call to :func:`request_link`). The
+deferred-send shape sidesteps that: the caller's UoW commits via
+its existing path (the FastAPI ``db_session`` dep at handler exit),
+and only *then* does the router fire :meth:`deliver`.
+
+Note (cd-9i7z follow-up): the **non-router** callers
+(``signup.start``, ``recovery.request_recovery``,
+``email_change.request_change`` / ``request_revert``,
+``membership.invite``, ``users.reissue_magic_link``) still wrap the
+returned :class:`PendingMagicLink` in their own
+``with`` / ``try`` / ``finally`` plumbing because their commit
+boundary is the FastAPI ``db_session`` dep, not the domain
+function. Each of those flows owns its own deferred-send call;
+see the per-caller comments. The single shared invariant: nobody
+calls :meth:`PendingMagicLink.deliver` before the UoW that holds
+the matching nonce row has committed.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Literal
 
@@ -118,6 +161,7 @@ __all__ = [
     "InvalidToken",
     "MagicLinkOutcome",
     "MagicLinkPurpose",
+    "PendingMagicLink",
     "PurposeMismatch",
     "RateLimited",
     "Throttle",
@@ -219,6 +263,122 @@ class MagicLinkOutcome:
     subject_id: str
     email_hash: str
     ip_hash: str
+
+
+@dataclass(eq=False, slots=True)
+class PendingMagicLink:
+    """Result of :func:`request_link`: signed URL + deferred SMTP send.
+
+    The :func:`request_link` call writes the nonce + audit rows on
+    the caller's session but does **not** commit and does **not**
+    contact the mailer. The caller's outer UoW is responsible for
+    committing those rows; once that commit succeeds, the caller
+    invokes :meth:`deliver` to fire the SMTP send. This separation
+    is the cd-9i7z outbox boundary: the email never goes out until
+    the matching nonce row is durable on disk.
+
+    Fields:
+
+    * ``url`` — the signed acceptance URL
+      (``{base_url}/auth/magic/{token}``). Always populated when
+      :func:`request_link` returns a :class:`PendingMagicLink`
+      (the ``None`` short-circuit covers the enumeration-guard miss
+      branch and never produces a pending object).
+    * ``_send_callback`` — internal closure that performs the SMTP
+      send. ``None`` when :func:`request_link` was called with
+      ``send_email=False`` (the invite flow uses this — it grabs the
+      URL and renders its own template). Callers should treat this
+      field as opaque and go through :meth:`deliver`.
+
+    Why a callback instead of returning the raw mailer + body? The
+    rendering (subject + body, TTL minute math, purpose-label lookup)
+    must use the same inputs the in-line send used to use, and we
+    don't want to scatter that knowledge across every router. The
+    closure captures all of it at mint time so the router only has
+    to call one method after commit.
+
+    **PII safety on repr (§15).** The default dataclass ``__repr__``
+    would render the full ``url`` field, and the URL contains the
+    signed magic-link token. Any traceback that captures a local
+    ``pending`` variable, any defensive ``print(pending)``, or any
+    ``logger.info("...", extra={"obj": pending})`` would then leak the
+    token to logs — the same forensic surface §15 explicitly forbids
+    for plaintext email and IP. We override :meth:`__repr__` to mask
+    the token, and disable ``eq=True`` so the default
+    ``__eq__`` / ``__hash__`` don't pull the token into hash keys
+    (per-instance identity is what the callers actually need anyway).
+
+    **Single-fire on :meth:`deliver` (idempotency).** :meth:`deliver`
+    clears the callback after a successful invocation so a buggy
+    retry path can't fire the SMTP send twice — the second call is
+    a silent no-op. Without the guard, a defensive
+    ``try: pending.deliver() … finally: pending.deliver()`` shape
+    in a future caller would result in two emails to the user. Use
+    ``slots=True`` + ``eq=False`` to keep mutation cheap (no
+    ``object.__setattr__`` dance) without paying for full equality
+    semantics we don't use.
+    """
+
+    url: str
+    _send_callback: Callable[[], None] | None = field(default=None)
+
+    def __repr__(self) -> str:
+        """Mask the token so a stray log line can't leak it.
+
+        URL layout is ``{base}/auth/magic/{token}``. We render the
+        base path verbatim and the token as ``<redacted>`` so debug
+        output stays useful (you can still see which deployment +
+        purpose minted it) without spilling the secret. Mirrors the
+        §15 redaction posture used for ``ip`` / ``email`` strings on
+        sibling structs.
+        """
+        if "/auth/magic/" in self.url:
+            base, _, _token = self.url.rpartition("/")
+            url_repr = f"{base}/<redacted>"
+        else:  # pragma: no cover - defensive; mint always uses /auth/magic/
+            url_repr = "<redacted>"
+        callback_repr = "<set>" if self._send_callback is not None else None
+        return f"PendingMagicLink(url={url_repr!r}, _send_callback={callback_repr})"
+
+    def deliver(self) -> None:
+        """Fire the deferred SMTP send. Idempotent.
+
+        MUST be called *after* the caller's UoW commits. If commit
+        failed, the caller never reaches here and no email is sent
+        — that's the cd-9i7z fail-closed invariant.
+
+        Idempotent across repeat invocations: the callback is cleared
+        after a successful send so a buggy retry path can't fire the
+        SMTP send twice. A :class:`MailDeliveryError` (caught below)
+        also clears the callback — the relay outage is recorded in
+        the audit trail by the prior :func:`request_link` write, and
+        a sibling caller-driven retry would just be a second futile
+        SMTP attempt without a fresh nonce. The route to deliver
+        again is to call :func:`request_link` afresh, which mints a
+        new nonce + audit row.
+
+        :class:`MailDeliveryError` is swallowed and logged at
+        WARNING here (§15 enumeration guard — a mailer outage must
+        not turn into an observable 5xx that leaks hit vs miss on
+        the recovery / email-change paths). The nonce + audit are
+        already committed by the caller, so the link is redeemable
+        once SMTP recovers and forensic data is preserved.
+        """
+        callback = self._send_callback
+        if callback is None:
+            return
+        # Clear before the send so the no-double-fire guard holds even
+        # if the callback raises a non-MailDeliveryError exception
+        # that propagates past us — the caller's retry loop would
+        # otherwise re-enter ``deliver`` with the closure still wired.
+        self._send_callback = None
+        try:
+            callback()
+        except MailDeliveryError:
+            _log.warning(
+                "magic-link mail send failed; swallowing per §15 enumeration guard",
+                exc_info=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -509,8 +669,8 @@ def request_link(
     clock: Clock | None = None,
     subject_id: str | None = None,
     send_email: bool = True,
-) -> str | None:
-    """Mint one magic-link; optionally send it via ``mailer``.
+) -> PendingMagicLink | None:
+    """Mint one magic-link and queue its writes; return a deferred-send object.
 
     Steps:
 
@@ -524,27 +684,35 @@ def request_link(
        signup service pre-inserts a :class:`SignupAttempt` row) pass
        ``subject_id=`` directly so the nonce lines up with the
        caller's row without a subsequent rewrite.
-    4. Server-cap the TTL at the per-purpose ceiling, mint jti +
-       token.
-    5. Insert a pending :class:`MagicLinkNonce` row.
-    6. When ``send_email`` is ``True`` (the default), send via
-       ``mailer``; a :class:`MailDeliveryError` is swallowed and logged
-       at WARNING (§15 enumeration guard — a mailer outage must not
-       turn into an observable 5xx that leaks hit vs miss on the
-       recovery / email-change paths). The nonce row still commits so
-       a retry or operator-side re-send is viable once SMTP recovers.
-       When ``send_email`` is ``False``, the mailer is not touched and
-       the signed URL is returned to the caller so they can re-frame
-       it with flow-specific copy (e.g. the invite surface).
-       ``mailer`` may be ``None`` in that case.
-    7. Audit ``audit.magic_link.sent`` with hashes only — written
-       *after* the send attempt but regardless of its outcome, so the
-       forensic trail records the request even when the relay is down.
+    4. Server-cap the TTL at the per-purpose ceiling, mint jti + token.
+    5. Insert the pending :class:`MagicLinkNonce` row and write the
+       ``audit.magic_link.sent`` row on the caller's ``session``.
+       The caller's UoW owns the commit (this function never calls
+       ``session.commit()`` itself).
+    6. Return a :class:`PendingMagicLink` whose
+       :meth:`PendingMagicLink.deliver` performs the SMTP send. The
+       caller MUST commit its UoW before calling :meth:`deliver` —
+       that ordering is the cd-9i7z outbox boundary that prevents
+       a working token from reaching the user inbox without a
+       matching nonce on disk. When ``send_email`` is ``False`` the
+       returned :class:`PendingMagicLink` carries a no-op
+       :meth:`deliver` and the caller is responsible for sending its
+       own template (the invite + manager-reissue flows do this).
 
-    Returns the signed acceptance URL on success (``/auth/magic/<token>``),
-    or ``None`` if the enumeration guard short-circuited. The caller's
-    UoW owns the transaction (§01). This function never calls
-    ``session.commit()``.
+    Returns a :class:`PendingMagicLink` on success, or ``None`` if
+    the enumeration guard short-circuited (no user row matched the
+    email on a recovery / email-change request).
+
+    .. note::
+
+       Old in-line-send signature (returned ``str | None``) is gone.
+       Existing callers are migrated to invoke
+       :meth:`PendingMagicLink.deliver` from their HTTP-router layer,
+       AFTER the caller's UoW has committed. The router-level
+       commit-then-deliver shape is what closes the cd-t2jz
+       fail-open: if the commit raises (schema drift on
+       ``audit_log`` was the original repro), the router never
+       reaches :meth:`deliver` and no email leaves the host.
     """
     if purpose not in _VALID_PURPOSES:
         # Router body validation should have caught this, but the
@@ -566,7 +734,7 @@ def request_link(
         subject_id = _resolve_subject_id(session, email=email, purpose=purpose)
     if subject_id is None:
         # No user row for a recovery / email-change request — silently
-        # return without inserting a nonce or sending mail.
+        # return without inserting a nonce or scheduling a send.
         # Enumeration guard: the caller sees the same 202 either way.
         return None
 
@@ -586,10 +754,11 @@ def request_link(
     )
     url = f"{base_url.rstrip('/')}/auth/magic/{token}"
 
-    # Insert the pending row inside the caller's UoW. Failing here
-    # (e.g. a unique-violation on ``jti`` — vanishingly unlikely on a
-    # fresh ULID, but let's be honest about the shape) propagates so
-    # the caller's UoW rolls back and the mail is never sent.
+    # Insert the pending nonce row + the audit row on the caller's
+    # session. The caller's UoW owns the commit; this function never
+    # calls ``session.commit()``. The cd-9i7z outbox shape lives
+    # *outside* this function: the caller commits, then calls
+    # ``PendingMagicLink.deliver()`` to fire the SMTP send.
     # justification: magic_link_nonce is identity-scoped.
     with tenant_agnostic():
         session.add(
@@ -605,37 +774,6 @@ def request_link(
             )
         )
         session.flush()
-
-    if send_email:
-        if mailer is None:
-            raise ValueError("send_email=True requires a non-None mailer")
-        # §15 enumeration guard: a :class:`MailDeliveryError` here (SMTP
-        # down, DNS fail, relay refusal) must not surface as 5xx — on
-        # the ``recover_passkey`` / ``email_change_confirm`` purposes
-        # the miss branch short-circuits above with no mailer call, so
-        # a 5xx on the hit branch would leak hit/miss via status code
-        # alone. We swallow the error, log loudly so the outage is
-        # visible to operators, and let the nonce + audit rows commit
-        # so the link is redeemable once SMTP recovers and forensic
-        # data is preserved. Mirrors the pattern in
-        # :func:`app.auth.recovery.request_recovery`.
-        try:
-            _send_link_email(
-                mailer=mailer,
-                to_email=email,
-                base_url=base_url,
-                token=token,
-                purpose=purpose,
-                ttl=effective_ttl,
-            )
-        except MailDeliveryError:
-            _log.warning(
-                "magic-link mail send failed (purpose=%r); swallowing "
-                "per §15 enumeration guard",
-                purpose,
-                exc_info=True,
-            )
-
     write_audit(
         session,
         _agnostic_audit_ctx(),
@@ -650,7 +788,37 @@ def request_link(
         },
         clock=clock,
     )
-    return url
+
+    if not send_email:
+        # Caller renders + sends its own template (invite,
+        # manager-reissue, …). No deferred callback to wire.
+        return PendingMagicLink(url=url)
+
+    if mailer is None:
+        raise ValueError("send_email=True requires a non-None mailer")
+    # Capture every input :func:`_send_link_email` needs at mint
+    # time so the deferred send is a parameter-free closure the
+    # caller can invoke after commit. The ``MailDeliveryError``
+    # swallow lives inside :meth:`PendingMagicLink.deliver` so the
+    # call site stays a single ``pending.deliver()`` line.
+    captured_mailer = mailer
+    captured_email = email
+    captured_base_url = base_url
+    captured_token = token
+    captured_purpose = purpose
+    captured_ttl = effective_ttl
+
+    def _deferred_send() -> None:
+        _send_link_email(
+            mailer=captured_mailer,
+            to_email=captured_email,
+            base_url=captured_base_url,
+            token=captured_token,
+            purpose=captured_purpose,
+            ttl=captured_ttl,
+        )
+
+    return PendingMagicLink(url=url, _send_callback=_deferred_send)
 
 
 def _send_link_email(
