@@ -43,6 +43,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.adapters.db.base import Base
 
+# Cross-package FK targets — see :mod:`app.adapters.db` package
+# docstring for the load-order contract. ``user.id`` /
+# ``user_work_role.id`` / ``workspace.id`` / ``pay_rule.id`` FKs
+# below resolve against ``Base.metadata`` only if the target
+# packages have been imported, so we register them here as a side
+# effect.
+from app.adapters.db.identity import models as _identity_models  # noqa: F401
+from app.adapters.db.payroll import models as _payroll_models  # noqa: F401
+from app.adapters.db.workspace import models as _workspace_models  # noqa: F401
+
 __all__ = [
     "Area",
     "Property",

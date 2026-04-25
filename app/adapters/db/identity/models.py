@@ -47,6 +47,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.adapters.db.base import Base
 
+# Cross-package FK targets — see :mod:`app.adapters.db` package
+# docstring for the load-order contract. ``workspace.id`` FKs below
+# resolve against ``Base.metadata`` only if ``workspace.models`` has
+# been imported, so we register it here as a side effect.
+from app.adapters.db.workspace import models as _workspace_models  # noqa: F401
+
 __all__ = [
     "ApiToken",
     "EmailChangePending",
