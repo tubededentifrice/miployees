@@ -137,13 +137,18 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("task.created invalidates tasks, today, dashboard", () => {
+  it("task.created invalidates tasks, today, dashboard, my-schedule", () => {
     const qc = makeClient();
     const spy = vi.spyOn(qc, "invalidateQueries");
     INVALIDATIONS["task.created"](makeEvent("task.created"), qc);
     const called = spy.mock.calls.map((c) => c[0]?.queryKey);
     expect(called).toEqual(
-      expect.arrayContaining([qk.tasks(), qk.today(), qk.dashboard()]),
+      expect.arrayContaining([
+        qk.tasks(),
+        qk.today(),
+        qk.dashboard(),
+        ["my-schedule"],
+      ]),
     );
     // `refetchType: "active"` keeps idle queries cheap.
     for (const call of spy.mock.calls) {
@@ -151,46 +156,60 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
     }
   });
 
-  it("task.assigned invalidates tasks, today, dashboard", () => {
+  it("task.assigned invalidates tasks, today, dashboard, my-schedule", () => {
     // §06 — a task assignment lands on the worker's Today list, the
-    // task list filter, and the dashboard counter; per-kind assertion
-    // to guard against drift in the handler key set.
+    // task list filter, the dashboard counter, AND the bidirectional
+    // `/schedule` agenda (cd-ops1). Per-kind assertion to guard
+    // against drift in the handler key set.
     const qc = makeClient();
     const spy = vi.spyOn(qc, "invalidateQueries");
     INVALIDATIONS["task.assigned"](makeEvent("task.assigned"), qc);
     const called = spy.mock.calls.map((c) => c[0]?.queryKey);
     expect(called).toEqual(
-      expect.arrayContaining([qk.tasks(), qk.today(), qk.dashboard()]),
+      expect.arrayContaining([
+        qk.tasks(),
+        qk.today(),
+        qk.dashboard(),
+        ["my-schedule"],
+      ]),
     );
   });
 
-  it("task.overdue invalidates tasks, today, dashboard", () => {
+  it("task.overdue invalidates tasks, today, dashboard, my-schedule", () => {
     // §06 — an overdue transition flips the chip + reshuffles the
-    // dashboard "needs attention" tile. Per-kind assertion.
+    // dashboard "needs attention" tile + recolors the schedule cell
+    // (cd-ops1). Per-kind assertion.
     const qc = makeClient();
     const spy = vi.spyOn(qc, "invalidateQueries");
     INVALIDATIONS["task.overdue"](makeEvent("task.overdue"), qc);
     const called = spy.mock.calls.map((c) => c[0]?.queryKey);
     expect(called).toEqual(
-      expect.arrayContaining([qk.tasks(), qk.today(), qk.dashboard()]),
+      expect.arrayContaining([
+        qk.tasks(),
+        qk.today(),
+        qk.dashboard(),
+        ["my-schedule"],
+      ]),
     );
   });
 
-  it("stay.upcoming invalidates stays + dashboard", () => {
-    // §04 — a freshly synced upcoming stay refreshes the stays list
-    // and the dashboard's upcoming-stays tile.
+  it("stay.upcoming invalidates stays + dashboard + my-schedule", () => {
+    // §04 — a freshly synced upcoming stay refreshes the stays list,
+    // the dashboard's upcoming-stays tile, and the worker's
+    // `/schedule` agenda (cd-ops1: stay → bookings → cells).
     const qc = makeClient();
     const spy = vi.spyOn(qc, "invalidateQueries");
     INVALIDATIONS["stay.upcoming"](makeEvent("stay.upcoming"), qc);
     const called = spy.mock.calls.map((c) => c[0]?.queryKey);
     expect(called).toEqual(
-      expect.arrayContaining([qk.stays(), qk.dashboard()]),
+      expect.arrayContaining([qk.stays(), qk.dashboard(), ["my-schedule"]]),
     );
   });
 
-  it("stay_task_bundle.{upserted,deleted} invalidates the scheduler calendar + stays", () => {
+  it("stay_task_bundle.{upserted,deleted} invalidates calendar + stays + my-schedule", () => {
     // §14 scheduler — bundle changes ripple into the calendar feed
-    // (any mounted window) and the stays list. Per-kind assertion.
+    // (any mounted window), the stays list, and the worker's
+    // `/schedule` agenda (cd-ops1). Per-kind assertion.
     for (const kind of [
       "stay_task_bundle.upserted",
       "stay_task_bundle.deleted",
@@ -200,7 +219,50 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
       INVALIDATIONS[kind](makeEvent(kind, { bundle: { id: "b1" } }), qc);
       const called = spy.mock.calls.map((c) => c[0]?.queryKey);
       expect(called).toEqual(
-        expect.arrayContaining([["scheduler-calendar"], qk.stays()]),
+        expect.arrayContaining([
+          ["scheduler-calendar"],
+          qk.stays(),
+          ["my-schedule"],
+        ]),
+      );
+    }
+  });
+
+  it("task.{completed,skipped} also invalidates my-schedule", () => {
+    // cd-ops1 — completing or skipping a task has to drop the chip
+    // (or recolor it) on the worker's `/schedule` cells.
+    for (const kind of ["task.completed", "task.skipped"] as const) {
+      const qc = makeClient();
+      const spy = vi.spyOn(qc, "invalidateQueries");
+      INVALIDATIONS[kind](
+        makeEvent(kind, { task: { id: "t1", name: "x" } }),
+        qc,
+      );
+      const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+      expect(called).toEqual(expect.arrayContaining([["my-schedule"]]));
+    }
+  });
+
+  it("approval.{decided,resolved} also invalidates my-schedule + leaves + meOverrides", () => {
+    // cd-ops1 — until the backend emits dedicated `user_leave.*` and
+    // `user_availability_override.*` events, the leave + override
+    // approval flow rides on `approval.{decided,resolved}`. The
+    // `/schedule` agenda has to recolor the day cell when the
+    // request flips approved/rejected.
+    for (const kind of ["approval.decided", "approval.resolved"] as const) {
+      const qc = makeClient();
+      const spy = vi.spyOn(qc, "invalidateQueries");
+      INVALIDATIONS[kind](
+        makeEvent(kind, { id: "ar1", decision: "approved" }),
+        qc,
+      );
+      const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+      expect(called).toEqual(
+        expect.arrayContaining([
+          ["my-schedule"],
+          qk.leaves(),
+          qk.meOverrides(),
+        ]),
       );
     }
   });
@@ -230,6 +292,20 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
       qc,
     );
     expect(qc.getQueryData(qk.task("t1"))).toBeUndefined();
+  });
+
+  it("task.updated also invalidates my-schedule", () => {
+    // cd-ops1 — a task rename or property reassignment has to refresh
+    // the `/schedule` cell chip; the per-task envelope alone isn't
+    // read by the schedule view.
+    const qc = makeClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    INVALIDATIONS["task.updated"](
+      makeEvent("task.updated", { task: { id: "t1", name: "new" } }),
+      qc,
+    );
+    const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+    expect(called).toEqual(expect.arrayContaining([["my-schedule"]]));
   });
 
   it("agent.message.appended appends to the scope's chat log", () => {

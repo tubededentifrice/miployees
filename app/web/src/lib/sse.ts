@@ -316,12 +316,21 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
+    // §14 worker schedule — the bidirectional infinite agenda keys
+    // every loaded page under `["my-schedule", ...]`. A new task
+    // landing in the worker's window has to surface as a chip without
+    // a manual refresh, so we invalidate the prefix and let the
+    // visible window refetch.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "task.assigned": (_event, qc) => {
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
+    // §14 worker schedule — assignment can move a task into or out of
+    // the worker's calendar; refresh the loaded window.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "task.updated": (event, qc) => {
@@ -335,6 +344,11 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
+    // §14 worker schedule — the cell-level chip reads `title`,
+    // `property_id`, and `scheduled_start` from the merged schedule
+    // payload, so a rename or re-property doesn't surface without
+    // invalidating the loaded windows.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "task.completed": (event, qc) => {
@@ -349,6 +363,10 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     // §14 worker history — a newly completed occurrence belongs in the
     // Tasks tab of the `/history` feed.
     invalidate(qc, qk.history("tasks"));
+    // §14 worker schedule — drop the task chip from the day cell when
+    // the worker checks it off. Keys are `["my-schedule", ...]` so
+    // invalidate the prefix for every loaded window.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "task.skipped": (event, qc) => {
@@ -362,17 +380,27 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.dashboard());
     // §14 worker history — skipped occurrences land in the Tasks tab too.
     invalidate(qc, qk.history("tasks"));
+    // §14 worker schedule — skipping flips the chip status; the cell
+    // needs a refresh to recolor it.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "task.overdue": (_event, qc) => {
     invalidate(qc, qk.tasks());
     invalidate(qc, qk.today());
     invalidate(qc, qk.dashboard());
+    // §14 worker schedule — overdue chips read with a rust accent in
+    // the cell; refresh so the colour matches the new status.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "stay.upcoming": (_event, qc) => {
     invalidate(qc, qk.stays());
     invalidate(qc, qk.dashboard());
+    // §14 worker schedule — upcoming stays cut bookings via the
+    // nightly materialiser (§09). The bookings/tasks then surface as
+    // cells, so the worker's schedule has to refresh too.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "stay_task_bundle.upserted": (_event, qc) => {
@@ -381,11 +409,15 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     // root prefix to hit every mounted window.
     invalidate(qc, ["scheduler-calendar"]);
     invalidate(qc, qk.stays());
+    // §14 worker schedule — bundle changes ripple into the worker's
+    // tasks for the affected stay; refresh the loaded windows.
+    invalidate(qc, ["my-schedule"]);
   },
 
   "stay_task_bundle.deleted": (_event, qc) => {
     invalidate(qc, ["scheduler-calendar"]);
     invalidate(qc, qk.stays());
+    invalidate(qc, ["my-schedule"]);
   },
 
   "approval.decided": (_event, qc) => {
@@ -397,6 +429,15 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     // on some server builds so we invalidate both here defensively.
     invalidate(qc, qk.history("leaves"));
     invalidate(qc, qk.history("expenses"));
+    // §14 worker schedule — approving a leave or availability
+    // override flips the day's cell tone (sand "pending" → moss /
+    // rust) and the badge text. The backend doesn't yet emit
+    // dedicated `user_leave.*` / `user_availability_override.*`
+    // kinds; until it does, `approval.decided` is the umbrella that
+    // also covers the leave + override approval flow.
+    invalidate(qc, ["my-schedule"]);
+    invalidate(qc, qk.leaves());
+    invalidate(qc, qk.meOverrides());
   },
 
   "approval.resolved": (_event, qc) => {
@@ -407,6 +448,11 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.dashboard());
     invalidate(qc, qk.history("leaves"));
     invalidate(qc, qk.history("expenses"));
+    // Same schedule + leave + override invalidations as
+    // `approval.decided` above.
+    invalidate(qc, ["my-schedule"]);
+    invalidate(qc, qk.leaves());
+    invalidate(qc, qk.meOverrides());
   },
 
   "expense.created": (_event, qc) => {
