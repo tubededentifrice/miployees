@@ -918,12 +918,42 @@ PATCH  /property_work_role_assignments/{id}  # mutable: schedule_ruleset_id,
                                               #   property_pay_rule_id.
 DELETE /property_work_role_assignments/{id}  # soft-delete; 204 / 404.
 
-GET    /user_leaves               # ?user_id=…&from=…&to=…&approved=true|false
-POST   /user_leaves
-PATCH  /user_leaves/{id}
-POST   /user_leaves/{id}/approve
-POST   /user_leaves/{id}/reject
-DELETE /user_leaves/{id}
+GET    /user_leaves               # cursor-paginated. Filters: ?user_id=…
+                                   #   &from=…&to=…&approved=true|false.
+                                   #   Listing without ``user_id`` is the manager
+                                   #   inbox view and requires ``leaves.view_others``.
+                                   #   Listing with ``user_id == caller`` is always
+                                   #   allowed; cross-user requires ``leaves.view_others``.
+POST   /user_leaves               # body: {user_id?, starts_on, ends_on,
+                                   #   category, note_md?}. ``user_id`` defaults to
+                                   #   the caller; cross-user requires
+                                   #   ``leaves.edit_others``. Auto-approves
+                                   #   (stamps ``approved_at`` + ``approved_by``)
+                                   #   when caller is owner or holds a manager grant
+                                   #   (per §06 "user_leave"). Worker self-submit
+                                   #   lands pending. 422 on bad window
+                                   #   (``ends_on < starts_on``).
+PATCH  /user_leaves/{id}          # body: {starts_on?, ends_on?, category?,
+                                   #   note_md?}. Pending-only; an approved leave
+                                   #   collapses to 409 ``user_leave_transition_forbidden``.
+                                   #   Authorisation: requester or
+                                   #   ``leaves.edit_others``. 422 if the resulting
+                                   #   window has ``ends_on < starts_on``.
+POST   /user_leaves/{id}/approve  # stamp ``approved_at`` + ``approved_by``.
+                                   #   Requires ``leaves.edit_others``. Already-
+                                   #   approved → 409.
+POST   /user_leaves/{id}/reject   # body (optional): {reason_md?}. Soft-deletes
+                                   #   the row and folds ``reason_md`` into
+                                   #   ``note_md`` so the worker keeps the
+                                   #   rationale visible (§06 doesn't carve a
+                                   #   persistent ``rejected`` column on
+                                   #   ``user_leave``). Requires
+                                   #   ``leaves.edit_others``. Already-approved →
+                                   #   409 (manager must DELETE instead).
+DELETE /user_leaves/{id}          # soft-delete; 204 / 404. Requester or
+                                   #   ``leaves.edit_others``. Used both as the
+                                   #   worker "withdraw request" path and the
+                                   #   manager "revoke approved leave" path.
 
 GET    /user_availability_overrides   # ?user_id=…&from=…&to=…&approved=true|false
 POST   /user_availability_overrides
