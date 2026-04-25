@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
@@ -162,7 +163,7 @@ export default function StaysPage() {
                     if (s.property_id !== p.id) return null;
                     const ci = new Date(s.check_in).getDate();
                     const co = new Date(s.check_out).getDate();
-                    const nodes: JSX.Element[] = [];
+                    const nodes: ReactElement[] = [];
                     if (ci <= d && d <= co) {
                       nodes.push(
                         <span

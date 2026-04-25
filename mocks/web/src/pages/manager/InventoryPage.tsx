@@ -665,14 +665,20 @@ function StocktakeSheet({
     try {
       const session = await open.mutateAsync();
       const payload = {
-        lines: dirty.map((i) => {
+        lines: dirty.flatMap((i) => {
+          // ``dirty`` is already filtered to items whose ``lines[i.id]``
+          // is defined; re-narrow here for the type-checker since
+          // ``lines`` is a Record (open index signature).
           const l = lines[i.id];
-          return {
-            item_id: i.id,
-            observed_on_hand: Number.parseFloat(l.observed),
-            reason: l.reason,
-            note: l.note,
-          };
+          if (!l) return [];
+          return [
+            {
+              item_id: i.id,
+              observed_on_hand: Number.parseFloat(l.observed),
+              reason: l.reason,
+              note: l.note,
+            },
+          ];
         }),
       };
       await commit.mutateAsync({ sid: session.id, payload });
