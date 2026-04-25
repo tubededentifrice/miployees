@@ -32,6 +32,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.llm.models import (
     LlmCapabilityInheritance,
+    LlmModel,
+    LlmProvider,
+    LlmProviderModel,
     ModelAssignment,
 )
 from app.adapters.db.workspace.models import Workspace
@@ -257,12 +260,86 @@ def seed_workspace(session: Session, *, slug: str | None = None) -> Workspace:
     return ws
 
 
+def seed_provider_model(
+    session: Session,
+    *,
+    provider_model_id: str | None = None,
+    api_model_id: str | None = None,
+    canonical_name: str | None = None,
+    provider_name: str | None = None,
+    provider_type: str = "fake",
+) -> LlmProviderModel:
+    """Insert a :class:`LlmProviderModel` plus its :class:`LlmProvider` /
+    :class:`LlmModel` ancestors.
+
+    The cd-4btd FK on :attr:`ModelAssignment.model_id` requires every
+    seeded assignment to point at a real ``llm_provider_model`` row.
+    Tests that don't care about the wire form let the helper mint the
+    ancestor trio with auto-generated identifiers; tests that care
+    about ``ModelPick.api_model_id != ModelPick.provider_model_id``
+    pin a distinct ``api_model_id``.
+
+    The deployment-scope tables sit outside the tenant filter
+    (:mod:`app.tenancy.registry`), so this helper does NOT need a
+    :class:`tenant_agnostic` wrapper — the ORM tenant filter would
+    not have injected a predicate against these rows in the first
+    place.
+    """
+    # Default the provider_model_id to a fresh ULID; tests pin one
+    # only when the assignment row needs to point at a specific id.
+    pm_id = provider_model_id or new_ulid()
+    api_model = api_model_id if api_model_id is not None else f"wire/{pm_id}"
+    canonical = canonical_name or f"canonical/{pm_id}"
+    provider_label = provider_name or f"provider-{pm_id[-6:].lower()}"
+
+    provider = LlmProvider(
+        id=new_ulid(),
+        name=provider_label,
+        provider_type=provider_type,
+        timeout_s=60,
+        requests_per_minute=60,
+        priority=0,
+        is_enabled=True,
+        created_at=_PINNED,
+        updated_at=_PINNED,
+    )
+    model = LlmModel(
+        id=new_ulid(),
+        canonical_name=canonical,
+        display_name=canonical,
+        vendor="other",
+        capabilities=["chat"],
+        is_active=True,
+        price_source="",
+        created_at=_PINNED,
+        updated_at=_PINNED,
+    )
+    session.add_all([provider, model])
+    session.flush()
+
+    provider_model = LlmProviderModel(
+        id=pm_id,
+        provider_id=provider.id,
+        model_id=model.id,
+        api_model_id=api_model,
+        supports_system_prompt=True,
+        supports_temperature=True,
+        is_enabled=True,
+        created_at=_PINNED,
+        updated_at=_PINNED,
+    )
+    session.add(provider_model)
+    session.flush()
+    return provider_model
+
+
 def seed_assignment(
     session: Session,
     *,
     workspace_id: str,
     capability: str,
     model_id: str | None = None,
+    api_model_id: str | None = None,
     provider: str = "openrouter",
     priority: int = 0,
     enabled: bool = True,
@@ -271,12 +348,43 @@ def seed_assignment(
     extra_api_params: dict[str, object] | None = None,
     required_capabilities: list[str] | None = None,
 ) -> ModelAssignment:
-    """Insert a :class:`ModelAssignment` with sensible defaults."""
+    """Insert a :class:`ModelAssignment` with sensible defaults.
+
+    cd-4btd: ``model_id`` must reference a real ``llm_provider_
+    model`` row. To keep call sites concise the helper auto-creates
+    the registry trio (:class:`LlmProvider` / :class:`LlmModel` /
+    :class:`LlmProviderModel`) when the caller-supplied ``model_id``
+    isn't already in the DB. Tests asserting against
+    :class:`~app.domain.llm.router.ModelPick.api_model_id` can pin a
+    distinct ``api_model_id`` here; the default mirrors the
+    pre-cd-4btd behaviour by using ``model_id`` verbatim so existing
+    assertions on ``pick.api_model_id == model_id`` still hold.
+    """
+    pm_id = model_id or new_ulid()
+    existing = session.get(LlmProviderModel, pm_id)
+    if existing is None:
+        seed_provider_model(
+            session,
+            provider_model_id=pm_id,
+            # Default the wire form to ``model_id`` so legacy
+            # assertions ``pick.api_model_id == pick.provider_model_id``
+            # round-trip; tests that exercise the cd-4btd split pass
+            # an explicit ``api_model_id``.
+            api_model_id=api_model_id if api_model_id is not None else pm_id,
+        )
+    elif api_model_id is not None and existing.api_model_id != api_model_id:
+        # Caller pinned a wire form but a row already exists with a
+        # different value — overwrite so the test sees the requested
+        # split. Mirrors the "row.model_id = …" admin-edit pattern in
+        # the router invalidation tests.
+        existing.api_model_id = api_model_id
+        session.flush()
+
     row = ModelAssignment(
         id=new_ulid(),
         workspace_id=workspace_id,
         capability=capability,
-        model_id=model_id or new_ulid(),
+        model_id=pm_id,
         provider=provider,
         priority=priority,
         enabled=enabled,

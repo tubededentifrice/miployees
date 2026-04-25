@@ -27,11 +27,16 @@ that covers the five columns the Beads task pins. The richer surface
 lands via follow-up migrations without breaking this slice's write
 contract.
 
-``model_id`` is a plain :class:`~sqlalchemy.String` **soft
-reference** — the ``llm_model`` deployment-scope registry has not
-yet landed, so declaring a FK now would break the migration timeline
-once that table appears. The column holds the ULID that identifies
-the model; the service layer resolves it at call time.
+As of cd-4btd this module also ships the deployment-scope
+:class:`LlmProvider` / :class:`LlmModel` / :class:`LlmProviderModel`
+registry. :attr:`ModelAssignment.model_id` is now a real FK to
+:attr:`LlmProviderModel.id` (``ondelete="RESTRICT"``) so the §11
+resolver can surface the provider's wire name
+(:attr:`LlmProviderModel.api_model_id`) on
+:class:`~app.domain.llm.router.ModelPick` without a second lookup.
+:attr:`LlmUsage.model_id`, by contrast, stays a free-form wire-name
+string so historical rows survive a registry row's retirement —
+see the class docstring's spec-drift note.
 
 FK hygiene (see the package ``__init__`` docstring for the full
 rationale):
@@ -51,6 +56,7 @@ See ``docs/specs/02-domain-model.md`` §"LLM",
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -62,7 +68,9 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
+    UniqueConstraint,
     true,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -82,6 +90,9 @@ __all__ = [
     "ApprovalRequest",
     "BudgetLedger",
     "LlmCapabilityInheritance",
+    "LlmModel",
+    "LlmProvider",
+    "LlmProviderModel",
     "LlmUsage",
     "ModelAssignment",
 ]
@@ -178,11 +189,15 @@ class ModelAssignment(Base):
     back through the deployment-scope provider table (which lands in
     a later slice).
 
-    ``model_id`` is a **soft reference** — plain :class:`String(26)`
-    carrying the ULID that identifies the ``llm_model`` row the
-    service layer resolves at call time. A FK is deferred until the
-    deployment-scope ``llm_model`` table lands so the migration
-    timeline does not break.
+    ``model_id`` is a real FK to :class:`LlmProviderModel.id` — the
+    deployment-scope registry that decouples the canonical model
+    name from the provider's wire name (§11 "``llm_provider_model``").
+    ``ondelete="RESTRICT"`` matches the spec's protect semantics: an
+    operator must explicitly migrate the workspace's assignments
+    before the registry row can disappear, otherwise the resolver
+    would silently lose its capability chain. The cd-4btd migration
+    converted the prior soft reference (a plain ``String(26)`` with
+    no FK) into this real edge.
 
     Per-call tuning columns (``max_tokens`` / ``temperature`` /
     ``extra_api_params``) match the spec's ``llm_assignment`` shape
@@ -217,9 +232,18 @@ class ModelAssignment(Base):
     # Capability key from the §11 catalogue. See class docstring for
     # why this is a plain string rather than a CHECK-clamped enum.
     capability: Mapped[str] = mapped_column(String, nullable=False)
-    # Soft reference to ``llm_model.id``. Plain :class:`String(26)`
-    # sized for a ULID; no FK until the registry table lands.
-    model_id: Mapped[str] = mapped_column(String(26), nullable=False)
+    # Real FK to ``llm_provider_model.id`` (cd-4btd). The resolver
+    # joins through this row to surface :attr:`LlmProviderModel.
+    # api_model_id` (the provider's wire name) on
+    # :class:`~app.domain.llm.router.ModelPick`. RESTRICT on the
+    # deletion path: deleting a registry row that an active
+    # assignment still points at would silently strand the workspace
+    # without a chain — operators migrate the assignment first.
+    model_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("llm_provider_model.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     # Provider name (denormalised). Short string; the enum is open
     # in practice because new providers land as pure data rows.
     provider: Mapped[str] = mapped_column(String, nullable=False)
@@ -510,15 +534,18 @@ class LlmUsage(Base):
 
     **Spec-drift note on ``model_id``.** The column is named
     ``model_id`` here but the §02 ``llm_call`` spec names the
-    equivalent column ``provider_model_id`` — it holds the resolved
-    provider-model wire reference, not the ``llm_model`` registry
-    id. The cd-cm5 slice landed the shorter name and the cd-wjpl /
-    cd-irng post-flight writers populate it with
-    :attr:`~app.domain.llm.budget.LlmUsage.api_model_id`. The rename
-    is deferred until the deployment-scope ``llm_provider_model``
-    registry lands so the ``/admin/usage`` queries + the router
-    observability seam can flip in lockstep — tracked as a follow-up
-    Beads task referenced from the cd-wjpl summary.
+    equivalent column ``provider_model_id`` — and unlike
+    :attr:`ModelAssignment.model_id` (a real FK as of cd-4btd) it
+    still holds the provider's free-form **wire name string**, not
+    the ``llm_provider_model.id``. The cd-wjpl / cd-irng post-flight
+    writers populate it with
+    :attr:`~app.domain.llm.budget.LlmUsage.api_model_id` — the
+    string that flowed across the network — so historical rows
+    survive a registry row's deletion. Promoting this column to an
+    FK + rename is tracked as a follow-up Beads task; the surface is
+    intentionally append-only because the /admin/usage feed must
+    still render past calls even after their provider_model row has
+    been retired.
 
     cd-wjpl telemetry columns (all nullable — §11 "Agent audit
     trail"):
@@ -802,5 +829,351 @@ class LlmCapabilityInheritance(Base):
             "workspace_id",
             "capability",
             unique=True,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deployment-scope registry (cd-4btd).
+#
+# These three tables sit outside any workspace — every workspace in the
+# deployment shares the same ``llm_provider`` / ``llm_model`` /
+# ``llm_provider_model`` graph, edited from ``/admin/llm`` (§11). They
+# are NOT registered in :mod:`app.tenancy.registry`: the ORM tenant
+# filter must NOT inject a ``workspace_id`` predicate on these reads
+# because there is no such column to pin against.
+# ---------------------------------------------------------------------------
+
+
+# Allowed ``llm_provider.provider_type`` values per §11 v1. ``fake``
+# is dev/test only — production deployments forbid it via a
+# §"LLM graph admin" runtime check, but the DB CHECK keeps the column
+# closed against typo-driven drift. New types land additively (CHECK
+# rewrite via ``batch_alter_table`` on SQLite, direct ALTER on PG).
+_LLM_PROVIDER_TYPE_VALUES: tuple[str, ...] = (
+    "openrouter",
+    "openai_compatible",
+    "fake",
+)
+
+
+# Allowed ``llm_model.price_source`` values per §11 "Price sync".
+# Empty string = no sync configured for this model. The override
+# column ``llm_provider_model.price_source_override`` carries a
+# **different** enum body per spec (``'' | 'none' | 'openrouter'``)
+# because ``'none'`` is the override-pin sentinel that tells the
+# weekly sync to skip the row; the model-level ``price_source`` has
+# no need for a pin sentinel and instead allows ``'manual'`` to mark
+# operator-curated rows. Neither column is CHECK-clamped today
+# beyond the model-level body below — the override stays free-form
+# until the §11 "/admin/llm" surface lands and pins the wider grid.
+_LLM_PRICE_SOURCE_VALUES: tuple[str, ...] = (
+    "",
+    "openrouter",
+    "manual",
+)
+
+
+class LlmProvider(Base):
+    """Deployment-scope provider registry row (§11 ``llm_provider``).
+
+    A provider is a single LLM-serving endpoint the deployment knows
+    how to talk to (OpenRouter, an OpenAI-compatible self-host, or
+    the in-process ``fake`` adapter for tests). Every workspace in
+    the deployment shares the same provider rows — they are edited
+    from the ``/admin/llm`` graph (§11 "LLM graph admin") or its
+    CLI equivalents (§13).
+
+    ``api_key_envelope_ref`` is an opaque pointer into
+    ``secret_envelope`` (§15) — never the ciphertext, never the
+    plaintext key. The resolver dereferences it at call time. The
+    column is nullable for the ``fake`` provider (no upstream key)
+    and for self-hosted gateways that don't require auth.
+
+    ``default_model`` is a soft reference to a
+    :class:`LlmProviderModel.id` — used as a fallback when an
+    assignment lists none. NULL means "no default; assignments must
+    name a row".
+
+    NOT workspace-scoped. The :mod:`app.tenancy.registry` registration
+    list in :mod:`app.adapters.db.llm.__init__` deliberately excludes
+    this table.
+    """
+
+    __tablename__ = "llm_provider"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # Display name; uniqueness is enforced at the DB level so the
+    # admin UI never shows two providers with the same label.
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # ``openrouter | openai_compatible | fake``. CHECK clamps the
+    # set; widening is additive.
+    provider_type: Mapped[str] = mapped_column(String, nullable=False)
+    # Optional override for the provider type's default URL. Required
+    # for ``openai_compatible``; ignored for ``fake``; nullable for
+    # ``openrouter`` (the default URL is good).
+    api_endpoint: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Opaque envelope pointer — never the ciphertext.
+    api_key_envelope_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Soft FK to ``llm_provider_model.id``. NOT a hard FK — we'd
+    # otherwise have a circular dependency (``llm_provider`` ↔
+    # ``llm_provider_model``) that would force tricky deferred FK
+    # creation across SQLite + PG. Service layer validates on write.
+    default_model: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    timeout_s: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=60, server_default="60"
+    )
+    requests_per_minute: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=60, server_default="60"
+    )
+    # Lower = tried first when a provider pool is probed. The
+    # resolver's chain is per-assignment; ``priority`` here ranks
+    # providers when an assignment doesn't pin one.
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # Last operator to mutate this row. SET NULL on user delete so a
+    # user hard-delete doesn't sweep the deployment-scope registry.
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            f"provider_type IN ({_in_clause(_LLM_PROVIDER_TYPE_VALUES)})",
+            name="provider_type",
+        ),
+        UniqueConstraint("name", name="uq_llm_provider_name"),
+    )
+
+
+class LlmModel(Base):
+    """Deployment-scope provider-agnostic model metadata (§11 ``llm_model``).
+
+    A model row carries the provider-agnostic facts about a model:
+    the canonical name, capability tags, context window, output
+    cap. The same canonical model (``google/gemma-3-27b-it``,
+    ``anthropic/claude-3-5-sonnet``, …) may be served by multiple
+    providers — the per-provider tweaks live on
+    :class:`LlmProviderModel`.
+
+    ``capabilities`` is a JSON list of capability tags (``chat``,
+    ``vision``, ``json_mode``, …) the model exposes. The §11
+    capability catalogue carries a ``required_capabilities`` list per
+    crew.day capability; saving an assignment whose ``provider_model``
+    resolves to a model missing a required tag returns
+    ``422 assignment_missing_capability`` (§11 "Model capability
+    tags").
+
+    ``price_source`` controls how the price-sync job populates
+    :attr:`LlmProviderModel.input_cost_per_million` /
+    ``output_cost_per_million``: ``""`` = no sync, ``"openrouter"``
+    = pull from OpenRouter's catalogue, ``"manual"`` = operator
+    fills it in. ``price_source_model_id`` overrides the lookup id
+    when the canonical name doesn't match the upstream catalogue.
+
+    NOT workspace-scoped.
+    """
+
+    __tablename__ = "llm_model"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # Globally unique canonical model name (e.g. ``google/gemma-3-27b-
+    # it``). Provider-agnostic — the provider-specific wire form
+    # lives on :attr:`LlmProviderModel.api_model_id`.
+    canonical_name: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    # Plain string — the §11 vendor list grows over time; CHECK-
+    # clamping it would force a migration on every new vendor.
+    vendor: Mapped[str] = mapped_column(String, nullable=False)
+    # JSON list of capability tags. Empty list = no tags claimed —
+    # the model is unusable for any crew.day capability that requires
+    # a sub-capability.
+    capabilities: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+    context_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+    )
+    # ``"" | "openrouter" | "manual"`` — see class docstring.
+    price_source: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    # Optional override for the price-sync lookup id. NULL = use
+    # ``canonical_name``.
+    price_source_model_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            f"price_source IN ({_in_clause(_LLM_PRICE_SOURCE_VALUES)})",
+            name="price_source",
+        ),
+        UniqueConstraint("canonical_name", name="uq_llm_model_canonical_name"),
+    )
+
+
+class LlmProviderModel(Base):
+    """Deployment-scope (provider, model) join row (§11 ``llm_provider_model``).
+
+    The wire-name + per-combo tuning + pricing for a (provider,
+    model) pair. The same canonical model can be priced and tuned
+    differently across providers — OpenRouter's ``anthropic/
+    claude-3-5-sonnet`` and a native Anthropic SDK adapter's
+    ``claude-3-5-sonnet-20241022`` both refer to the same
+    :class:`LlmModel` but carry distinct ``api_model_id`` strings on
+    the wire.
+
+    ``api_model_id`` is what the adapter sends on the wire; the
+    resolver surfaces it on :class:`~app.domain.llm.router.ModelPick.
+    api_model_id` so adapters never need to second-guess the
+    canonical-vs-wire distinction.
+
+    Pricing columns are :class:`Numeric(10, 4)` so the ledger can
+    carry values like ``0.0003`` (sub-cent rates per million tokens)
+    without floating-point hazard. Kept in dollars-per-million for
+    parity with the OpenRouter catalogue and §11; the per-call
+    :attr:`~app.adapters.db.llm.models.LlmUsage.cost_cents` is
+    computed at write time and stored in cents.
+
+    The flag pair ``supports_system_prompt`` /
+    ``supports_temperature`` exists because o-series and
+    reasoning-first models reject those features in practice; the
+    adapter consults the flags before dispatch and elides the
+    rejected param rather than forcing the operator to override it
+    via :attr:`extra_api_params`.
+
+    Unique ``(provider_id, model_id)`` — at most one row per pair.
+    Two rows for the same pair would force the resolver to pick at
+    random.
+
+    NOT workspace-scoped.
+    """
+
+    __tablename__ = "llm_provider_model"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("llm_provider.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    model_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("llm_model.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    # The wire-form name the provider expects. Independent of
+    # :attr:`LlmModel.canonical_name` — same canonical may map to
+    # different ``api_model_id`` strings under different providers.
+    api_model_id: Mapped[str] = mapped_column(String, nullable=False)
+    input_cost_per_million: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    output_cost_per_million: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    # Reserved for future per-call billed providers. NULL = unknown /
+    # not applicable.
+    fixed_cost_per_call_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
+    max_tokens_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    temperature_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ``False`` = adapter folds the system prompt into the first user
+    # turn. Default ``True`` keeps the existing call shape for the
+    # 95 % of models that do support a system prompt.
+    supports_system_prompt: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+    )
+    # ``False`` = adapter strips the temperature param before
+    # dispatch (o-series models reject it).
+    supports_temperature: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+    )
+    # ``"" | "low" | "medium" | "high"`` — open enum because the
+    # vocabulary varies per reasoning provider.
+    reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Catch-all for rare / new fields the adapter forwards to the
+    # provider unchanged. Merged last over the model defaults.
+    extra_api_params: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    # Optional per-row override of :attr:`LlmModel.price_source`. Per
+    # §11 "Price sync" the allowed values are ``'' | 'none' |
+    # 'openrouter'``: ``''`` falls through to the model default,
+    # ``'none'`` pins the row so the weekly sync skips it, and
+    # ``'openrouter'`` pulls per-row pricing even when the parent
+    # model is set to manual. Stored free-form (no CHECK clamp)
+    # because the /admin/llm graph is the write authority and the
+    # spec's enum body widens additively; service-layer validation
+    # narrows on save.
+    price_source_override: Mapped[str | None] = mapped_column(String, nullable=True)
+    price_source_model_id_override: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
+    price_last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_id",
+            "model_id",
+            name="uq_llm_provider_model_provider_model",
         ),
     )

@@ -15,16 +15,17 @@ Public surface:
   everything a downstream client needs to dispatch the call
   (``provider_model_id``, ``api_model_id``, ``max_tokens``,
   ``temperature``, ``extra_api_params``, ``required_capabilities``,
-  ``assignment_id``). Today's DB slice does not yet ship the
-  deployment-scope ``llm_provider_model`` / ``llm_model`` registry
-  (see :mod:`app.adapters.db.llm.models` module docstring), so
-  ``provider_model_id`` and ``api_model_id`` both carry
-  :attr:`~app.adapters.db.llm.models.ModelAssignment.model_id`
-  verbatim — a soft reference to the future registry's ULID. When
-  the registry lands, a follow-up pass joins through and fills
-  ``api_model_id`` with the provider's wire name (§11
-  "``llm_provider_model``"); nothing outside this module has to
-  change.
+  ``assignment_id``). The cd-4btd registry trio
+  (:class:`~app.adapters.db.llm.models.LlmProvider` /
+  :class:`~app.adapters.db.llm.models.LlmModel` /
+  :class:`~app.adapters.db.llm.models.LlmProviderModel`) lets the
+  resolver carry **two distinct strings** here:
+  ``provider_model_id`` is the
+  :attr:`LlmProviderModel.id` ULID (the registry row's identity);
+  ``api_model_id`` is :attr:`LlmProviderModel.api_model_id` —
+  whatever the provider expects on the wire (e.g.
+  ``anthropic/claude-3-5-sonnet`` on OpenRouter,
+  ``claude-3-5-sonnet-20241022`` on a native adapter).
 * :func:`resolve_model` — the full priority-ordered chain for a
   capability. Callers walking retryable errors iterate the list.
 * :func:`resolve_primary` — head of the chain; raises
@@ -103,7 +104,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.adapters.db.llm.models import LlmCapabilityInheritance, ModelAssignment
+from app.adapters.db.llm.models import (
+    LlmCapabilityInheritance,
+    LlmProviderModel,
+    ModelAssignment,
+)
 from app.events.bus import EventBus
 from app.events.bus import bus as default_event_bus
 from app.events.types import LlmAssignmentChanged
@@ -144,26 +149,27 @@ _MAX_INHERITANCE_HOPS: int = 16
 class ModelPick:
     """One rung of a resolved fallback chain.
 
-    ``provider_model_id`` and ``api_model_id`` both carry the
-    :class:`~app.adapters.db.llm.models.ModelAssignment.model_id`
-    value — the deployment-scope ``llm_provider_model`` registry
-    that the spec (§11) pins hasn't landed yet, so the adapter does
-    not have a separate wire-name to expose. When the registry
-    lands, a follow-up resolves ``api_model_id`` to the provider-
-    specific wire name (e.g. ``google/gemma-3-27b-it`` on
-    OpenRouter vs a native adapter's own string).
+    ``provider_model_id`` is the
+    :class:`~app.adapters.db.llm.models.LlmProviderModel.id` ULID —
+    the registry row the assignment points at (cd-4btd FK).
+    ``api_model_id`` is :attr:`LlmProviderModel.api_model_id` —
+    what the provider expects on the wire (OpenRouter prefixes with
+    a vendor; a native SDK adapter doesn't). Adapters dispatch on
+    ``api_model_id``; observability + assignment edits hold
+    ``provider_model_id``.
 
     Every field is a value; the dataclass is frozen + slotted so a
     rung can be stashed in a cache bucket and handed back to
     multiple callers without aliasing risk.
     """
 
-    # Soft reference to the future ``llm_provider_model.id`` row.
-    # Today: ULID copied from ``ModelAssignment.model_id``.
+    # The ``llm_provider_model.id`` row this rung resolved to.
+    # Promoted from soft reference to a real FK by cd-4btd.
     provider_model_id: str
-    # What the adapter sends on the wire. Today: same ULID as
-    # above — the join through the not-yet-landed registry is a
-    # follow-up.
+    # What the adapter sends on the wire — the provider's
+    # ``api_model_id`` for this row. Distinct from
+    # ``provider_model_id`` whenever the canonical model name and
+    # the wire form diverge (the common case on OpenRouter).
     api_model_id: str
     # Per-call tuning; ``None`` = inherit the provider-model /
     # model default (§11 "Model assignment", "Provider / model /
@@ -318,27 +324,43 @@ def _load_enabled_chain(
     Returns an empty list when the capability has no enabled rows;
     the caller decides whether to walk inheritance from there.
     Relies on the ORM tenant filter (see
-    :mod:`app.tenancy.orm_filter`) to pin ``workspace_id`` — the
-    active :class:`WorkspaceContext` carries the same value, so an
-    explicit ``.where(workspace_id=…)`` would duplicate what the
-    filter already injects. We still pass ``workspace_id`` through
-    to keep the function self-documenting and to narrow the
-    :class:`CapabilityUnassignedError` message in the caller.
+    :mod:`app.tenancy.orm_filter`) to pin ``workspace_id`` on the
+    workspace-scoped ``model_assignment`` table; the deployment-
+    scope ``llm_provider_model`` join target is intentionally NOT
+    in the registry, so the filter leaves it alone — exactly what
+    we want for a deployment-shared row. We still pass
+    ``workspace_id`` through to keep the function self-documenting
+    and to narrow the :class:`CapabilityUnassignedError` message in
+    the caller.
+
+    cd-4btd: the JOIN through ``llm_provider_model`` lets the
+    resolver surface :attr:`LlmProviderModel.api_model_id` (the
+    provider's wire form) on
+    :class:`ModelPick.api_model_id` while keeping the registry id
+    on :class:`ModelPick.provider_model_id`. We use a plain INNER
+    join because :attr:`ModelAssignment.model_id` is now a NOT NULL
+    FK — every assignment must point at a registry row, so a LEFT
+    join would only mask a data integrity bug rather than recover
+    from one.
     """
     stmt = (
-        select(ModelAssignment)
+        select(ModelAssignment, LlmProviderModel)
+        .join(
+            LlmProviderModel,
+            ModelAssignment.model_id == LlmProviderModel.id,
+        )
         .where(
             ModelAssignment.capability == capability,
             ModelAssignment.enabled.is_(True),
         )
         .order_by(ModelAssignment.priority.asc(), ModelAssignment.id.asc())
     )
-    rows = session.execute(stmt).scalars().all()
-    return [_to_pick(row) for row in rows]
+    rows = session.execute(stmt).all()
+    return [_to_pick(assignment, provider_model) for assignment, provider_model in rows]
 
 
-def _to_pick(row: ModelAssignment) -> ModelPick:
-    """Map a DB row to the frozen :class:`ModelPick` value.
+def _to_pick(row: ModelAssignment, provider_model: LlmProviderModel) -> ModelPick:
+    """Map an (assignment, provider_model) pair to a frozen :class:`ModelPick`.
 
     JSON columns round-trip as mutable ``dict`` / ``list`` — wrap
     the params in a :class:`~types.MappingProxyType` view over a
@@ -348,6 +370,18 @@ def _to_pick(row: ModelAssignment) -> ModelPick:
     cheap at cache-miss time (hundreds of params are unheard of) and
     removes a whole class of aliasing bug from the downstream
     adapter.
+
+    cd-4btd surfaces :attr:`LlmProviderModel.api_model_id` directly
+    on the pick. Per-call tuning (``max_tokens``, ``temperature``,
+    ``extra_api_params``) still comes from the assignment — the
+    operator's per-workspace override beats the deployment-scope
+    default. Promoting provider_model overrides to the pick is a
+    follow-up once the spec pins the merge order; the
+    :attr:`LlmProviderModel.max_tokens_override` /
+    ``temperature_override`` / ``supports_*`` flags are the obvious
+    candidates but every one has a "did the operator mean to
+    override?" question that the v1 surface answers via the
+    /admin/llm graph editor, not the resolver.
     """
     extra_copy: dict[str, Any] = (
         dict(row.extra_api_params) if row.extra_api_params else {}
@@ -355,8 +389,8 @@ def _to_pick(row: ModelAssignment) -> ModelPick:
     extra: Mapping[str, Any] = MappingProxyType(extra_copy)
     required = tuple(row.required_capabilities or ())
     return ModelPick(
-        provider_model_id=row.model_id,
-        api_model_id=row.model_id,
+        provider_model_id=provider_model.id,
+        api_model_id=provider_model.api_model_id,
         max_tokens=row.max_tokens,
         temperature=row.temperature,
         extra_api_params=extra,

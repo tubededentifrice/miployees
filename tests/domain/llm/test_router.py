@@ -49,6 +49,7 @@ from tests.domain.llm.conftest import (
     build_context,
     seed_assignment,
     seed_inheritance,
+    seed_provider_model,
     seed_workspace,
 )
 
@@ -182,6 +183,99 @@ class TestHappyPath:
 
             assert [p.provider_model_id for p in chain] == [
                 "01HWA00000000000000000ENBL",
+            ]
+        finally:
+            reset_current(token)
+
+
+# ---------------------------------------------------------------------------
+# Registry wire-name split (cd-4btd)
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryWireName:
+    """``ModelPick.api_model_id`` carries the provider's wire form.
+
+    Pre-cd-4btd the resolver populated ``provider_model_id`` and
+    ``api_model_id`` from the same ``ModelAssignment.model_id`` ULID
+    because the deployment-scope ``llm_provider_model`` registry had
+    not landed. cd-4btd JOINs ``model_assignment → llm_provider_model``
+    so the two strings can diverge: ``provider_model_id`` is the
+    ``llm_provider_model.id`` ULID, and ``api_model_id`` is whatever
+    the provider expects on the wire (e.g. ``anthropic/
+    claude-3-5-sonnet`` on OpenRouter).
+
+    The test pins a distinct wire name on the registry row and
+    asserts the resolver hands both strings back unmodified — the
+    ULID on ``provider_model_id``, the wire form on
+    ``api_model_id``.
+    """
+
+    def test_provider_model_id_differs_from_api_model_id(
+        self, db_session: Session, clock: FrozenClock
+    ) -> None:
+        ws = seed_workspace(db_session)
+        ctx = build_context(ws.id)
+        token = set_current(ctx)
+        try:
+            # ``model_id`` doubles as the registry row id; the wire
+            # form is a free-form string the provider emits.
+            seed_assignment(
+                db_session,
+                workspace_id=ws.id,
+                capability="chat.manager",
+                priority=0,
+                model_id="01HWA00000000000000000PMID",
+                api_model_id="anthropic/claude-3-5-sonnet",
+            )
+
+            pick = resolve_primary(db_session, ctx, "chat.manager", clock=clock)
+
+            assert pick.provider_model_id == "01HWA00000000000000000PMID"
+            assert pick.api_model_id == "anthropic/claude-3-5-sonnet"
+            # The split is the whole point — guard against a
+            # regression that re-points either field at the other.
+            assert pick.provider_model_id != pick.api_model_id
+        finally:
+            reset_current(token)
+
+    def test_chain_carries_each_rungs_wire_name(
+        self, db_session: Session, clock: FrozenClock
+    ) -> None:
+        """Each rung gets its own ``api_model_id`` from its own registry row.
+
+        A two-rung chain where the primary and the fallback share a
+        :attr:`LlmProviderModel.id` would short-circuit the wire-name
+        split for the fallback rung; the test pins distinct registry
+        rows on each rung so we know the JOIN walks per-row, not via
+        a shared cached lookup.
+        """
+        ws = seed_workspace(db_session)
+        ctx = build_context(ws.id)
+        token = set_current(ctx)
+        try:
+            seed_assignment(
+                db_session,
+                workspace_id=ws.id,
+                capability="chat.manager",
+                priority=0,
+                model_id="01HWA00000000000000000PRMI",
+                api_model_id="openrouter/primary-wire",
+            )
+            seed_assignment(
+                db_session,
+                workspace_id=ws.id,
+                capability="chat.manager",
+                priority=1,
+                model_id="01HWA00000000000000000FBKI",
+                api_model_id="openrouter/fallback-wire",
+            )
+
+            chain = resolve_model(db_session, ctx, "chat.manager", clock=clock)
+
+            assert [(p.provider_model_id, p.api_model_id) for p in chain] == [
+                ("01HWA00000000000000000PRMI", "openrouter/primary-wire"),
+                ("01HWA00000000000000000FBKI", "openrouter/fallback-wire"),
             ]
         finally:
             reset_current(token)
@@ -602,7 +696,12 @@ class TestCache:
 
             # Admin replaces the rung WITHOUT firing the SSE event.
             # If the router cached correctly, the second call still
-            # sees the old pick (inside the TTL window).
+            # sees the old pick (inside the TTL window). Pre-seed the
+            # cd-4btd registry row the new ``model_id`` will FK to so
+            # the flush passes the integrity check.
+            seed_provider_model(
+                db_session, provider_model_id="01HWA00000000000000000HIT2"
+            )
             row.model_id = "01HWA00000000000000000HIT2"
             db_session.flush()
 
@@ -630,7 +729,11 @@ class TestCache:
             first = resolve_primary(db_session, ctx, "chat.manager", clock=clock)
             assert first.provider_model_id == "01HWA00000000000000000TTL1"
 
-            # Swap the rung; do not publish the event.
+            # Swap the rung; do not publish the event. Pre-seed the
+            # cd-4btd registry row before the mutation flushes.
+            seed_provider_model(
+                db_session, provider_model_id="01HWA00000000000000000TTL2"
+            )
             row.model_id = "01HWA00000000000000000TTL2"
             db_session.flush()
 
@@ -670,6 +773,9 @@ class TestCache:
             first = resolve_primary(db_session, ctx, "chat.manager", clock=clock)
             assert first.provider_model_id == "01HWA00000000000000000SSE1"
 
+            seed_provider_model(
+                db_session, provider_model_id="01HWA00000000000000000SSE2"
+            )
             row.model_id = "01HWA00000000000000000SSE2"
             db_session.flush()
 
@@ -731,7 +837,10 @@ class TestCache:
             reset_current(token)
 
         # Mutate both rows; publish only A's event. Only A's cache
-        # should drop; B's cached pick stays.
+        # should drop; B's cached pick stays. cd-4btd FK requires
+        # the new ULIDs to exist in ``llm_provider_model`` first.
+        seed_provider_model(db_session, provider_model_id="01HWA00000000000000000ISA2")
+        seed_provider_model(db_session, provider_model_id="01HWA00000000000000000ISB2")
         row_a.model_id = "01HWA00000000000000000ISA2"
         row_b.model_id = "01HWA00000000000000000ISB2"
         db_session.flush()
@@ -1021,6 +1130,9 @@ class TestBusSubscription:
             first = resolve_primary(db_session, ctx, "chat.manager", clock=clock)
             assert first.provider_model_id == "01HWA00000000000000000LBUS"
 
+            seed_provider_model(
+                db_session, provider_model_id="01HWA00000000000000000LBU2"
+            )
             row.model_id = "01HWA00000000000000000LBU2"
             db_session.flush()
 

@@ -38,6 +38,9 @@ from app.adapters.db.llm.models import (
     ApprovalRequest,
     BudgetLedger,
     LlmCapabilityInheritance,
+    LlmModel,
+    LlmProvider,
+    LlmProviderModel,
     LlmUsage,
     ModelAssignment,
 )
@@ -109,6 +112,91 @@ def _ensure_llm_registered() -> None:
         registry.register(table)
 
 
+def _seed_registry_trio(
+    session: Session, *, provider_model_id: str, suffix: str
+) -> LlmProviderModel:
+    """Insert a :class:`LlmProvider` / :class:`LlmModel` /
+    :class:`LlmProviderModel` trio so a synthetic ``model_id`` ULID
+    has a real registry row to FK against (cd-4btd).
+
+    The deployment-scope registry is NOT in the tenant filter, so no
+    :class:`tenant_agnostic` wrapper is needed. The helper is
+    test-only; production callers go through the future
+    ``/admin/llm`` graph editor.
+    """
+    provider = LlmProvider(
+        id=f"01HWA0000000000000000PRV{suffix}"[:26],
+        name=f"prov-{suffix}",
+        provider_type="fake",
+        timeout_s=60,
+        requests_per_minute=60,
+        priority=0,
+        is_enabled=True,
+        created_at=_PINNED,
+        updated_at=_PINNED,
+    )
+    model = LlmModel(
+        id=f"01HWA0000000000000000MOD{suffix}"[:26],
+        canonical_name=f"canonical/{suffix}",
+        display_name=f"Canonical {suffix}",
+        vendor="other",
+        capabilities=["chat"],
+        is_active=True,
+        price_source="",
+        created_at=_PINNED,
+        updated_at=_PINNED,
+    )
+    session.add_all([provider, model])
+    session.flush()
+    pm = LlmProviderModel(
+        id=provider_model_id,
+        provider_id=provider.id,
+        model_id=model.id,
+        api_model_id=f"wire/{suffix}",
+        supports_system_prompt=True,
+        supports_temperature=True,
+        is_enabled=True,
+        created_at=_PINNED,
+        updated_at=_PINNED,
+    )
+    session.add(pm)
+    session.flush()
+    return pm
+
+
+@pytest.fixture(autouse=True)
+def _seed_default_provider_models(db_session: Session) -> None:
+    """Pre-seed :class:`LlmProviderModel` rows for the synthetic ULIDs
+    the integration tests embed in ``ModelAssignment.model_id``.
+
+    cd-4btd promoted ``ModelAssignment.model_id`` from a soft string
+    reference into a real FK on ``llm_provider_model.id``. Tests that
+    construct a :class:`ModelAssignment` with a hand-rolled ULID
+    (``01HWA00000000000000000MDLA`` / ``MDLB``) need that registry row
+    to exist before the ``flush()`` lands. Pre-seeding the two ULIDs
+    in an autouse fixture keeps the per-test setup terse and matches
+    the conftest helper used by ``tests/domain/llm/`` callers.
+
+    Each seeded ``LlmProviderModel`` mints its own
+    :class:`LlmProvider` / :class:`LlmModel` ancestors so the unique
+    ``(provider_id, model_id)`` constraint never collides across
+    tests.
+    """
+    # justification: deployment-scope rows live outside the tenant
+    # filter — no ``tenant_agnostic`` wrapper needed; the registry
+    # registration list deliberately excludes these tables.
+    _seed_registry_trio(
+        db_session,
+        provider_model_id="01HWA00000000000000000MDLA",
+        suffix="MA1",
+    )
+    _seed_registry_trio(
+        db_session,
+        provider_model_id="01HWA00000000000000000MDLB",
+        suffix="MB1",
+    )
+
+
 def _ctx_for(workspace: Workspace, actor_id: str) -> WorkspaceContext:
     """Build a :class:`WorkspaceContext` pinned to ``workspace``."""
     return WorkspaceContext(
@@ -172,15 +260,25 @@ class TestMigrationShape:
             assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
 
     def test_model_assignment_fks(self, engine: Engine) -> None:
+        """cd-4btd: ``workspace_id`` CASCADE; ``model_id`` is now a real
+        FK to ``llm_provider_model.id`` ON DELETE RESTRICT.
+
+        The pre-cd-4btd shape carried no FK on ``model_id`` (it was a
+        soft reference because the deployment-scope registry hadn't
+        landed); cd-4btd promotes it to a real FK with RESTRICT
+        semantics: deleting a registry row that an active assignment
+        still points at would silently strand the workspace without
+        a chain — operators migrate the assignment first.
+        """
         fks = {
             tuple(fk["constrained_columns"]): fk
             for fk in inspect(engine).get_foreign_keys("model_assignment")
         }
         assert fks[("workspace_id",)]["referred_table"] == "workspace"
         assert fks[("workspace_id",)]["options"].get("ondelete") == "CASCADE"
-        # ``model_id`` is a soft reference — no FK per the model
-        # docstring (``llm_model`` registry lands later).
-        assert ("model_id",) not in fks
+        # cd-4btd: real FK on ``model_id`` → ``llm_provider_model.id``.
+        assert fks[("model_id",)]["referred_table"] == "llm_provider_model"
+        assert fks[("model_id",)]["options"].get("ondelete") == "RESTRICT"
 
     def test_model_assignment_priority_index(self, engine: Engine) -> None:
         """cd-u84y: non-unique ``(workspace_id, capability, priority)`` index.
@@ -2398,9 +2496,12 @@ class TestCdU84yMigrationRoundTrip:
                 cfg.set_main_option("sqlalchemy.url", url)
                 command.upgrade(cfg, "head")
 
-            # Seed: workspace + one primary assignment per capability.
-            # Raw SQL (no ORM factories) so the test owns the row shape
-            # at this exact revision.
+            # Seed: workspace + the cd-4btd registry trio + one
+            # primary assignment per capability. Raw SQL (no ORM
+            # factories) so the test owns the row shape at this exact
+            # revision; the registry rows are needed to satisfy the
+            # FK ``model_assignment.model_id → llm_provider_model.id``
+            # that cd-4btd lands at head.
             with engine.begin() as conn:
                 conn.execute(
                     text(
@@ -2408,6 +2509,46 @@ class TestCdU84yMigrationRoundTrip:
                         "(id, slug, name, plan, quota_json, created_at) "
                         "VALUES ('01HWA00000000000000000WDGH', 'dg-happy', "
                         "'DgHappy', 'free', '{}', '2026-04-24T12:00:00+00:00')"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO llm_provider "
+                        "(id, name, provider_type, timeout_s, "
+                        "requests_per_minute, priority, is_enabled, "
+                        "created_at, updated_at) VALUES "
+                        "('01HWA00000000000000000PRVH', 'happy-prov', "
+                        "'fake', 60, 60, 0, 1, "
+                        "'2026-04-24T12:00:00+00:00', "
+                        "'2026-04-24T12:00:00+00:00')"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO llm_model "
+                        "(id, canonical_name, display_name, vendor, "
+                        "capabilities, is_active, price_source, "
+                        "created_at, updated_at) VALUES "
+                        "('01HWA00000000000000000MODH', 'canonical/h', "
+                        "'Canonical H', 'other', '[]', 1, '', "
+                        "'2026-04-24T12:00:00+00:00', "
+                        "'2026-04-24T12:00:00+00:00')"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO llm_provider_model "
+                        "(id, provider_id, model_id, api_model_id, "
+                        "input_cost_per_million, output_cost_per_million, "
+                        "supports_system_prompt, supports_temperature, "
+                        "extra_api_params, is_enabled, "
+                        "created_at, updated_at) VALUES "
+                        "('01HWA00000000000000000MDLA', "
+                        "'01HWA00000000000000000PRVH', "
+                        "'01HWA00000000000000000MODH', 'wire/h', "
+                        "0, 0, 1, 1, '{}', 1, "
+                        "'2026-04-24T12:00:00+00:00', "
+                        "'2026-04-24T12:00:00+00:00')"
                     )
                 )
                 conn.execute(
@@ -2466,9 +2607,12 @@ class TestCdU84yMigrationRoundTrip:
                 cfg.set_main_option("sqlalchemy.url", url)
                 command.upgrade(cfg, "head")
 
-            # Seed: one primary + two fallback rungs on the same
+            # Seed: workspace + cd-4btd registry trio per rung + one
+            # primary + two fallback rungs on the same
             # (workspace, capability). Raw SQL keeps the test
-            # revision-agnostic.
+            # revision-agnostic; the registry rows satisfy the FK
+            # ``model_assignment.model_id → llm_provider_model.id``
+            # that cd-4btd lands at head.
             with engine.begin() as conn:
                 conn.execute(
                     text(
@@ -2479,6 +2623,53 @@ class TestCdU84yMigrationRoundTrip:
                     )
                 )
                 for index, priority in enumerate((0, 1, 2)):
+                    # One registry trio per rung — the unique
+                    # ``(provider_id, model_id)`` constraint on
+                    # ``llm_provider_model`` rules out reusing the same
+                    # provider + model with a different
+                    # ``provider_model.id``, so we mint a fresh trio
+                    # per rung.
+                    conn.execute(
+                        text(
+                            "INSERT INTO llm_provider "
+                            "(id, name, provider_type, timeout_s, "
+                            "requests_per_minute, priority, is_enabled, "
+                            "created_at, updated_at) VALUES "
+                            f"('01HWA00000000000000000PRS{index}', 'sad-prov-{index}', "
+                            "'fake', 60, 60, 0, 1, "
+                            "'2026-04-24T12:00:00+00:00', "
+                            "'2026-04-24T12:00:00+00:00')"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "INSERT INTO llm_model "
+                            "(id, canonical_name, display_name, vendor, "
+                            "capabilities, is_active, price_source, "
+                            "created_at, updated_at) VALUES "
+                            f"('01HWA00000000000000000MOS{index}', "
+                            f"'canonical/s{index}', "
+                            f"'Canonical S{index}', 'other', '[]', 1, '', "
+                            "'2026-04-24T12:00:00+00:00', "
+                            "'2026-04-24T12:00:00+00:00')"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "INSERT INTO llm_provider_model "
+                            "(id, provider_id, model_id, api_model_id, "
+                            "input_cost_per_million, output_cost_per_million, "
+                            "supports_system_prompt, supports_temperature, "
+                            "extra_api_params, is_enabled, "
+                            "created_at, updated_at) VALUES "
+                            f"('01HWA0000000000000000MDL{index}', "
+                            f"'01HWA00000000000000000PRS{index}', "
+                            f"'01HWA00000000000000000MOS{index}', 'wire/s{index}', "
+                            "0, 0, 1, 1, '{}', 1, "
+                            "'2026-04-24T12:00:00+00:00', "
+                            "'2026-04-24T12:00:00+00:00')"
+                        )
+                    )
                     conn.execute(
                         text(
                             "INSERT INTO model_assignment "
@@ -2494,7 +2685,9 @@ class TestCdU84yMigrationRoundTrip:
                     )
 
             # Downgrade must succeed — the sweep removes the two
-            # fallback rungs before rebuilding the unique index.
+            # fallback rungs before rebuilding the unique index. The
+            # cd-4btd downgrade earlier in the chain drops the
+            # ``model_id`` FK before the cd-u84y downgrade fires.
             with self._override_database_url(url):
                 cfg = AlembicConfig(str(self._alembic_ini()))
                 cfg.set_main_option("sqlalchemy.url", url)
@@ -2508,7 +2701,9 @@ class TestCdU84yMigrationRoundTrip:
             assert [r[0] for r in rows] == ["01HWA00000000000000000MS0P"]
 
             # And the restored unique landed — inserting a collision now
-            # at the downgraded shape must fail.
+            # at the downgraded shape must fail. The cd-4btd FK is gone
+            # at this revision so a synthetic ``model_id`` lands
+            # without a registry row.
             with (
                 engine.begin() as conn,
                 pytest.raises(IntegrityError),
@@ -2769,3 +2964,341 @@ class TestCdWjplMigrationRoundTrip:
             assert row[4] == "ok"
         finally:
             engine.dispose()
+
+
+class TestCd4btdMigrationRoundTrip:
+    """cd-4btd migration lands cleanly, reverses, and re-applies.
+
+    Mirrors the cd-u84y / cd-wjpl round-trip smoke: scratch SQLite
+    file, ``alembic upgrade head``, introspect the new tables + the
+    promoted FK on ``model_assignment.model_id``, ``downgrade -1``
+    to restore the cd-kgcc shape (no registry trio, soft-reference
+    ``model_id``), then re-upgrade to prove reversibility +
+    idempotence.
+
+    SQLite only — the cross-backend structural parity gate lives in
+    ``tests/integration/test_schema_parity.py`` (PG shard via
+    ``CREWDAY_TEST_DB=postgres``).
+    """
+
+    _REVISION_ID: str = "c0d2e4f6a8b1"
+    _PREVIOUS_REVISION_ID: str = "b9c1e3f5a7b9"
+
+    @staticmethod
+    def _alembic_ini() -> Path:
+        return Path(__file__).resolve().parents[2] / "alembic.ini"
+
+    @staticmethod
+    @contextmanager
+    def _override_database_url(url: str) -> Iterator[None]:
+        original = os.environ.get("CREWDAY_DATABASE_URL")
+        os.environ["CREWDAY_DATABASE_URL"] = url
+        from app.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            yield
+        finally:
+            if original is None:
+                os.environ.pop("CREWDAY_DATABASE_URL", None)
+            else:
+                os.environ["CREWDAY_DATABASE_URL"] = original
+            get_settings.cache_clear()
+
+    def test_upgrade_lands_registry_tables_and_fk(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Upgrade lands the three tables and the FK on ``model_id``."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-4btd-mig") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+
+            insp = inspect(engine)
+            tables = set(insp.get_table_names())
+            for added in ("llm_provider", "llm_model", "llm_provider_model"):
+                assert added in tables, f"{added} missing after upgrade"
+
+            # FK promoted from soft reference to a real edge.
+            fks = {
+                tuple(fk["constrained_columns"]): fk
+                for fk in insp.get_foreign_keys("model_assignment")
+            }
+            assert fks[("model_id",)]["referred_table"] == "llm_provider_model"
+            assert fks[("model_id",)]["options"].get("ondelete") == "RESTRICT"
+        finally:
+            engine.dispose()
+
+    def test_downgrade_reverses_registry_tables_and_fk(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Downgrade -1 drops the FK and the three tables."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-4btd-mig-down") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+
+            insp = inspect(engine)
+            tables = set(insp.get_table_names())
+            for absent in ("llm_provider", "llm_model", "llm_provider_model"):
+                assert absent not in tables, f"{absent} still present after downgrade"
+
+            # FK gone → soft reference shape restored.
+            fks = {
+                tuple(fk["constrained_columns"]): fk
+                for fk in insp.get_foreign_keys("model_assignment")
+            }
+            assert ("model_id",) not in fks
+        finally:
+            engine.dispose()
+
+    def test_upgrade_after_downgrade_is_idempotent(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """upgrade → downgrade → upgrade cycles clean."""
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+
+        from app.adapters.db.session import make_engine
+
+        db_path = tmp_path_factory.mktemp("cd-4btd-mig-cycle") / "mig.db"
+        url = f"sqlite:///{db_path}"
+        engine = make_engine(url)
+        try:
+            with self._override_database_url(url):
+                cfg = AlembicConfig(str(self._alembic_ini()))
+                cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(cfg, "head")
+                command.downgrade(cfg, self._PREVIOUS_REVISION_ID)
+                command.upgrade(cfg, self._REVISION_ID)
+
+            insp = inspect(engine)
+            tables = set(insp.get_table_names())
+            assert "llm_provider_model" in tables
+            fks = {
+                tuple(fk["constrained_columns"]): fk
+                for fk in insp.get_foreign_keys("model_assignment")
+            }
+            assert fks[("model_id",)]["referred_table"] == "llm_provider_model"
+        finally:
+            engine.dispose()
+
+
+class TestRegistryShape:
+    """The cd-4btd registry tables match §11's column / FK / unique shape."""
+
+    def test_llm_provider_columns(self, engine: Engine) -> None:
+        cols = {c["name"]: c for c in inspect(engine).get_columns("llm_provider")}
+        expected = {
+            "id",
+            "name",
+            "provider_type",
+            "api_endpoint",
+            "api_key_envelope_ref",
+            "default_model",
+            "timeout_s",
+            "requests_per_minute",
+            "priority",
+            "is_enabled",
+            "created_at",
+            "updated_at",
+            "updated_by_user_id",
+        }
+        assert set(cols) == expected
+        nullable = {
+            "api_endpoint",
+            "api_key_envelope_ref",
+            "default_model",
+            "updated_by_user_id",
+        }
+        for col in nullable:
+            assert cols[col]["nullable"] is True, f"{col} must be NULLABLE"
+        for notnull in expected - nullable:
+            assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
+
+    def test_llm_provider_fk_user_set_null(self, engine: Engine) -> None:
+        """Editor user FK SET NULL — registry survives a user delete."""
+        fks = {
+            tuple(fk["constrained_columns"]): fk
+            for fk in inspect(engine).get_foreign_keys("llm_provider")
+        }
+        assert fks[("updated_by_user_id",)]["referred_table"] == "user"
+        assert fks[("updated_by_user_id",)]["options"].get("ondelete") == "SET NULL"
+
+    def test_llm_provider_unique_name(self, engine: Engine) -> None:
+        """Display name is unique — admin UI can't show two providers
+        with the same label."""
+        insp = inspect(engine)
+        uqs = insp.get_unique_constraints("llm_provider")
+        assert any(uq["column_names"] == ["name"] for uq in uqs)
+
+    def test_llm_model_columns(self, engine: Engine) -> None:
+        cols = {c["name"]: c for c in inspect(engine).get_columns("llm_model")}
+        expected = {
+            "id",
+            "canonical_name",
+            "display_name",
+            "vendor",
+            "capabilities",
+            "context_window",
+            "max_output_tokens",
+            "is_active",
+            "price_source",
+            "price_source_model_id",
+            "notes",
+            "created_at",
+            "updated_at",
+            "updated_by_user_id",
+        }
+        assert set(cols) == expected
+
+    def test_llm_model_unique_canonical_name(self, engine: Engine) -> None:
+        insp = inspect(engine)
+        uqs = insp.get_unique_constraints("llm_model")
+        assert any(uq["column_names"] == ["canonical_name"] for uq in uqs)
+
+    def test_llm_provider_model_columns(self, engine: Engine) -> None:
+        cols = {c["name"]: c for c in inspect(engine).get_columns("llm_provider_model")}
+        expected = {
+            "id",
+            "provider_id",
+            "model_id",
+            "api_model_id",
+            "input_cost_per_million",
+            "output_cost_per_million",
+            "fixed_cost_per_call_usd",
+            "max_tokens_override",
+            "temperature_override",
+            "supports_system_prompt",
+            "supports_temperature",
+            "reasoning_effort",
+            "extra_api_params",
+            "price_source_override",
+            "price_source_model_id_override",
+            "price_last_synced_at",
+            "is_enabled",
+            "created_at",
+            "updated_at",
+        }
+        assert set(cols) == expected
+
+    def test_llm_provider_model_fks_restrict(self, engine: Engine) -> None:
+        """``provider_id`` / ``model_id`` ON DELETE RESTRICT —
+        half-deleting the registry under live assignments is a hard
+        error, not a silent loss."""
+        fks = {
+            tuple(fk["constrained_columns"]): fk
+            for fk in inspect(engine).get_foreign_keys("llm_provider_model")
+        }
+        assert fks[("provider_id",)]["referred_table"] == "llm_provider"
+        assert fks[("provider_id",)]["options"].get("ondelete") == "RESTRICT"
+        assert fks[("model_id",)]["referred_table"] == "llm_model"
+        assert fks[("model_id",)]["options"].get("ondelete") == "RESTRICT"
+
+    def test_llm_provider_model_unique_pair(self, engine: Engine) -> None:
+        """One row per ``(provider_id, model_id)`` — two rows would
+        force the resolver to pick at random."""
+        insp = inspect(engine)
+        uqs = insp.get_unique_constraints("llm_provider_model")
+        assert any(uq["column_names"] == ["provider_id", "model_id"] for uq in uqs)
+
+    def test_registry_tables_not_workspace_scoped(self, engine: Engine) -> None:
+        """The three registry tables MUST NOT have a ``workspace_id``
+        column — they're deployment-scope and shared across
+        workspaces."""
+        for table in ("llm_provider", "llm_model", "llm_provider_model"):
+            cols = {c["name"] for c in inspect(engine).get_columns(table)}
+            assert "workspace_id" not in cols, (
+                f"{table} has a workspace_id — registry must be deployment-scope"
+            )
+
+
+class TestRegistryFkProtect:
+    """The cd-4btd FK on ``model_assignment.model_id`` enforces
+    RESTRICT semantics."""
+
+    def test_model_assignment_requires_existing_provider_model(
+        self, db_session: Session
+    ) -> None:
+        """Inserting an assignment with an unknown ``model_id`` fails
+        the FK at flush — operators can't strand a workspace by
+        pointing at a non-existent registry row."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="ma-fk@example.com",
+            display="MaFk",
+            slug="ma-fk-ws",
+            name="MaFkWs",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            row = ModelAssignment(
+                id="01HWA00000000000000000MAFK",
+                workspace_id=workspace.id,
+                capability="staff_chat",
+                # ULID with no matching ``llm_provider_model.id`` row.
+                model_id="01HWA0000000000000NOMATCH",
+                provider="openrouter",
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+        finally:
+            db_session.rollback()
+            reset_current(ctx_token)
+
+    def test_provider_model_delete_blocked_under_assignment(
+        self, db_session: Session
+    ) -> None:
+        """Deleting a registry row that an assignment still points at
+        raises IntegrityError on flush — RESTRICT semantics."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="ma-rest@example.com",
+            display="MaRest",
+            slug="ma-rest-ws",
+            name="MaRestWs",
+        )
+        ctx_token = set_current(_ctx_for(workspace, user.id))
+        try:
+            row = ModelAssignment(
+                id="01HWA00000000000000000MARS",
+                workspace_id=workspace.id,
+                capability="staff_chat",
+                model_id="01HWA00000000000000000MDLA",
+                provider="openrouter",
+                created_at=_PINNED,
+            )
+            db_session.add(row)
+            db_session.flush()
+
+            # ``MDLA`` is the autouse-seeded ``llm_provider_model``
+            # row; deleting it under the live assignment must fail.
+            target = db_session.get(LlmProviderModel, "01HWA00000000000000000MDLA")
+            assert target is not None
+            db_session.delete(target)
+            with pytest.raises(IntegrityError):
+                db_session.flush()
+        finally:
+            db_session.rollback()
+            reset_current(ctx_token)
