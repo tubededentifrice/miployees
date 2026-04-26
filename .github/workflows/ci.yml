@@ -21,14 +21,14 @@
 #                    (ubuntu-latest) ships Docker preinstalled.
 #   * e2e          — pytest tests/e2e against the dev stack (compose
 #                    bring-up + Playwright Chromium/WebKit). Single
-#                    Python (3.12) — browser tests don't benefit from
+#                    Python (3.14) — browser tests don't benefit from
 #                    a version matrix and CI minutes are precious.
 #                    Uploads tests/e2e/_artifacts and tests/e2e/_diff
 #                    on failure for post-mortem.
 #
-# Matrix over Python 3.12 and 3.13 on every job except e2e.
+# Matrix over Python 3.14 on every job except e2e.
 # integration additionally matrices database = [sqlite, postgres]
-# (4 shards total on that job).
+# (2 shards total on that job).
 
 name: CI
 
@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -69,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -99,7 +99,7 @@ jobs:
           cache-dependency-glob: uv.lock
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install deps
         run: uv sync --group dev
       - name: lint-imports
@@ -112,7 +112,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -132,7 +132,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.14"]
         database: [sqlite, postgres]
     steps:
       - uses: actions/checkout@v4
@@ -180,7 +180,7 @@ jobs:
     # blocking from day one — if the gate flags a regression on the
     # narrow set, the PR doesn't merge.
     #
-    # Single Python (3.12) — schemathesis is HTTP-out-of-process so
+    # Single Python (3.14) — schemathesis is HTTP-out-of-process so
     # the version matrix that lint/type/unit run buys nothing here.
     # Budget per §17 is < 5 min; the runner caps at
     # ``--max-examples=20`` per operation, well inside that.
@@ -193,7 +193,7 @@ jobs:
           cache-dependency-glob: uv.lock
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install deps
         run: uv sync --group dev
       - name: schemathesis (contract sweep)
@@ -220,7 +220,7 @@ jobs:
           cache-dependency-glob: uv.lock
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install deps
         run: uv sync --group dev
       - name: Cache Playwright browsers

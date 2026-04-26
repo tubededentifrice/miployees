@@ -34,12 +34,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.audit.models import AuditLog
+from app.adapters.db.identity.models import ApiToken, User
 from app.adapters.db.identity.models import Session as SessionRow
-from app.adapters.db.identity.models import User
 from app.api.deps import db_session as db_session_dep
 from app.api.v1.auth import logout as logout_module
 from app.api.v1.auth import me as me_module
@@ -130,9 +130,8 @@ def client(
     # Sweep committed rows so sibling integration tests see a clean
     # slate. Scoped to the families this test touches.
     with session_factory() as s:
-        for table_model in (SessionRow, User, AuditLog):
-            for row in s.scalars(select(table_model)).all():
-                s.delete(row)
+        for table_model in (SessionRow, ApiToken, AuditLog, User):
+            s.execute(delete(table_model))
         s.commit()
 
 
@@ -150,10 +149,10 @@ def seed_user(session_factory: sessionmaker[Session]) -> Iterator[str]:
         s.commit()
     yield user_id
     with session_factory() as s:
-        u = s.get(User, user_id)
-        if u is not None:
-            s.delete(u)
-            s.commit()
+        s.execute(delete(SessionRow).where(SessionRow.user_id == user_id))
+        s.execute(delete(ApiToken).where(ApiToken.user_id == user_id))
+        s.execute(delete(User).where(User.id == user_id))
+        s.commit()
 
 
 # Pinned UA + Accept-Language the test client stamps onto every

@@ -256,7 +256,7 @@ Plain text to the user; CLI handles styling.
 
 ## Application-specific notes
 
-- **Python 3.12+** for all server code.
+- **Python 3.14+** for all server code.
 - **SQLite default; Postgres 15+ supported** — CI runs both. Use
   portable SQL or SQLAlchemy idioms.
 - **React frontend.** Mocks (and the upcoming production frontend)

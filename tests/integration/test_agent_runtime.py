@@ -76,8 +76,6 @@ def _ensure_registered() -> None:
         "agent_token",
         "chat_channel",
         "chat_message",
-        "api_token",
-        "user",
     ):
         registry.register(table)
 

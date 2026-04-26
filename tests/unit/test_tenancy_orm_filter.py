@@ -95,10 +95,13 @@ _CTX_A = WorkspaceContext(
 
 
 @pytest.fixture
-def engine() -> Engine:
+def engine() -> Iterator[Engine]:
     eng = make_engine("sqlite:///:memory:")
     _Base.metadata.create_all(eng)
-    return eng
+    try:
+        yield eng
+    finally:
+        eng.dispose()
 
 
 @pytest.fixture

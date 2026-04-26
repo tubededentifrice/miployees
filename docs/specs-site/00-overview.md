@@ -81,7 +81,7 @@ proxies.
 - No Tailwind, no utility classes, no inline `style=""`. Same rule
   as the app — see AGENTS.md "Application-specific notes".
 
-**Backend** — FastAPI (Python 3.12+), SQLite default, optional
+**Backend** — FastAPI (Python 3.14+), SQLite default, optional
 Postgres.
 
 - Same `uv` / `ruff` / `mypy --strict` / `pytest` toolchain as the

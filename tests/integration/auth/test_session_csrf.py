@@ -23,7 +23,7 @@ import pytest
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, status
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.identity.models import Session as SessionRow
@@ -270,7 +270,8 @@ class TestSessionEndToEnd:
                 headers={CSRF_HEADER_NAME: csrf},
             )
             assert r.status_code == 200
-            original_expires = datetime.fromisoformat(r.json()["expires_at"])
+            login_body = r.json()
+            original_expires = datetime.fromisoformat(login_body["expires_at"])
 
             # Advance past the 3.5-day halflife (5 days in).
             now_box["now"] = start + timedelta(days=5)
@@ -279,7 +280,7 @@ class TestSessionEndToEnd:
 
             # Row's expires_at should now be at ``now + 7 days``.
             with session_factory() as s:
-                row = s.scalars(select(SessionRow)).one()
+                row = s.get_one(SessionRow, login_body["session_id"])
                 assert _as_utc(row.expires_at) > original_expires
                 assert _as_utc(row.expires_at) == now_box["now"] + timedelta(days=7)
 

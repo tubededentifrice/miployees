@@ -214,7 +214,8 @@ def is_reachable(api_url: str, *, timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(f"{api_url}/livez", timeout=timeout) as resp:
             status = int(resp.status)
-    except (urllib.error.URLError, ConnectionError, OSError):
+            resp.read()
+    except urllib.error.URLError, ConnectionError, OSError:
         return False
     return 200 <= status < 300
 
@@ -235,6 +236,7 @@ def wait_for_http(api_url: str, *, deadline_s: float = 15.0) -> None:
         try:
             with urllib.request.urlopen(f"{api_url}/livez", timeout=2) as resp:
                 if 200 <= resp.status < 300:
+                    resp.read()
                     return
         except (urllib.error.URLError, ConnectionError, OSError) as exc:
             last_exc = exc

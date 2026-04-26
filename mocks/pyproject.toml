@@ -2,7 +2,7 @@
 name = "crewday-mocks"
 version = "0.0.1"
 description = "Disposable UI mocks for crewday — not production code."
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

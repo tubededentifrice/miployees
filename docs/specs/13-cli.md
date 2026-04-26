@@ -20,7 +20,7 @@ See §11 "The agent-first invariant" for the broader principle and
 
 ## Distribution
 
-- Python 3.12+; installable via `pipx install crewday` (preferred)
+- Python 3.14+; installable via `pipx install crewday` (preferred)
   or `uvx crewday`.
 - Single wheel, no native deps.
 - Static binary via `pyapp` for macOS/Linux/Windows (optional, v1.1).

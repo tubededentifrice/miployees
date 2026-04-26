@@ -230,9 +230,10 @@ class TestSchemathesisCatchesBrokenHandler:
                     with urllib.request.urlopen(
                         f"http://127.0.0.1:{free_port}/openapi.json", timeout=1
                     ) as resp:
+                        resp.read()
                         if resp.status == 200:
                             break
-                except (urllib.error.URLError, ConnectionError):
+                except urllib.error.URLError, ConnectionError:
                     pass
                 if time.monotonic() > deadline:
                     out, err = uvicorn_proc.communicate(timeout=2)
@@ -267,10 +268,10 @@ class TestSchemathesisCatchesBrokenHandler:
         finally:
             uvicorn_proc.terminate()
             try:
-                uvicorn_proc.wait(timeout=5)
+                uvicorn_proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 uvicorn_proc.kill()
-                uvicorn_proc.wait(timeout=5)
+                uvicorn_proc.communicate(timeout=5)
 
         assert sch_proc.returncode != 0, (
             "schemathesis exited 0 on a deliberately broken handler — "

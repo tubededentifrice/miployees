@@ -215,7 +215,10 @@ class TestSchedulerLifespanInternal:
         # Do NOT use ``with TestClient`` here — no lifespan means
         # no scheduler start, so the row stays missing.
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/readyz")
+        try:
+            resp = client.get("/readyz")
+        finally:
+            client.close()
         assert resp.status_code == 503
         row = next(c for c in resp.json()["checks"] if c["check"] == "worker_heartbeat")
         assert row["detail"] == "no_heartbeat"

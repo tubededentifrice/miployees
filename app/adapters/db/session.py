@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import weakref
 from types import TracebackType
 
 from sqlalchemy import Engine, create_engine, event, make_url
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import Pool, StaticPool
 
 from app.adapters.db.ports import DbSession
 from app.config import get_settings
@@ -101,9 +102,18 @@ def make_engine(url: str | None = None) -> Engine:
         else:
             engine = create_engine(normalised, connect_args=connect_args, future=True)
         _enable_sqlite_foreign_keys(engine)
-        return engine
+        return _dispose_pool_on_gc(engine)
 
-    return create_engine(normalised, future=True)
+    return _dispose_pool_on_gc(create_engine(normalised, future=True))
+
+
+def _dispose_pool_on_gc(engine: Engine) -> Engine:
+    weakref.finalize(engine, _dispose_pool, engine.pool)
+    return engine
+
+
+def _dispose_pool(pool: Pool) -> None:
+    pool.dispose()
 
 
 def _enable_sqlite_foreign_keys(engine: Engine) -> None:

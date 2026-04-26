@@ -16,7 +16,7 @@ $5/mo 1 vCPU / 1 GB RAM VPS.
 
 ### Image
 
-- Base: `python:3.12-slim-bookworm` with digest pin.
+- Base: `python:3.14-slim` with digest pin.
 - **Runs as a non-root user.** The Dockerfile creates
   `crewday:10001` (fixed uid/gid, no shell, no login) and ends
   with `USER crewday` so every process in the image — server,

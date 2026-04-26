@@ -49,6 +49,8 @@ from webauthn.helpers.structs import (
 from app.adapters.db.audit.models import AuditLog
 from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.identity.models import (
+    ApiToken,
+    BreakGlassCode,
     MagicLinkNonce,
     PasskeyCredential,
     User,
@@ -56,7 +58,7 @@ from app.adapters.db.identity.models import (
 from app.adapters.db.identity.models import (
     Session as AuthSession,
 )
-from app.adapters.db.workspace.models import Workspace
+from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.api.deps import db_session as _db_session_dep
 from app.api.v1.auth.recovery import build_recovery_router
 from app.auth import passkey
@@ -129,6 +131,11 @@ def _stub_passkey_verifier(
 
     monkeypatch.setattr(passkey, "_verify_or_raise", _fake_verify)
     return credential_id
+
+
+def _workspace_slug(workspace_id: str) -> str:
+    """Return a slug that remains unique under parallel test execution."""
+    return f"ws-{workspace_id.lower()}"
 
 
 # ---------------------------------------------------------------------------
@@ -224,16 +231,18 @@ def client(
         # Ordering deletes FK-children first also mirrors how a real
         # tenant hard-delete would run.
         for table_model in (
+            BreakGlassCode,
             PasskeyCredential,
             AuthSession,
+            ApiToken,
             MagicLinkNonce,
             RoleGrant,
-            User,
+            UserWorkspace,
             Workspace,
+            User,
             AuditLog,
         ):
-            for row in s.scalars(select(table_model)).all():
-                s.delete(row)
+            s.execute(delete(table_model))
         s.commit()
 
 
@@ -257,7 +266,7 @@ def _seed_user_with_state(
         s.add(
             Workspace(
                 id=workspace_id,
-                slug=f"ws-{workspace_id[:8].lower()}",
+                slug=_workspace_slug(workspace_id),
                 name="Placeholder",
                 plan="free",
                 quota_json={},
@@ -575,7 +584,7 @@ def _seed_user_with_killswitch(
         s.add(
             Workspace(
                 id=workspace_id,
-                slug=f"ws-{workspace_id[:8].lower()}",
+                slug=_workspace_slug(workspace_id),
                 name="KillSwitch",
                 plan="free",
                 quota_json={},
@@ -627,7 +636,7 @@ class TestRecoveryStepUp:
             s.add(
                 Workspace(
                     id=workspace_id,
-                    slug=f"ws-{workspace_id[:8].lower()}",
+                    slug=_workspace_slug(workspace_id),
                     name="W",
                     plan="free",
                     quota_json={},
@@ -693,7 +702,7 @@ class TestRecoveryStepUp:
             s.add(
                 Workspace(
                     id=workspace_id,
-                    slug=f"ws-{workspace_id[:8].lower()}",
+                    slug=_workspace_slug(workspace_id),
                     name="MV",
                     plan="free",
                     quota_json={},
@@ -774,7 +783,7 @@ class TestRecoveryStepUp:
             s.add(
                 Workspace(
                     id=workspace_id,
-                    slug=f"ws-{workspace_id[:8].lower()}",
+                    slug=_workspace_slug(workspace_id),
                     name="WC",
                     plan="free",
                     quota_json={},
@@ -1034,7 +1043,7 @@ class TestRecoveryKillSwitch:
             s.add(
                 Workspace(
                     id=workspace_id,
-                    slug=f"ws-{workspace_id[:8].lower()}",
+                    slug=_workspace_slug(workspace_id),
                     name="KSManager",
                     plan="free",
                     quota_json={},

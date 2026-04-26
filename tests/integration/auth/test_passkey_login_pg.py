@@ -39,14 +39,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
+from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.structs import (
     CredentialDeviceType,
 )
 
 from app.adapters.db.audit.models import AuditLog
-from app.adapters.db.identity.models import PasskeyCredential, User, WebAuthnChallenge
+from app.adapters.db.identity.models import (
+    ApiToken,
+    PasskeyCredential,
+    User,
+    WebAuthnChallenge,
+)
 from app.adapters.db.identity.models import Session as SessionRow
 from app.api.deps import db_session as db_session_dep
 from app.api.v1.auth.passkey import build_login_router
@@ -54,6 +60,7 @@ from app.auth import passkey as passkey_module
 from app.auth._throttle import Throttle
 from app.auth.webauthn import RelyingParty, VerifiedAuthentication
 from app.config import Settings
+from app.util.ulid import new_ulid
 from tests.factories.identity import bootstrap_user
 
 pytestmark = pytest.mark.integration
@@ -157,16 +164,12 @@ def client(
     # Clean up committed rows so sibling integration tests see a clean
     # table. Strictly scoped: only the families this flow touches.
     with factory() as s:
-        for cred in s.scalars(select(PasskeyCredential)).all():
-            s.delete(cred)
-        for sess in s.scalars(select(SessionRow)).all():
-            s.delete(sess)
-        for challenge in s.scalars(select(WebAuthnChallenge)).all():
-            s.delete(challenge)
-        for user in s.scalars(select(User)).all():
-            s.delete(user)
-        for audit in s.scalars(select(AuditLog)).all():
-            s.delete(audit)
+        s.execute(delete(PasskeyCredential))
+        s.execute(delete(SessionRow))
+        s.execute(delete(ApiToken))
+        s.execute(delete(WebAuthnChallenge))
+        s.execute(delete(AuditLog))
+        s.execute(delete(User))
         s.commit()
 
 
@@ -181,8 +184,6 @@ def _verified(new_sign_count: int) -> VerifiedAuthentication:
 
 
 def _raw_assertion(credential_id: bytes) -> dict[str, Any]:
-    from webauthn.helpers import bytes_to_base64url
-
     return {
         "id": bytes_to_base64url(credential_id),
         "rawId": bytes_to_base64url(credential_id),
@@ -199,7 +200,11 @@ def _seed_credential(engine: Engine, sign_count: int = 1) -> tuple[str, bytes]:
     """Seed a user + passkey credential; return (user_id, credential_id)."""
     factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
     with factory() as s:
-        user = bootstrap_user(s, email="int@example.com", display_name="Int")
+        user = bootstrap_user(
+            s,
+            email=f"int-{new_ulid().lower()}@example.com",
+            display_name="Int",
+        )
         credential_id = b"\x77" * 32
         s.add(
             PasskeyCredential(
@@ -260,7 +265,9 @@ class TestLoginFullFlowIntegration:
         # Verify the row landed end-to-end.
         factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
         with factory() as s:
-            sessions = s.scalars(select(SessionRow)).all()
+            sessions = s.scalars(
+                select(SessionRow).where(SessionRow.user_id == user_id)
+            ).all()
             assert len(sessions) == 1
             assert sessions[0].user_id == user_id
 
@@ -272,7 +279,14 @@ class TestLoginFullFlowIntegration:
             assert s.scalars(select(WebAuthnChallenge)).first() is None
 
             # Assertion audit row lands.
-            actions = {a.action for a in s.scalars(select(AuditLog)).all()}
+            actions = {
+                a.action
+                for a in s.scalars(
+                    select(AuditLog).where(
+                        AuditLog.diff["user_id"].as_string() == user_id
+                    )
+                ).all()
+            }
             assert "passkey.assertion_ok" in actions
             assert "session.created" in actions
 
@@ -309,9 +323,21 @@ class TestLoginFullFlowIntegration:
         factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
         with factory() as s:
             # No session issued.
-            assert s.scalars(select(SessionRow)).first() is None
+            assert (
+                s.scalars(
+                    select(SessionRow).where(SessionRow.user_id == user_id)
+                ).first()
+                is None
+            )
             # The clone-detected audit row landed.
-            actions = {a.action for a in s.scalars(select(AuditLog)).all()}
+            credential_id_b64 = bytes_to_base64url(credential_id)
+            audit_rows = [
+                row
+                for row in s.scalars(select(AuditLog)).all()
+                if row.entity_id == credential_id_b64
+                or (isinstance(row.diff, dict) and row.diff.get("user_id") == user_id)
+            ]
+            actions = {a.action for a in audit_rows}
             assert "passkey.cloned_detected" in actions
             assert "session.created" not in actions
             # cd-qx1f: challenge row burned on failure via fresh UoW.
@@ -327,7 +353,10 @@ class TestLoginFullFlowIntegration:
             # credential revoke and must not regress.
             assert "session.invalidated" in actions
             revoked_row = s.scalars(
-                select(AuditLog).where(AuditLog.action == "passkey.auto_revoked")
+                select(AuditLog).where(
+                    AuditLog.action == "passkey.auto_revoked",
+                    AuditLog.diff["user_id"].as_string() == user_id,
+                )
             ).one()
             # diff carries the expected shape.
             assert revoked_row.diff["reason"] == "clone_detected"
@@ -349,7 +378,7 @@ class TestLoginFullFlowIntegration:
         row is written — there's no credential left to detect a clone
         against.
         """
-        _, credential_id = _seed_credential(engine, sign_count=10)
+        user_id, credential_id = _seed_credential(engine, sign_count=10)
 
         # First attempt — clone detected, credential hard-deleted.
         start1 = client.post("/api/v1/auth/passkey/login/start")
@@ -394,11 +423,17 @@ class TestLoginFullFlowIntegration:
             # — the second attempt did NOT re-enter the CloneDetected
             # branch because the credential row was gone.
             cloned = s.scalars(
-                select(AuditLog).where(AuditLog.action == "passkey.cloned_detected")
+                select(AuditLog).where(
+                    AuditLog.action == "passkey.cloned_detected",
+                    AuditLog.entity_id == bytes_to_base64url(credential_id),
+                )
             ).all()
             assert len(cloned) == 1
             revoked = s.scalars(
-                select(AuditLog).where(AuditLog.action == "passkey.auto_revoked")
+                select(AuditLog).where(
+                    AuditLog.action == "passkey.auto_revoked",
+                    AuditLog.diff["user_id"].as_string() == user_id,
+                )
             ).all()
             assert len(revoked) == 1
 
@@ -411,7 +446,12 @@ class TestLoginFullFlowIntegration:
         # Seed a user but no passkey credential.
         factory = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
         with factory() as s:
-            bootstrap_user(s, email="u@example.com", display_name="U")
+            user = bootstrap_user(
+                s,
+                email=f"u-{new_ulid().lower()}@example.com",
+                display_name="U",
+            )
+            user_id = user.id
             s.commit()
 
         start = client.post("/api/v1/auth/passkey/login/start")
@@ -433,6 +473,11 @@ class TestLoginFullFlowIntegration:
         assert resp.json()["detail"]["error"] == "invalid_credential"
 
         with factory() as s:
-            assert s.scalars(select(SessionRow)).first() is None
+            assert (
+                s.scalars(
+                    select(SessionRow).where(SessionRow.user_id == user_id)
+                ).first()
+                is None
+            )
             # cd-qx1f: challenge burned even though no credential matched.
             assert s.get(WebAuthnChallenge, challenge_id) is None

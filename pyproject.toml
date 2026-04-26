@@ -14,7 +14,7 @@ name = "crewday"
 version = "0.0.1"
 description = "crew.day — ops co-pilot for short-term-rental and small-hospitality teams."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "Apache-2.0" }
 dependencies = [
     "fastapi>=0.115",
@@ -160,7 +160,7 @@ dev = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py314"
 extend-exclude = ["mocks"]
 
 [tool.ruff.lint]
@@ -168,7 +168,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
 strict = true
-python_version = "3.12"
+python_version = "3.14"
 plugins = ["pydantic.mypy"]
 explicit_package_bases = true
 namespace_packages = true
@@ -391,16 +391,27 @@ ignore_imports = [
     # v1 stopgap (cd-8u5): ``app.domain.places.property_service``
     # reads :class:`Property` and :class:`PropertyWorkspace` from
     # ``app.adapters.db.places.models`` directly. Same Protocol-
-    # seam pattern as ``app.domain.tasks.templates``; tracked by
-    # cd-duv6 (extended scope) — drops once the places repositories
-    # land.
+    # seam pattern as ``app.domain.tasks.templates``. The
+    # membership / unit services below follow the same direct-model
+    # shape for role-grant membership and default-unit creation.
+    # Tracked by cd-duv6 (extended scope) — drops once the places
+    # repositories land.
     "app.domain.places.property_service -> app.adapters.db.places.models",
+    "app.domain.places.membership_service -> app.adapters.db.authz.models",
+    "app.domain.places.membership_service -> app.adapters.db.places.models",
+    "app.domain.places.membership_service -> app.authz.owners",
+    "app.domain.places.unit_service -> app.adapters.db.places.models",
     # v1 stopgap (cd-1ai): ``app.domain.stays.ical_service`` reads
     # :class:`IcalFeed` from ``app.adapters.db.stays.models`` directly.
-    # Same Protocol-seam pattern as the places / tasks stopgaps above;
-    # tracked by cd-duv6 (extended scope) — drops once the stays
-    # repositories land.
+    # Guest links and turnover generation still read the stays / places
+    # ORM rows directly for signed-link state and checkout-driven task
+    # generation. Same Protocol-seam pattern as the places / tasks
+    # stopgaps above; tracked by cd-duv6 (extended scope) — drops once
+    # the stays repositories land.
     "app.domain.stays.ical_service -> app.adapters.db.stays.models",
+    "app.domain.stays.guest_link_service -> app.adapters.db.stays.models",
+    "app.domain.stays.turnover_generator -> app.adapters.db.places.models",
+    "app.domain.stays.turnover_generator -> app.adapters.db.stays.models",
     # v1 stopgap (cd-whl): ``app.domain.time.shifts`` reads
     # :class:`Shift` + ``_SHIFT_SOURCE_VALUES`` from
     # ``app.adapters.db.time.models`` directly. Same Protocol-seam
@@ -432,6 +443,14 @@ ignore_imports = [
     # tracked by cd-duv6 (extended scope) — drops once the LLM
     # repositories land.
     "app.domain.llm.router -> app.adapters.db.llm.models",
+    # v1 stopgap (cd-9ghv): the agent runtime persists approval
+    # requests / tool audit detail through the LLM and messaging ORM
+    # rows directly. Same Protocol-seam pattern as the LLM router;
+    # tracked by cd-duv6 — drops once the agent runtime has repository
+    # ports.
+    "app.domain.agent.approval -> app.adapters.db.llm.models",
+    "app.domain.agent.runtime -> app.adapters.db.llm.models",
+    "app.domain.agent.runtime -> app.adapters.db.messaging.models",
     # v1 stopgap (cd-irng): ``app.domain.llm.budget`` reads
     # :class:`BudgetLedger` / :class:`LlmUsage` from
     # ``app.adapters.db.llm.models`` directly — the rolling 30-day
@@ -533,6 +552,11 @@ ignore_imports = [
     "app.domain.identity.user_workspace_refresh -> app.adapters.db.authz.models",
     "app.domain.identity.user_workspace_refresh -> app.adapters.db.places.models",
     "app.domain.identity.user_workspace_refresh -> app.adapters.db.workspace.models",
+    # v1 stopgap (cd-5ksz): payroll rules invoke the shared authz
+    # requirement helper; the transitive walk reaches deployment-admin
+    # ORM models. Same reasoning as the other ``-> app.authz``
+    # stopgaps above; tracked by cd-duv6.
+    "app.domain.payroll.rules -> app.authz",
 ]
 unmatched_ignore_imports_alerting = "none"
 

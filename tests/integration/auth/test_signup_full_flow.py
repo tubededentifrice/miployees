@@ -34,7 +34,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 from webauthn.helpers.structs import (
     AttestationFormat,
@@ -48,10 +48,14 @@ from app.adapters.db.authz.models import (
     RoleGrant,
 )
 from app.adapters.db.identity.models import (
+    ApiToken,
     PasskeyCredential,
     SignupAttempt,
     User,
     WebAuthnChallenge,
+)
+from app.adapters.db.identity.models import (
+    Session as AuthSession,
 )
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.api.deps import db_session as _db_session_dep
@@ -232,27 +236,29 @@ def client(
         _session_mod._default_engine = original_engine
         _session_mod._default_sessionmaker_ = original_factory
 
-    # Clean up committed rows so sibling integration tests see a
-    # clean table. Strictly scoped: only the ones we know this flow
-    # created.
+    # Clean up committed rows so sibling integration tests see a clean
+    # table. Delete children before parents so SQLAlchemy does not
+    # transiently null token/user FKs and violate shape checks.
     with factory() as s:
-        for workspace in s.scalars(select(Workspace)).all():
-            s.delete(workspace)
-        for user in s.scalars(select(User)).all():
-            s.delete(user)
-        for cred in s.scalars(select(PasskeyCredential)).all():
-            s.delete(cred)
-        for attempt in s.scalars(select(SignupAttempt)).all():
-            s.delete(attempt)
-        for challenge in s.scalars(select(WebAuthnChallenge)).all():
-            s.delete(challenge)
         from app.adapters.db.audit.models import AuditLog
         from app.adapters.db.identity.models import MagicLinkNonce
 
-        for nonce in s.scalars(select(MagicLinkNonce)).all():
-            s.delete(nonce)
-        for audit in s.scalars(select(AuditLog)).all():
-            s.delete(audit)
+        for table_model in (
+            PasskeyCredential,
+            AuthSession,
+            ApiToken,
+            WebAuthnChallenge,
+            MagicLinkNonce,
+            SignupAttempt,
+            PermissionGroupMember,
+            RoleGrant,
+            UserWorkspace,
+            PermissionGroup,
+            AuditLog,
+            Workspace,
+            User,
+        ):
+            s.execute(delete(table_model))
         s.commit()
 
 

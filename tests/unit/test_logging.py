@@ -36,7 +36,7 @@ def stream() -> io.StringIO:
 @pytest.fixture
 def configured_logger(
     stream: io.StringIO,
-) -> Generator[logging.Logger, None, None]:
+) -> Generator[logging.Logger]:
     """Root logger wired for JSON + redaction into ``stream``.
 
     We tear down the handler after each test so parallel tests don't

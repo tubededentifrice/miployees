@@ -1,7 +1,7 @@
 # crewday mocks — multi-stage build.
 #
 # Stage 1 (node:22-alpine) builds the Vite/React SPA under mocks/web.
-# Stage 2 (python:3.12-slim) runs FastAPI and serves the built dist/.
+# Stage 2 (python:3.14-slim) runs FastAPI and serves the built dist/.
 # Node is *not* present at runtime; the runtime image stays slim.
 
 # ── Stage 1: build the SPA ────────────────────────────────────────────

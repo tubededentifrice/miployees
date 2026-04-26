@@ -1228,7 +1228,7 @@ See §11 redaction details. Additional rules:
 - `osv-scanner` in CI; findings are blockers (§17).
 - Dependabot / Renovate for weekly PRs.
 - SBOM (CycloneDX) generated in release artifacts.
-- Container images built with Python 3.12 slim + pinned digests.
+- Container images built with Python 3.14 slim + pinned digests.
 - No `pip install` at runtime.
 
 ## Incident response

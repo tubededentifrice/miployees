@@ -18,11 +18,29 @@ See ``docs/specs/17-testing-quality.md``.
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import logging
+import socket
 from collections.abc import Callable, Iterator
 from typing import Protocol
 
 import pytest
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Close sockets third-party test helpers leave for interpreter teardown.
+
+    Docker/testcontainers occasionally leaves a client socket reachable
+    until xdist worker shutdown. Closing any still-open sockets after the
+    suite has finished prevents raw ``ResourceWarning`` noise without
+    affecting test execution.
+    """
+    del session, exitstatus
+    for obj in gc.get_objects():
+        if isinstance(obj, socket.socket) and obj.fileno() != -1:
+            with contextlib.suppress(OSError):
+                obj.close()
 
 
 class _SupportsLogFilter(Protocol):

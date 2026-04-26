@@ -103,7 +103,8 @@ def _app_reachable(app_url: str, *, timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(f"{app_url}/healthz", timeout=timeout) as resp:
             status = int(resp.status)
-    except (urllib.error.URLError, ConnectionError, OSError):
+            resp.read()
+    except urllib.error.URLError, ConnectionError, OSError:
         return False
     return 200 <= status < 300
 
@@ -138,16 +139,19 @@ def _readyz_failures(app_url: str, *, timeout: float = 2.0) -> list[str] | None:
             status = int(resp.status)
             payload_bytes = resp.read()
     except urllib.error.HTTPError as exc:
-        status = exc.code
-        payload_bytes = exc.read()
-    except (urllib.error.URLError, ConnectionError, OSError):
+        try:
+            status = exc.code
+            payload_bytes = exc.read()
+        finally:
+            exc.close()
+    except urllib.error.URLError, ConnectionError, OSError:
         return ["unreachable"]
 
     if 200 <= status < 300:
         return None
     try:
         payload = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
-    except (ValueError, UnicodeDecodeError):
+    except ValueError, UnicodeDecodeError:
         return [f"http_{status}"]
     if not isinstance(payload, dict):
         return [f"http_{status}"]
@@ -250,8 +254,11 @@ def _post_json(
             payload_bytes = resp.read()
             status = resp.status
     except urllib.error.HTTPError as exc:
-        payload_bytes = exc.read()
-        status = exc.code
+        try:
+            payload_bytes = exc.read()
+            status = exc.code
+        finally:
+            exc.close()
     payload = json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
     if not isinstance(payload, dict):
         raise AssertionError(f"POST {url} returned non-object JSON: {payload!r}")

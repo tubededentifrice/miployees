@@ -219,7 +219,7 @@ the driver sees tomorrow's airport run; the head of house sees everything.
 
 ## Constraints
 
-- **Language.** Python 3.12+ for server and CLI. TypeScript strict for
+- **Language.** Python 3.14+ for server and CLI. TypeScript strict for
   the React SPA (`mocks/web/`).
 - **Stack.** FastAPI + React (Vite, TypeScript strict) + hand-rolled CSS
   design system. No Tailwind, no Alpine, no Vue. SQLite default,

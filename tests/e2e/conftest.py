@@ -115,6 +115,7 @@ def dev_stack_ready(base_url: str) -> str:
     healthz = f"{base_url}/healthz"
     try:
         with urllib.request.urlopen(healthz, timeout=5) as resp:
+            resp.read()
             if resp.status != 200:
                 pytest.skip(
                     f"dev stack /healthz returned {resp.status}; "
