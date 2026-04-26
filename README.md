@@ -93,7 +93,12 @@ full list and rationale):
 - Native mobile apps
 - Real-time two-way chat between managers and employees (use comments + email)
 
+## Lines of Code over Time
+
+![LOC by language over time](docs/loc-by-language.svg)
+
+_Updated via `scripts/update-loc-chart.sh`._
+
 ## License
 
-Apache-2.0 (TBD — see
-[`docs/specs/00-overview.md`](docs/specs/00-overview.md) §"Licensing").
+Functional Source License 1.1 (ALv2 Future License) — see [`LICENSE.md`](LICENSE.md).
