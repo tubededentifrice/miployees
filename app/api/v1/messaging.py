@@ -46,6 +46,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.adapters.db.messaging.repositories import SqlAlchemyPushTokenRepository
 from app.api.deps import current_workspace_context, db_session
 from app.domain.messaging.push_tokens import (
     MAX_ENDPOINT_LEN,
@@ -223,7 +224,7 @@ def _cached_vapid_key(
     # not stall other workspaces' lookups; the worst-case outcome
     # is two concurrent misses both fetching the same value, which
     # is harmless.
-    value = get_vapid_public_key(session, ctx)
+    value = get_vapid_public_key(SqlAlchemyPushTokenRepository(session), ctx)
     with _vapid_cache_lock:
         _vapid_cache[ctx.workspace_id] = (
             now_monotonic + _VAPID_CACHE_TTL_SECONDS,
@@ -332,7 +333,7 @@ def build_messaging_router(
         """
         try:
             view = register(
-                session,
+                SqlAlchemyPushTokenRepository(session),
                 ctx,
                 endpoint=body.endpoint,
                 p256dh=body.keys.p256dh,
@@ -355,7 +356,7 @@ def build_messaging_router(
         session: _Db,
     ) -> Response:
         """Idempotent: returns 204 whether the row existed or not."""
-        unregister(session, ctx, endpoint=body.endpoint)
+        unregister(SqlAlchemyPushTokenRepository(session), ctx, endpoint=body.endpoint)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return r

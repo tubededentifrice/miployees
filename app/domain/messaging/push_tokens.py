@@ -15,7 +15,7 @@ Public surface:
   returns.
 * **Service functions** — :func:`register`, :func:`unregister`,
   :func:`get_vapid_public_key`, :func:`list_for_user`. Every function
-  takes ``session`` + :class:`~app.tenancy.WorkspaceContext` as its
+  takes ``repo`` + :class:`~app.tenancy.WorkspaceContext` as its
   first two positional arguments; the ``workspace_id`` and
   ``user_id`` default from ``ctx``, never from the caller's payload
   (v1 invariant §01).
@@ -35,6 +35,17 @@ the eventual push-delivery worker into a bounce amplifier. The
 scheme must be ``https``; userinfo / non-443 ports are rejected
 defensively; query strings are allowed because providers use them
 (e.g. FCM ``?auth=...``).
+
+**Architecture (cd-74pb).** The module talks to a
+:class:`~app.domain.messaging.ports.PushTokenRepository` Protocol —
+never to the SQLAlchemy model classes directly. The SA-backed
+concretion lives at
+:class:`app.adapters.db.messaging.repositories.SqlAlchemyPushTokenRepository`;
+unit tests inject a fake or wire the SA repo over an in-memory
+SQLite session. The repo also threads its open
+:class:`~sqlalchemy.orm.Session` through ``repo.session`` so the
+audit writer (``app.audit.write_audit``) — which still takes a
+concrete ``Session`` today — can keep using the same UoW.
 
 **Transaction boundary.** The service never calls
 ``session.commit()``; the caller's Unit-of-Work owns transaction
@@ -63,12 +74,9 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.adapters.db.messaging.models import PushToken
-from app.adapters.db.workspace.models import Workspace
 from app.audit import write_audit
+from app.domain.messaging.ports import PushTokenRepository, PushTokenRow
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
@@ -256,8 +264,16 @@ class PushTokenView:
 # ---------------------------------------------------------------------------
 
 
-def _row_to_view(row: PushToken) -> PushTokenView:
-    """Project a loaded :class:`PushToken` row into a read view."""
+def _row_to_view(row: PushTokenRow) -> PushTokenView:
+    """Project a seam-level :class:`PushTokenRow` into the public view.
+
+    The repo already returned an immutable, frozen value object; we
+    re-pack it into the public :class:`PushTokenView` shape so callers
+    keep the dataclass they were already typing against. ``p256dh``
+    / ``auth`` are dropped — the read view never exposes the
+    encryption material outside the row itself (those columns stay
+    in the DB and the audit writer's redaction seam).
+    """
     return PushTokenView(
         id=row.id,
         workspace_id=row.workspace_id,
@@ -365,29 +381,8 @@ def validate_endpoint(endpoint: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _find_existing(
-    session: Session,
-    ctx: WorkspaceContext,
-    *,
-    user_id: str,
-    endpoint: str,
-) -> PushToken | None:
-    """Return the existing ``(user_id, endpoint)`` row in this workspace or ``None``.
-
-    Scoped to ``ctx.workspace_id`` for tenant hygiene even though the
-    ORM tenant filter already applies — matches the defence-in-depth
-    pattern in :mod:`app.domain.time.shifts`.
-    """
-    stmt = select(PushToken).where(
-        PushToken.workspace_id == ctx.workspace_id,
-        PushToken.user_id == user_id,
-        PushToken.endpoint == endpoint,
-    )
-    return session.scalars(stmt).one_or_none()
-
-
 def register(
-    session: Session,
+    repo: PushTokenRepository,
     ctx: WorkspaceContext,
     *,
     endpoint: str,
@@ -417,9 +412,8 @@ def register(
 
     user_id = ctx.actor_id
 
-    existing = _find_existing(
-        session,
-        ctx,
+    existing = repo.find_by_user_endpoint(
+        workspace_id=ctx.workspace_id,
         user_id=user_id,
         endpoint=endpoint,
     )
@@ -435,23 +429,19 @@ def register(
         # page reload is not an interesting audit signal; a stream
         # of identical rows would dilute the ledger. The initial
         # subscribe is the audit-worthy event.
-        changed = False
-        if existing.p256dh != p256dh:
-            existing.p256dh = p256dh
-            changed = True
-        if existing.auth != auth:
-            existing.auth = auth
-            changed = True
-        if user_agent is not None and existing.user_agent != user_agent:
-            existing.user_agent = user_agent
-            changed = True
-        if changed:
-            session.flush()
-        return _row_to_view(existing)
+        refreshed = repo.update_keys(
+            workspace_id=ctx.workspace_id,
+            user_id=user_id,
+            endpoint=endpoint,
+            p256dh=p256dh,
+            auth=auth,
+            user_agent=user_agent,
+        )
+        return _row_to_view(refreshed)
 
     now = (clock if clock is not None else SystemClock()).now()
-    row = PushToken(
-        id=new_ulid(),
+    row = repo.insert(
+        token_id=new_ulid(),
         workspace_id=ctx.workspace_id,
         user_id=user_id,
         endpoint=endpoint,
@@ -459,14 +449,10 @@ def register(
         auth=auth,
         user_agent=user_agent,
         created_at=now,
-        last_used_at=None,
     )
-    session.add(row)
-    session.flush()
 
-    view = _row_to_view(row)
     write_audit(
-        session,
+        repo.session,
         ctx,
         entity_kind="push_token",
         entity_id=row.id,
@@ -483,11 +469,11 @@ def register(
         },
         clock=clock,
     )
-    return view
+    return _row_to_view(row)
 
 
 def unregister(
-    session: Session,
+    repo: PushTokenRepository,
     ctx: WorkspaceContext,
     *,
     endpoint: str,
@@ -504,9 +490,8 @@ def unregister(
     un-registration is strictly self-service.
     """
     user_id = ctx.actor_id
-    existing = _find_existing(
-        session,
-        ctx,
+    existing = repo.find_by_user_endpoint(
+        workspace_id=ctx.workspace_id,
         user_id=user_id,
         endpoint=endpoint,
     )
@@ -516,11 +501,14 @@ def unregister(
 
     removed_id = existing.id
     removed_host = urlparse(existing.endpoint).hostname
-    session.delete(existing)
-    session.flush()
+    repo.delete(
+        workspace_id=ctx.workspace_id,
+        user_id=user_id,
+        endpoint=endpoint,
+    )
 
     write_audit(
-        session,
+        repo.session,
         ctx,
         entity_kind="push_token",
         entity_id=removed_id,
@@ -534,38 +522,29 @@ def unregister(
 
 
 def get_vapid_public_key(
-    session: Session,
+    repo: PushTokenRepository,
     ctx: WorkspaceContext,
 ) -> str:
     """Return the VAPID public key for the caller's workspace.
 
-    Reads ``workspace.settings_json[SETTINGS_KEY_VAPID_PUBLIC]``.
-    Raises :class:`VapidNotConfigured` when the key is absent or
-    not a non-empty string — the caller's SPA cannot subscribe
-    without it and the operator needs to provision the keypair.
+    Reads ``workspace.settings_json[SETTINGS_KEY_VAPID_PUBLIC]``
+    through the repo seam. Raises :class:`VapidNotConfigured` when
+    the key is absent, the value is empty, the settings payload is
+    not a dict, or the workspace row itself is missing — the four
+    shapes are operationally identical (operator must provision the
+    keypair) and a unified error keeps the caller free of model
+    knowledge.
 
     Caching is NOT done at this layer. The router caches for 5 min
     per workspace against the monotonic clock; caching here would
     make a rotation-via-CLI invisible to in-flight sessions that
     already hold a domain-level cached value.
     """
-    stmt = select(Workspace.settings_json).where(Workspace.id == ctx.workspace_id)
-    payload = session.scalars(stmt).one_or_none()
-    if payload is None:
-        # The ctx should not exist without a workspace row (the
-        # tenancy middleware resolves slug → id from the same table);
-        # treat as not-configured for a stable caller error surface.
-        raise VapidNotConfigured(f"workspace {ctx.workspace_id!r} has no settings row")
-    # ``settings_json`` is a flat dict — see
-    # :class:`~app.adapters.db.workspace.models.Workspace` docstring.
-    # Defensive isinstance per the recovery-helper pattern in
-    # ``app/auth/recovery.py``.
-    if not isinstance(payload, dict):
-        raise VapidNotConfigured(
-            f"workspace {ctx.workspace_id!r} settings payload is not a dict"
-        )
-    value = payload.get(SETTINGS_KEY_VAPID_PUBLIC)
-    if not isinstance(value, str) or not value:
+    value = repo.get_workspace_vapid_public_key(
+        workspace_id=ctx.workspace_id,
+        settings_key=SETTINGS_KEY_VAPID_PUBLIC,
+    )
+    if value is None:
         raise VapidNotConfigured(
             f"workspace {ctx.workspace_id!r} is missing setting "
             f"{SETTINGS_KEY_VAPID_PUBLIC!r}"
@@ -574,7 +553,7 @@ def get_vapid_public_key(
 
 
 def list_for_user(
-    session: Session,
+    repo: PushTokenRepository,
     ctx: WorkspaceContext,
     *,
     user_id: str | None = None,
@@ -594,13 +573,8 @@ def list_for_user(
         # router maps to 403.
         raise PermissionError("listing another user's push tokens is not supported")
 
-    stmt = (
-        select(PushToken)
-        .where(
-            PushToken.workspace_id == ctx.workspace_id,
-            PushToken.user_id == target_user_id,
-        )
-        .order_by(PushToken.created_at.asc(), PushToken.id.asc())
+    rows = repo.list_for_user(
+        workspace_id=ctx.workspace_id,
+        user_id=target_user_id,
     )
-    rows = session.scalars(stmt).all()
     return tuple(_row_to_view(row) for row in rows)

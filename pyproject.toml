@@ -424,17 +424,6 @@ ignore_imports = [
     # repositories land.
     "app.domain.messaging.notifications -> app.adapters.db.messaging.models",
     "app.domain.messaging.notifications -> app.adapters.db.identity.models",
-    # v1 stopgap (cd-0bnz): ``app.domain.messaging.push_tokens``
-    # reads :class:`PushToken` from
-    # ``app.adapters.db.messaging.models`` (register / list / revoke
-    # rows) and :class:`Workspace` from
-    # ``app.adapters.db.workspace.models`` (settings_json caps for
-    # per-tenant token limits). Same Protocol-seam pattern as the
-    # notifications service above; tracked by cd-duv6 (extended
-    # scope) — drops once the messaging + workspace repositories
-    # land.
-    "app.domain.messaging.push_tokens -> app.adapters.db.messaging.models",
-    "app.domain.messaging.push_tokens -> app.adapters.db.workspace.models",
     # v1 stopgap (cd-k0qf): ``app.domain.llm.router`` reads
     # :class:`ModelAssignment` / :class:`LlmCapabilityInheritance`
     # from ``app.adapters.db.llm.models`` directly. Same Protocol-

@@ -45,6 +45,7 @@ from app.adapters.db.audit.models import AuditLog
 from app.adapters.db.base import Base
 from app.adapters.db.identity.models import User, canonicalise_email
 from app.adapters.db.messaging.models import PushToken
+from app.adapters.db.messaging.repositories import SqlAlchemyPushTokenRepository
 from app.adapters.db.session import make_engine
 from app.adapters.db.workspace.models import Workspace
 from app.domain.messaging.push_tokens import (
@@ -152,6 +153,18 @@ def _bootstrap_user(s: Session, *, email: str, display_name: str) -> str:
     return user_id
 
 
+def _repo(session: Session) -> SqlAlchemyPushTokenRepository:
+    """Wrap ``session`` in the SA-backed ``PushTokenRepository``.
+
+    The domain services accept the repository Protocol (cd-74pb); the
+    unit tests wire the production SA-backed concretion so the
+    in-memory SQLite round-trip is exercised on every assertion. A
+    pure fake would also work, but anchoring against the real adapter
+    keeps the seam honest end-to-end.
+    """
+    return SqlAlchemyPushTokenRepository(session)
+
+
 def _ctx(*, workspace_id: str, actor_id: str) -> WorkspaceContext:
     return WorkspaceContext(
         workspace_id=workspace_id,
@@ -189,7 +202,7 @@ class TestRegister:
         clock = FrozenClock(_PINNED)
 
         view = register(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("alpha"),
             p256dh="p256dh-test",
@@ -235,7 +248,7 @@ class TestRegister:
         clock = FrozenClock(_PINNED)
 
         first = register(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("idem"),
             p256dh="p1",
@@ -244,7 +257,7 @@ class TestRegister:
             clock=clock,
         )
         second = register(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("idem"),
             # Browser rotated the encryption material — the upsert
@@ -288,7 +301,7 @@ class TestRegister:
 
         with pytest.raises(EndpointNotAllowed):
             register(
-                session,
+                _repo(session),
                 ctx,
                 endpoint="https://attacker.example/push/sink",
                 p256dh="p",
@@ -309,7 +322,7 @@ class TestRegister:
 
         with pytest.raises(EndpointSchemeInvalid):
             register(
-                session,
+                _repo(session),
                 ctx,
                 endpoint="http://fcm.googleapis.com/fcm/send/xyz",
                 p256dh="p",
@@ -325,7 +338,7 @@ class TestRegister:
 
         with pytest.raises(EndpointSchemeInvalid):
             register(
-                session,
+                _repo(session),
                 ctx,
                 endpoint="https://user:pass@fcm.googleapis.com/fcm/send/x",
                 p256dh="p",
@@ -341,7 +354,7 @@ class TestRegister:
 
         with pytest.raises(EndpointSchemeInvalid):
             register(
-                session,
+                _repo(session),
                 ctx,
                 endpoint="https://fcm.googleapis.com:8443/fcm/send/x",
                 p256dh="p",
@@ -364,7 +377,7 @@ class TestRegister:
         clock = FrozenClock(_PINNED)
 
         view = register(
-            session,
+            _repo(session),
             ctx,
             endpoint="https://fcm.googleapis.com:443/fcm/send/x",
             p256dh="p",
@@ -389,7 +402,7 @@ class TestRegister:
 
         with pytest.raises(EndpointSchemeInvalid):
             register(
-                session,
+                _repo(session),
                 ctx,
                 endpoint="https://fcm.googleapis.com/fcm/send/x#frag",
                 p256dh="p",
@@ -406,7 +419,7 @@ class TestRegister:
         clock = FrozenClock(_PINNED)
 
         view = register(
-            session,
+            _repo(session),
             ctx,
             endpoint="https://fcm.googleapis.com/fcm/send/x?auth=tok",
             p256dh="p",
@@ -434,7 +447,7 @@ class TestUnregister:
         clock = FrozenClock(_PINNED)
 
         register(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("unreg"),
             p256dh="p",
@@ -445,7 +458,7 @@ class TestUnregister:
         session.flush()
 
         unregister(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("unreg"),
             clock=clock,
@@ -475,7 +488,7 @@ class TestUnregister:
         clock = FrozenClock(_PINNED)
 
         unregister(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("ghost"),
             clock=clock,
@@ -510,7 +523,7 @@ class TestUnregister:
         # Alice registers her browser.
         ctx_alice = _ctx(workspace_id=ws_id, actor_id=alice)
         register(
-            session,
+            _repo(session),
             ctx_alice,
             endpoint=_fcm_endpoint("alice-device"),
             p256dh="p",
@@ -523,7 +536,7 @@ class TestUnregister:
         # Bob attempts to unsubscribe Alice's endpoint.
         ctx_bob = _ctx(workspace_id=ws_id, actor_id=bob)
         unregister(
-            session,
+            _repo(session),
             ctx_bob,
             endpoint=_fcm_endpoint("alice-device"),
             clock=clock,
@@ -567,7 +580,7 @@ class TestVapidPublicKey:
         session.commit()
         ctx = _ctx(workspace_id=ws_id, actor_id=user_id)
 
-        key = get_vapid_public_key(session, ctx)
+        key = get_vapid_public_key(_repo(session), ctx)
         assert key == "base64url-pubkey-xyz"
 
     def test_missing_raises(self, session: Session) -> None:
@@ -577,7 +590,7 @@ class TestVapidPublicKey:
         ctx = _ctx(workspace_id=ws_id, actor_id=user_id)
 
         with pytest.raises(VapidNotConfigured):
-            get_vapid_public_key(session, ctx)
+            get_vapid_public_key(_repo(session), ctx)
 
     def test_empty_string_raises(self, session: Session) -> None:
         """An empty-string value is treated as not configured."""
@@ -587,7 +600,7 @@ class TestVapidPublicKey:
         ctx = _ctx(workspace_id=ws_id, actor_id=user_id)
 
         with pytest.raises(VapidNotConfigured):
-            get_vapid_public_key(session, ctx)
+            get_vapid_public_key(_repo(session), ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -604,7 +617,7 @@ class TestListForUser:
         clock = FrozenClock(_PINNED)
 
         register(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("a"),
             p256dh="p1",
@@ -613,7 +626,7 @@ class TestListForUser:
             clock=clock,
         )
         register(
-            session,
+            _repo(session),
             ctx,
             endpoint=_fcm_endpoint("b"),
             p256dh="p2",
@@ -623,7 +636,7 @@ class TestListForUser:
         )
         session.flush()
 
-        views = list_for_user(session, ctx)
+        views = list_for_user(_repo(session), ctx)
         assert len(views) == 2
         endpoints = {v.endpoint for v in views}
         assert endpoints == {_fcm_endpoint("a"), _fcm_endpoint("b")}
@@ -636,7 +649,7 @@ class TestListForUser:
         ctx = _ctx(workspace_id=ws_id, actor_id=alice)
 
         with pytest.raises(PermissionError):
-            list_for_user(session, ctx, user_id=bob)
+            list_for_user(_repo(session), ctx, user_id=bob)
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +670,7 @@ class TestTenancyIsolation:
         clock = FrozenClock(_PINNED)
         ctx_a = _ctx(workspace_id=ws_a, actor_id=user)
         register(
-            session,
+            _repo(session),
             ctx_a,
             endpoint=_fcm_endpoint("a-only"),
             p256dh="p",
@@ -669,5 +682,5 @@ class TestTenancyIsolation:
 
         # Same user, peer workspace — list returns nothing.
         ctx_b = _ctx(workspace_id=ws_b, actor_id=user)
-        views = list_for_user(session, ctx_b)
+        views = list_for_user(_repo(session), ctx_b)
         assert views == ()
