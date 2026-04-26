@@ -296,6 +296,7 @@ def _narrow_output(value: str) -> OutputMode:
 
 
 _surface_registered: bool = False
+_overrides_registered: bool = False
 
 
 def _register_surface_commands_once() -> None:
@@ -330,6 +331,31 @@ def _register_surface_commands_once() -> None:
     _surface_registered = True
 
 
+def _register_overrides_once() -> None:
+    """Mount the hand-written overrides on :data:`root`.
+
+    Runs *after* :func:`_register_surface_commands_once` so the
+    overrides can shadow generated commands of the same
+    ``(group, verb)`` (e.g. ``tasks complete`` — the generated path
+    cannot model the multipart upload + state-transition pair). The
+    one-shot module flag mirrors the surface-registration pattern so
+    a second call is a no-op and the override commands are not
+    silently shadowing each other.
+
+    Local import keeps the override package optional at import time
+    — a missing package would surface as a clean ``ImportError`` from
+    :func:`main` rather than an import-time failure for callers who
+    just want the error classes.
+    """
+    global _overrides_registered
+    if _overrides_registered:
+        return
+    from crewday._overrides import register_overrides
+
+    register_overrides(root)
+    _overrides_registered = True
+
+
 @handle_errors
 def main() -> None:
     """Console-script entry point (``[project.scripts] crewday``).
@@ -341,6 +367,7 @@ def main() -> None:
     CLI error path raises a :class:`CrewdayError`).
     """
     _register_surface_commands_once()
+    _register_overrides_once()
     root(prog_name="crewday")
 
 

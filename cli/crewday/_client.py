@@ -361,6 +361,8 @@ class CrewdayClient(AbstractContextManager["CrewdayClient"]):
         *,
         json: object | None = None,
         params: Mapping[str, Any] | None = None,
+        data: Mapping[str, str] | None = None,
+        files: Mapping[str, tuple[str, bytes, str]] | None = None,
         idempotency_key: str | None = None,
         stream: bool = False,
         extra_headers: Mapping[str, str] | None = None,
@@ -374,11 +376,35 @@ class CrewdayClient(AbstractContextManager["CrewdayClient"]):
         (and the body); :meth:`download` handles that path.
 
         ``extra_headers`` is the seam for per-call additions (e.g.
-        ``Range`` from :meth:`download`). Auth / workspace / user-agent
+        ``Range`` from :meth:`download``). Auth / workspace / user-agent
         headers are inherited from the constructor and cannot be
         overridden here — that's intentional, profile resolution is the
         sole source of truth.
+
+        ``data`` + ``files`` enable ``multipart/form-data`` uploads
+        (task evidence, expense scan). They are mutually exclusive with
+        ``json`` — passing either alongside ``json`` is a programming
+        error and surfaces a :class:`ValueError`. ``files`` maps each
+        field name to a ``(filename, contents, content_type)`` tuple
+        matching httpx's own multipart shape; the override layer
+        (:mod:`crewday._overrides`) owns reading the file bytes off
+        disk so the client stays a thin transport. ``data`` carries
+        the non-file form fields *alongside* a ``files`` upload —
+        passing it without ``files`` is also rejected because the only
+        documented use today is multipart, and silently form-encoding a
+        ``data``-only call would mask the real intent (URL-encoded
+        bodies are not on the v1 API surface).
         """
+        if (files is not None or data is not None) and json is not None:
+            raise ValueError(
+                "request: 'files'/'data' and 'json' are mutually "
+                "exclusive — multipart uploads cannot also carry a JSON body."
+            )
+        if data is not None and files is None:
+            raise ValueError(
+                "request: 'data' must accompany a 'files' upload; "
+                "URL-encoded form bodies are not on the v1 API surface."
+            )
         method_upper = method.upper()
 
         # Build the per-call header set. ``Idempotency-Key`` is
@@ -410,6 +436,20 @@ class CrewdayClient(AbstractContextManager["CrewdayClient"]):
                         headers=headers or None,
                     )
                     response = self._client.send(request_obj, stream=True)
+                elif files is not None:
+                    # Multipart uploads: httpx sets the
+                    # ``Content-Type: multipart/form-data; boundary=...``
+                    # header itself when ``files=`` is passed; ``data=``
+                    # carries any non-file form fields alongside the
+                    # uploads (e.g. ``kind`` on task evidence).
+                    response = self._client.request(
+                        method_upper,
+                        path,
+                        data=data,
+                        files=files,
+                        params=params,
+                        headers=headers or None,
+                    )
                 else:
                     response = self._client.request(
                         method_upper,
@@ -567,9 +607,7 @@ class CrewdayClient(AbstractContextManager["CrewdayClient"]):
             try:
                 payload: Any = response.json()
             except ValueError as exc:
-                raise ServerError(
-                    f"non-JSON response on paginated GET {path}"
-                ) from exc
+                raise ServerError(f"non-JSON response on paginated GET {path}") from exc
 
             if isinstance(payload, list):
                 # Bare list: single-page degenerate case. Yield each row
@@ -587,9 +625,7 @@ class CrewdayClient(AbstractContextManager["CrewdayClient"]):
 
             data = payload.get("data", [])
             if not isinstance(data, list):
-                raise ServerError(
-                    f"pagination 'data' must be a list on GET {path}"
-                )
+                raise ServerError(f"pagination 'data' must be a list on GET {path}")
             for row in data:
                 if isinstance(row, dict):
                     yield row
@@ -714,5 +750,3 @@ class CrewdayClient(AbstractContextManager["CrewdayClient"]):
             status,
             correlation_id or "-",
         )
-
-

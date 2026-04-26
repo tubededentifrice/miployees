@@ -294,6 +294,47 @@ def test_python_dash_m_entry_point_module_exists() -> None:
     assert dunder_main.main is main
 
 
+def test_overrides_registration_mounts_composite_commands() -> None:
+    """`_register_overrides_once` mounts the cd-qnz3 composites on `root`.
+
+    Verifies the auto-discovery walk in
+    :func:`crewday._overrides.register_overrides`: the three
+    hand-written verbs (``auth login``, ``tasks complete``,
+    ``expenses submit``) all land under their respective groups on
+    the real Click root.
+    """
+    from crewday._main import _register_overrides_once, root
+
+    _register_overrides_once()
+
+    import click
+
+    auth = root.commands.get("auth")
+    tasks = root.commands.get("tasks")
+    expenses = root.commands.get("expenses")
+    assert isinstance(auth, click.Group), "auth group missing or wrong type"
+    assert isinstance(tasks, click.Group), "tasks group missing or wrong type"
+    assert isinstance(expenses, click.Group), "expenses group missing or wrong type"
+    assert "login" in auth.commands
+    assert "complete" in tasks.commands
+    assert "submit" in expenses.commands
+
+
+def test_overrides_register_is_idempotent() -> None:
+    """A second `_register_overrides_once` call must not raise or double-mount."""
+    import click
+    from crewday._main import _register_overrides_once, root
+
+    _register_overrides_once()
+    auth = root.commands.get("auth")
+    assert isinstance(auth, click.Group)
+    before = list(auth.commands.keys())
+
+    _register_overrides_once()
+    after = list(auth.commands.keys())
+    assert before == after
+
+
 def test_placeholders_importable() -> None:
     """The remaining placeholder modules exist so later phases can plug
     in without churning import paths."""

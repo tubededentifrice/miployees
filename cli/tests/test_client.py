@@ -871,3 +871,104 @@ def test_context_manager_closes_underlying_client() -> None:
         underlying = client._client
         assert not underlying.is_closed
     assert underlying.is_closed
+
+
+# ---------------------------------------------------------------------------
+# Multipart payload guards
+# ---------------------------------------------------------------------------
+
+
+def test_request_files_with_json_is_rejected() -> None:
+    """Passing both ``files=`` and ``json=`` is a programming error.
+
+    ``files`` triggers a multipart body; ``json`` triggers an
+    ``application/json`` body. They cannot coexist on one request — the
+    client raises :class:`ValueError` rather than silently winning one
+    side.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("HTTP layer must not be reached on input rejection")
+
+    with _make_client(handler) as client, pytest.raises(ValueError, match="json"):
+        client.request(
+            "POST",
+            "/anywhere",
+            json={"a": 1},
+            files={"file": ("name", b"x", "text/plain")},
+        )
+
+
+def test_request_data_alone_is_rejected() -> None:
+    """Passing ``data=`` without ``files=`` is rejected.
+
+    The v1 API surface has no URL-encoded form bodies — every
+    body-bearing endpoint either takes JSON or multipart. Silently
+    accepting a ``data``-only call would either drop the data
+    (footgun) or send an unwanted ``application/x-www-form-urlencoded``
+    body. Reject it loudly.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("HTTP layer must not be reached on input rejection")
+
+    with _make_client(handler) as client, pytest.raises(ValueError, match="files"):
+        client.request("POST", "/anywhere", data={"k": "v"})
+
+
+def test_request_data_with_json_is_rejected() -> None:
+    """``data`` plus ``json`` is the same body collision as ``files`` plus ``json``."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("HTTP layer must not be reached on input rejection")
+
+    with _make_client(handler) as client, pytest.raises(ValueError, match="json"):
+        client.request(
+            "POST",
+            "/anywhere",
+            data={"k": "v"},
+            json={"a": 1},
+        )
+
+
+def test_request_files_alone_is_accepted() -> None:
+    """A bare ``files=`` upload (no ``data=``) is the scan-receipt shape."""
+    captured: dict[str, httpx.Request] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["req"] = request
+        return httpx.Response(200, json={"ok": True})
+
+    with _make_client(handler) as client:
+        response = client.request(
+            "POST",
+            "/expenses/scan",
+            files={"image": ("r.jpg", b"\xff\xd8", "image/jpeg")},
+        )
+    assert response.status_code == 200
+    request = captured["req"]
+    content_type = request.headers.get("content-type", "")
+    assert content_type.startswith("multipart/form-data")
+
+
+def test_request_files_with_data_is_accepted() -> None:
+    """``files=`` plus non-file ``data=`` form fields is the evidence-upload shape."""
+    captured: dict[str, httpx.Request] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["req"] = request
+        return httpx.Response(201, json={"id": "ev-1"})
+
+    with _make_client(handler) as client:
+        response = client.request(
+            "POST",
+            "/tasks/t1/evidence",
+            data={"kind": "photo"},
+            files={"file": ("p.jpg", b"\xff\xd8", "image/jpeg")},
+        )
+    assert response.status_code == 201
+    body = captured["req"].content
+    # The form should carry both the ``kind`` field and the ``file`` part.
+    assert b'name="kind"' in body
+    assert b"photo" in body
+    assert b'name="file"' in body
