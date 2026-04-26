@@ -74,11 +74,25 @@ class TestWorkspaceModel:
     def test_plan_check_constraint_present(self) -> None:
         """``__table_args__`` carries the plan CHECK constraint."""
         checks = [c for c in Workspace.__table_args__ if isinstance(c, CheckConstraint)]
-        assert len(checks) == 1
-        # The constraint text mentions every allowed value.
-        sql = str(checks[0].sqltext)
+        # cd-n6p added a second CHECK on ``default_currency`` shape; the
+        # ``plan`` CHECK is the named one we look up by constraint name
+        # so the count guard does not need to track every future addition.
+        # Naming convention prefixes with ``ck_<table>_`` — keep the
+        # match string in sync with :mod:`app.adapters.db.base`.
+        plan_checks = [c for c in checks if c.name == "ck_workspace_plan"]
+        assert len(plan_checks) == 1
+        sql = str(plan_checks[0].sqltext)
         for plan in ("free", "pro", "enterprise", "unlimited"):
             assert plan in sql
+
+    def test_default_currency_shape_check_present(self) -> None:
+        """cd-n6p adds a ``LENGTH(default_currency) = 3`` CHECK."""
+        checks = [c for c in Workspace.__table_args__ if isinstance(c, CheckConstraint)]
+        currency_checks = [
+            c for c in checks if c.name == "ck_workspace_default_currency_shape"
+        ]
+        assert len(currency_checks) == 1
+        assert "default_currency" in str(currency_checks[0].sqltext)
 
 
 class TestUserWorkspaceModel:

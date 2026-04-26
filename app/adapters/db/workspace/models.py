@@ -145,14 +145,49 @@ class Workspace(Base):
     # concrete workspace defaults for every registered setting (§02
     # "Settings cascade"). cd-jdhm lands the column so the self-service
     # recovery kill-switch (``auth.self_service_recovery_enabled``) has
-    # a canonical home; cd-n6p is the task that wires owner-facing
-    # writes for the broader setting catalog. Defaulted to ``{}`` so
-    # callers never need to coalesce when reading a missing key.
+    # a canonical home; cd-n6p wires owner-facing writes for the
+    # **non-base** setting catalog (the four named base columns below
+    # — timezone / locale / currency, plus ``name`` — are first-class
+    # columns per §02 "workspaces" base columns rather than dotted
+    # keys on this map). Defaulted to ``{}`` so callers never need to
+    # coalesce when reading a missing key.
     settings_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict, server_default="{}"
     )
+    # Owner-mutable identity-level base columns (cd-n6p). §02
+    # "workspaces" lists them as first-class workspace columns rather
+    # than dotted keys on ``settings_json``; the owner-only update path
+    # in :mod:`app.services.workspace.settings_service` writes them
+    # under capability gating + audit trail. Server defaults match the
+    # cd-n6p migration so an existing row materialises a coherent
+    # value on read; the service always writes explicit values on
+    # PATCH.
+    default_timezone: Mapped[str] = mapped_column(
+        String, nullable=False, default="UTC", server_default="UTC"
+    )
+    default_locale: Mapped[str] = mapped_column(
+        String, nullable=False, default="en", server_default="en"
+    )
+    default_currency: Mapped[str] = mapped_column(
+        String, nullable=False, default="USD", server_default="USD"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+    # Mutation timestamp — bumped on every basics edit so SSE
+    # subscribers can refresh the workspace picker after an owner
+    # renames the workspace or changes the default formatting (§14).
+    # NOT NULL at rest: the cd-n6p migration backfills existing rows
+    # from ``created_at`` so readers never coalesce defensively.
+    # ``server_default = CURRENT_TIMESTAMP`` so a fresh INSERT that
+    # does not name the column (the pattern in unit-test fixtures
+    # predating cd-n6p) still lands a coherent value; the domain
+    # service always writes an explicit value, so the server default
+    # is purely a safety net.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
     )
     # ``owner_onboarded_at`` flips when the first-run wizard completes;
     # the welcome UI keys off it so quota banners know whether to show
@@ -165,6 +200,15 @@ class Workspace(Base):
         CheckConstraint(
             "plan IN ('" + "', '".join(_PLAN_VALUES) + "')",
             name="plan",
+        ),
+        # Defence-in-depth shape check — the full ISO-4217 narrowing
+        # lives in :mod:`app.util.currency`; the CHECK only catches
+        # ``LENGTH != 3`` so a corrupt write without service mediation
+        # cannot land an empty string or ``EURO``. Mirrors the
+        # property table's ``country`` CHECK shape.
+        CheckConstraint(
+            "LENGTH(default_currency) = 3",
+            name="default_currency_shape",
         ),
     )
 

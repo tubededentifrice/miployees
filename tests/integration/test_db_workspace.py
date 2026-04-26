@@ -116,8 +116,17 @@ class TestMigrationShape:
             # ``settings_json`` landed with cd-jdhm to host the recovery
             # kill-switch flag; §02 "Settings cascade" documents the
             # single flat-map shape this column carries for every
-            # registered workspace setting (cd-n6p writes the rest).
+            # registered non-base workspace setting (the four owner-
+            # mutable base columns below land via cd-n6p as first-class
+            # columns rather than dotted keys on this map).
             "settings_json",
+            # cd-n6p — owner-mutable identity-level base columns +
+            # ``updated_at`` SSE invalidation seam (§02 "workspaces"
+            # base columns).
+            "default_timezone",
+            "default_locale",
+            "default_currency",
+            "updated_at",
             "created_at",
             "owner_onboarded_at",
         }

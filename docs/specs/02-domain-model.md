@@ -340,7 +340,7 @@ introduces `workspace_id` on every user-editable table.)
 | default_language   | text        | BCP-47; used by §10 auto-translation and digest prose                                          |
 | default_currency   | text        | ISO-4217. Referenced by Money section below; per-property override in §04.                     |
 | default_country    | text        | ISO-3166-1 alpha-2. Workspace-level fallback for properties.                                   |
-| default_locale     | text?       | BCP-47 locale tag (e.g. `fr-FR`). Nullable; when null, derived from `default_language` + `default_country`. Drives number/date/currency formatting on workspace-scoped documents. |
+| default_locale     | text        | BCP-47 locale tag from the shipped allow-list (`app.util.locales.SHIPPED_LOCALES`); defaults to `en` at provisioning. Drives number/date/currency formatting on workspace-scoped documents. (v1 ships without a `default_language`+`default_country` resolver, so the locale is the canonical key — not nullable; the cd-n6p migration NOT-NULLs the column with `'en'` server default to keep readers free of defensive coalescing.) |
 | settings_json      | jsonb/text  | flat map of `dotted.key → value`; holds concrete workspace defaults for every registered setting (see "Settings cascade" below) |
 
 **Slug invariants.** Slugs are globally unique across the

@@ -109,12 +109,10 @@ from app.adapters.llm.ports import LLMClient, LLMResponse
 from app.adapters.storage.ports import BlobNotFound, Storage
 from app.audit import write_audit
 from app.config import Settings, get_settings
-from app.domain.expenses.claims import (
-    _ISO_4217_ALLOWLIST,
-    _validate_currency,
-)
+from app.domain.expenses.claims import _validate_currency
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
+from app.util.currency import ISO_4217_ALLOWLIST
 from app.util.ulid import new_ulid
 
 __all__ = [
@@ -176,7 +174,7 @@ _MAX_VENDOR_LEN: Final[int] = 200
 _OCR_TO_JSON_PROMPT: Final[str] = (
     "You are a receipt-extraction tool. Given the OCR text of a "
     "receipt image, return a JSON object with these keys: "
-    'vendor (string, store / merchant name), '
+    "vendor (string, store / merchant name), "
     "amount (string, total paid as a decimal number, no currency symbol), "
     "currency (string, 3-letter ISO 4217 code, uppercase), "
     "purchased_at (string, ISO 8601 timestamp with timezone offset), "
@@ -195,7 +193,7 @@ _THREE_DECIMAL_CURRENCIES: Final[frozenset[str]] = frozenset(
 )
 
 # Some currencies have ZERO decimals (JPY, KRW, VND, IDR). The
-# allow-list mirrors :data:`app.domain.expenses.claims._ISO_4217_ALLOWLIST`'s
+# allow-list mirrors :data:`app.util.currency.ISO_4217_ALLOWLIST`'s
 # coverage. A receipt amount of "1500" in JPY is 1500 minor units,
 # not 150000 cents — getting this wrong silently overstates the
 # refund by 100x.
@@ -305,7 +303,7 @@ class ReceiptExtraction(BaseModel):
       for JPY-class currencies). A non-numeric / negative amount
       raises :class:`ValueError`.
     * ``currency`` — 3-letter ISO 4217 code, uppercased; must be in
-      :data:`~app.domain.expenses.claims._ISO_4217_ALLOWLIST`.
+      :data:`~app.util.currency.ISO_4217_ALLOWLIST`.
     * ``purchased_at`` — UTC-aware datetime; naive timestamps are
       rejected.
     * ``category`` — must be one of the six expense categories.
@@ -328,10 +326,8 @@ class ReceiptExtraction(BaseModel):
     def _currency_in_allowlist(cls, value: str) -> str:
         """Uppercase + narrow to the ISO-4217 allow-list."""
         upper = value.upper()
-        if upper not in _ISO_4217_ALLOWLIST:
-            raise ValueError(
-                f"currency {value!r} is not in the ISO-4217 allow-list"
-            )
+        if upper not in ISO_4217_ALLOWLIST:
+            raise ValueError(f"currency {value!r} is not in the ISO-4217 allow-list")
         return upper
 
     @field_validator("purchased_at")
@@ -367,9 +363,7 @@ class ReceiptExtraction(BaseModel):
                     f"confidence[{key!r}] must be a float, got {score!r}"
                 ) from exc
             if not (0.0 <= score_f <= 1.0):
-                raise ValueError(
-                    f"confidence[{key!r}]={score_f} is outside [0, 1]"
-                )
+                raise ValueError(f"confidence[{key!r}]={score_f} is outside [0, 1]")
         return value
 
 
@@ -537,9 +531,7 @@ def extract_from_bytes(
         # swallows everything would hide real bugs.
         raise
 
-    latency_ms = max(
-        0, int((resolved_clock.now() - started).total_seconds() * 1000)
-    )
+    latency_ms = max(0, int((resolved_clock.now() - started).total_seconds() * 1000))
     prompt_tokens = int(chat_response.usage.prompt_tokens)
     completion_tokens = int(chat_response.usage.completion_tokens)
 
@@ -581,9 +573,7 @@ def _parse_chat_response(response: LLMResponse) -> ReceiptExtraction:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ExtractionParseError(
-            f"LLM body is not valid JSON: {exc.msg}"
-        ) from exc
+        raise ExtractionParseError(f"LLM body is not valid JSON: {exc.msg}") from exc
 
     if not isinstance(payload, dict):
         raise ExtractionParseError(
@@ -672,9 +662,7 @@ def _to_amount_cents(payload: Mapping[str, Any]) -> dict[str, Any]:
         scale = Decimal(1000)
     else:
         scale = Decimal(100)
-    cents = (decimal_amount * scale).quantize(
-        Decimal("1"), rounding=ROUND_HALF_EVEN
-    )
+    cents = (decimal_amount * scale).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
     out["amount_cents"] = int(cents)
     return out
 
@@ -948,9 +936,7 @@ def run_extraction(
             ctx,
             model_id=burnt.model_id if burnt is not None else fallback_model_id,
             prompt_tokens=burnt.prompt_tokens if burnt is not None else 0,
-            completion_tokens=(
-                burnt.completion_tokens if burnt is not None else 0
-            ),
+            completion_tokens=(burnt.completion_tokens if burnt is not None else 0),
             latency_ms=burnt.latency_ms if burnt is not None else 0,
             status="error",
             correlation_id=correlation_id,
@@ -1005,11 +991,7 @@ def run_extraction(
     autofilled_fields: tuple[str, ...] = ()
     autofilled = False
 
-    if (
-        is_draft
-        and is_first_run
-        and confidence_overall > AUTOFILL_CONFIDENCE_THRESHOLD
-    ):
+    if is_draft and is_first_run and confidence_overall > AUTOFILL_CONFIDENCE_THRESHOLD:
         # First-attachment autofill — rewrite the worker-typed
         # scalars so the claim card lands populated. The currency is
         # re-validated through the claim service's allow-list to

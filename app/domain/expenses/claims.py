@@ -128,6 +128,7 @@ from app.domain.expenses.ports import (
 from app.events import ExpenseSubmitted, bus
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
+from app.util.currency import ISO_4217_ALLOWLIST
 from app.util.ulid import new_ulid
 
 __all__ = [
@@ -237,89 +238,6 @@ _ALLOWED_MIME_TYPES: frozenset[str] = frozenset(
         "application/pdf",
     }
 )
-
-# ISO-4217 allow-list — covers the common reserve currencies plus
-# every 3-decimal-minor-unit currency we expect a household-manager
-# workspace to encounter. The DB CHECK only enforces ``LENGTH = 3``;
-# the domain layer narrows to the known set so a typo (``EURO``,
-# ``UDS``, ``GPB``) surfaces at the boundary instead of corrupting
-# the cross-currency exchange-rate snapshot at approval time. A
-# future migration that adds a real ``currency`` table (cd-* TBD)
-# will collapse this constant into a DB lookup.
-#
-# Coverage rationale: vacation-rental / household-manager workspaces
-# routinely span North America, Europe, the Gulf, India, LATAM, and
-# Southeast Asia (a workspace running villas in Bali bills owners in
-# AUD, pays cleaners in IDR, and reimburses guests in EUR). The list
-# is therefore intentionally broad — every major reserve currency,
-# every G20 economy, the GCC + India + Israel for the Middle East,
-# and the largest Southeast-Asian + LATAM economies. New entries pay
-# only a tiny memory cost; missing entries surface as a hard 422 to
-# real users.
-_ISO_4217_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        # Reserve / G7 currencies.
-        "USD",
-        "EUR",
-        "GBP",
-        "CAD",
-        "AUD",
-        "JPY",
-        "CHF",
-        "NZD",
-        # Nordic.
-        "SEK",
-        "NOK",
-        "DKK",
-        "ISK",
-        # Central / Eastern Europe.
-        "PLN",
-        "CZK",
-        "HUF",
-        "RON",
-        "BGN",
-        "HRK",
-        "TRY",
-        # Asia-Pacific finance hubs.
-        "SGD",
-        "HKD",
-        "TWD",
-        "KRW",
-        "CNY",
-        # South + Southeast Asia.
-        "INR",
-        "IDR",
-        "MYR",
-        "THB",
-        "PHP",
-        "VND",
-        # Middle East — GCC + Israel + Egypt.
-        "AED",
-        "SAR",
-        "QAR",
-        "ILS",
-        "EGP",
-        # Africa.
-        "ZAR",
-        # LATAM.
-        "MXN",
-        "BRL",
-        "ARS",
-        "CLP",
-        "COP",
-        "PEN",
-        # 3-decimal minor-unit currencies (§02 §"Money" calls these
-        # out so the integer-cents convention divides by 1000, not
-        # 100). Including BHD + JOD + KWD + OMR + TND here ensures
-        # the allow-list does not accidentally regress that contract.
-        "BHD",
-        "JOD",
-        "KWD",
-        "OMR",
-        "TND",
-    }
-)
-
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -801,10 +719,10 @@ def _validate_currency(value: str) -> str:
     raises :class:`CurrencyInvalid`.
     """
     upper = value.upper()
-    if upper not in _ISO_4217_ALLOWLIST:
+    if upper not in ISO_4217_ALLOWLIST:
         raise CurrencyInvalid(
             f"currency {value!r} is not in the known ISO-4217 allow-list "
-            f"({sorted(_ISO_4217_ALLOWLIST)!r})"
+            f"({sorted(ISO_4217_ALLOWLIST)!r})"
         )
     return upper
 
