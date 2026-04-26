@@ -556,27 +556,17 @@ ignore_imports = [
     "app.domain.identity.me_schedule -> app.adapters.db.availability.models",
     "app.domain.identity.me_schedule -> app.adapters.db.holidays.models",
     "app.domain.identity.me_schedule -> app.adapters.db.tasks.models",
-    # v1 stopgap (cd-7qxh):
-    # ``app.domain.identity.user_availability_overrides`` reads
-    # :class:`UserAvailabilityOverride` from
-    # ``app.adapters.db.availability.models`` directly (CRUD on the
-    # per-day override rows). It also imports the pure-domain
-    # :func:`app.authz.require`; the transitive walk via
-    # :mod:`app.authz.membership` / :mod:`app.authz.owners` reaches
-    # ``app.adapters.db.authz.models`` — same intermediate-edge
-    # reasoning as the existing ``role_grants -> app.authz.owners``
-    # stopgap. Both edges drop with cd-duv6.
-    "app.domain.identity.user_availability_overrides -> app.adapters.db.availability.models",
-    "app.domain.identity.user_availability_overrides -> app.authz",
     # v1 stopgap (cd-7qxh): ``app.domain.identity.user_leaves`` reads
     # :class:`UserLeave` from ``app.adapters.db.availability.models``
     # directly (hybrid-approval state machine). It also imports
     # :func:`app.authz.require`; the transitive walk via
     # :mod:`app.authz.deployment_admin` (in addition to ``owners`` /
-    # ``membership``) reaches ``app.adapters.db.authz.models`` —
-    # same intermediate-edge reasoning as the sibling
-    # ``user_availability_overrides`` stopgap. Both edges drop with
-    # cd-duv6.
+    # ``membership``) reaches ``app.adapters.db.authz.models``. Both
+    # edges drop with cd-2upg, which mirrors the cd-r5j2 seam pattern
+    # already shipped for the sibling ``user_availability_overrides``
+    # service (Protocol repo + ``CapabilityChecker`` injected by the
+    # router; SA concretion in
+    # :mod:`app.adapters.db.availability.repositories`).
     "app.domain.identity.user_leaves -> app.adapters.db.availability.models",
     "app.domain.identity.user_leaves -> app.authz",
     # v1 stopgap (cd-yqm4):

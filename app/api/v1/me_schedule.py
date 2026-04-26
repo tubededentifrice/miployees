@@ -61,6 +61,9 @@ from app.api.v1.user_availability_overrides import (
 from app.api.v1.user_availability_overrides import (
     _view_to_response as _override_view_to_response,
 )
+from app.api.v1.user_availability_overrides import (
+    make_seam_pair as make_override_seam_pair,
+)
 from app.api.v1.user_leaves import (
     UserLeaveResponse,
 )
@@ -443,8 +446,10 @@ def build_me_schedule_router() -> APIRouter:
         """
         after_id = decode_cursor(cursor)
         filters = UserAvailabilityOverrideListFilter(user_id=ctx.actor_id)
+        repo, checker = make_override_seam_pair(session, ctx)
         views = list_overrides(
-            session,
+            repo,
+            checker,
             ctx,
             filters=filters,
             limit=limit,
@@ -485,8 +490,9 @@ def build_me_schedule_router() -> APIRouter:
             ends_local=body.ends_local,
             reason=body.reason,
         )
+        repo, checker = make_override_seam_pair(session, ctx)
         try:
-            view = create_override(session, ctx, body=service_body)
+            view = create_override(repo, checker, ctx, body=service_body)
         except UserAvailabilityOverridePermissionDenied as exc:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

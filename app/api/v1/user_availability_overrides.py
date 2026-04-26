@@ -51,6 +51,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
+from app.adapters.db.availability.repositories import (
+    SqlAlchemyCapabilityChecker,
+    SqlAlchemyUserAvailabilityOverrideRepository,
+)
 from app.api.deps import current_workspace_context, db_session
 from app.api.pagination import (
     DEFAULT_LIMIT,
@@ -84,6 +88,7 @@ __all__ = [
     "UserAvailabilityOverrideResponse",
     "UserAvailabilityOverrideUpdateRequest",
     "build_user_availability_overrides_router",
+    "make_seam_pair",
     "router",
 ]
 
@@ -340,6 +345,36 @@ def _approved_to_status(
     return "approved" if approved else "pending"
 
 
+def make_seam_pair(
+    session: Session, ctx: WorkspaceContext
+) -> tuple[
+    SqlAlchemyUserAvailabilityOverrideRepository,
+    SqlAlchemyCapabilityChecker,
+]:
+    """Construct the SA-backed repo + capability checker for the request.
+
+    Both seams (cd-r5j2) wrap the same ``(session, ctx)`` pair the
+    rest of the route would otherwise pass through to the service.
+    Bundling them in one helper keeps every endpoint's wiring to a
+    single line and pins the cross-seam contract: the audit writer
+    rides ``repo.session`` (same UoW), and the checker honours
+    ``ctx.workspace_id`` for every action key the service touches.
+
+    Public (no leading underscore) so the sibling
+    :mod:`app.api.v1.me_schedule` router — which dispatches a self-only
+    subset of the same surface — can reuse the wiring without taking
+    a dependency on a conventionally module-private name. The cd-2upg
+    leaves seam will land its own ``make_seam_pair`` adjacent to the
+    leaves router; both share the ``(session, ctx)`` shape because the
+    underlying :class:`SqlAlchemyCapabilityChecker` is the one piece
+    that crosses both surfaces.
+    """
+    return (
+        SqlAlchemyUserAvailabilityOverrideRepository(session),
+        SqlAlchemyCapabilityChecker(session, ctx),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
@@ -381,9 +416,11 @@ def build_user_availability_overrides_router() -> APIRouter:
             from_date=from_,
             to_date=to,
         )
+        repo, checker = make_seam_pair(session, ctx)
         try:
             views = list_overrides(
-                session,
+                repo,
+                checker,
                 ctx,
                 filters=filters,
                 limit=limit,
@@ -421,8 +458,9 @@ def build_user_availability_overrides_router() -> APIRouter:
         when ``False``, the row also auto-approves.
         """
         service_body = UserAvailabilityOverrideCreate.model_validate(body.model_dump())
+        repo, checker = make_seam_pair(session, ctx)
         try:
-            view = create_override(session, ctx, body=service_body)
+            view = create_override(repo, checker, ctx, body=service_body)
         except UserAvailabilityOverridePermissionDenied as exc:
             raise _http_for_permission_denied(exc) from exc
         except UserAvailabilityOverrideInvariantViolated as exc:
@@ -451,9 +489,10 @@ def build_user_availability_overrides_router() -> APIRouter:
         service_body = UserAvailabilityOverrideUpdate.model_validate(
             {f: getattr(body, f) for f in sent}
         )
+        repo, checker = make_seam_pair(session, ctx)
         try:
             view = update_override(
-                session, ctx, override_id=override_id, body=service_body
+                repo, checker, ctx, override_id=override_id, body=service_body
             )
         except UserAvailabilityOverrideNotFound as exc:
             raise _http_for_not_found() from exc
@@ -481,8 +520,9 @@ def build_user_availability_overrides_router() -> APIRouter:
         Always requires ``availability_overrides.edit_others``. An
         already-approved row collapses to 409.
         """
+        repo, checker = make_seam_pair(session, ctx)
         try:
-            view = approve_override(session, ctx, override_id=override_id)
+            view = approve_override(repo, checker, ctx, override_id=override_id)
         except UserAvailabilityOverrideNotFound as exc:
             raise _http_for_not_found() from exc
         except UserAvailabilityOverridePermissionDenied as exc:
@@ -512,9 +552,10 @@ def build_user_availability_overrides_router() -> APIRouter:
         ``availability_overrides.edit_others``.
         """
         reason = body.reason_md if body is not None else None
+        repo, checker = make_seam_pair(session, ctx)
         try:
             view = reject_override(
-                session, ctx, override_id=override_id, reason_md=reason
+                repo, checker, ctx, override_id=override_id, reason_md=reason
             )
         except UserAvailabilityOverrideNotFound as exc:
             raise _http_for_not_found() from exc
@@ -547,8 +588,9 @@ def build_user_availability_overrides_router() -> APIRouter:
         choice between 404 and 204-idempotent open and the
         loud-on-double-click reading is what we want here.
         """
+        repo, checker = make_seam_pair(session, ctx)
         try:
-            delete_override(session, ctx, override_id=override_id)
+            delete_override(repo, checker, ctx, override_id=override_id)
         except UserAvailabilityOverrideNotFound as exc:
             raise _http_for_not_found() from exc
         except UserAvailabilityOverridePermissionDenied as exc:

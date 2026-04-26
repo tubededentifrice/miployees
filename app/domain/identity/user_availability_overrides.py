@@ -26,7 +26,11 @@ Public surface:
   :class:`UserAvailabilityOverridePermissionDenied`,
   :class:`UserAvailabilityOverrideTransitionForbidden`.
 
-**Capabilities.** Writes gate through :func:`app.authz.require`:
+**Capabilities.** Writes gate through the injected
+:class:`~app.domain.identity.availability_ports.CapabilityChecker`
+(SA-backed by
+:class:`~app.adapters.db.availability.repositories.SqlAlchemyCapabilityChecker`,
+which itself wraps :func:`app.authz.require`):
 
 * ``availability_overrides.create_self`` — self-submit (auto-allowed
   to ``all_workers``).
@@ -61,8 +65,8 @@ the precedence stack immediately. When ``True``, ``approved_at`` /
 holds ``availability_overrides.edit_others``, :func:`create_override`
 stamps ``approved_at`` regardless of ``approval_required`` — a
 manager scheduling a date-specific override shouldn't have to walk
-through their own approval queue. The check routes through
-:func:`app.authz.require` so the auto-approve trigger and every
+through their own approval queue. The check routes through the
+:class:`CapabilityChecker` seam so the auto-approve trigger and every
 other ``edit_others`` gate share the same authority.
 
 **Reject = soft-delete with reason.** §06 doesn't pin a persistent
@@ -74,13 +78,26 @@ and folds the rejection reason into ``reason`` if provided. The
 ``user_availability_override.rejected`` audit row preserves the full
 state transition for the worker's complaints inbox.
 
+**Architecture (cd-r5j2).** The module talks to a
+:class:`~app.domain.identity.availability_ports.UserAvailabilityOverrideRepository`
+Protocol + a
+:class:`~app.domain.identity.availability_ports.CapabilityChecker`
+Protocol — never to the SQLAlchemy model classes or :mod:`app.authz`
+directly. Both seams' SA-backed concretions live in
+:mod:`app.adapters.db.availability.repositories`; unit tests inject
+fakes or wire the SA pair over an in-memory SQLite session. The
+override repo also threads its open :class:`~sqlalchemy.orm.Session`
+through ``repo.session`` so the audit writer
+(:func:`app.audit.write_audit`) — which still takes a concrete
+``Session`` today — can keep using the same UoW.
+
 **Transaction boundary.** The service never calls
 ``session.commit()``; the caller's Unit-of-Work owns transaction
 boundaries (§01 "Key runtime invariants" #3). Every mutation writes
 one :mod:`app.audit` row in the same transaction.
 
 **Tenancy.** The ORM tenant filter auto-narrows every SELECT on
-``user_availability_override``; the service re-asserts the
+``user_availability_override``; the SA repo re-asserts the
 ``workspace_id = ctx.workspace_id`` predicate explicitly as
 defence-in-depth.
 
@@ -101,19 +118,14 @@ from datetime import date, datetime, time
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.adapters.db.availability.models import (
-    UserAvailabilityOverride,
-    UserWeeklyAvailability,
-)
 from app.audit import write_audit
-from app.authz import (
-    InvalidScope,
-    PermissionDenied,
-    UnknownActionKey,
-    require,
+from app.domain.identity.availability_ports import (
+    CapabilityChecker,
+    SeamPermissionDenied,
+    UserAvailabilityOverrideRepository,
+    UserAvailabilityOverrideRow,
+    UserWeeklyAvailabilityRow,
 )
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
@@ -168,7 +180,8 @@ class UserAvailabilityOverrideInvariantViolated(ValueError):
 class UserAvailabilityOverridePermissionDenied(PermissionError):
     """Caller lacks the capability for the attempted action.
 
-    403-equivalent. Wraps the underlying :class:`~app.authz.PermissionDenied`
+    403-equivalent. Wraps the underlying
+    :class:`~app.domain.identity.availability_ports.SeamPermissionDenied`
     so the router maps a single domain exception to the
     ``user_availability_override``-specific 403 envelope.
     """
@@ -327,7 +340,14 @@ class UserAvailabilityOverrideView:
 # ---------------------------------------------------------------------------
 
 
-def _row_to_view(row: UserAvailabilityOverride) -> UserAvailabilityOverrideView:
+def _row_to_view(row: UserAvailabilityOverrideRow) -> UserAvailabilityOverrideView:
+    """Project a seam-level :class:`UserAvailabilityOverrideRow` into the public view.
+
+    The repo already returned an immutable, frozen value object; we
+    re-pack it into the public :class:`UserAvailabilityOverrideView`
+    shape so callers keep the dataclass they were already typing
+    against.
+    """
     return UserAvailabilityOverrideView(
         id=row.id,
         workspace_id=row.workspace_id,
@@ -375,51 +395,26 @@ def _view_to_diff_dict(view: UserAvailabilityOverrideView) -> dict[str, Any]:
 
 
 def _load_row(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
     ctx: WorkspaceContext,
     *,
     override_id: str,
     include_deleted: bool = False,
-) -> UserAvailabilityOverride:
+) -> UserAvailabilityOverrideRow:
     """Return the row or raise :class:`UserAvailabilityOverrideNotFound`."""
-    stmt = select(UserAvailabilityOverride).where(
-        UserAvailabilityOverride.id == override_id,
-        UserAvailabilityOverride.workspace_id == ctx.workspace_id,
+    row = repo.get(
+        workspace_id=ctx.workspace_id,
+        override_id=override_id,
+        include_deleted=include_deleted,
     )
-    if not include_deleted:
-        stmt = stmt.where(UserAvailabilityOverride.deleted_at.is_(None))
-    row = session.scalars(stmt).one_or_none()
     if row is None:
         raise UserAvailabilityOverrideNotFound(override_id)
     return row
 
 
-def _load_weekly_for_weekday(
-    session: Session,
-    ctx: WorkspaceContext,
-    *,
-    user_id: str,
-    weekday: int,
-) -> UserWeeklyAvailability | None:
-    """Return the weekly pattern row for ``(user, weekday)``, if any.
-
-    A user with no row at all for that weekday is treated as "off" by
-    the approval-logic walk in :func:`_compute_approval_required` —
-    same surface as a row with both ``starts_local`` and ``ends_local``
-    null. Centralising the lookup here keeps the approval calculator
-    free of SQLAlchemy concerns.
-    """
-    stmt = select(UserWeeklyAvailability).where(
-        UserWeeklyAvailability.workspace_id == ctx.workspace_id,
-        UserWeeklyAvailability.user_id == user_id,
-        UserWeeklyAvailability.weekday == weekday,
-    )
-    return session.scalars(stmt).one_or_none()
-
-
 def _compute_approval_required(
     *,
-    weekly: UserWeeklyAvailability | None,
+    weekly: UserWeeklyAvailabilityRow | None,
     override_available: bool,
     override_starts: time | None,
     override_ends: time | None,
@@ -488,35 +483,8 @@ def _compute_approval_required(
 # ---------------------------------------------------------------------------
 
 
-def _require_capability(
-    session: Session,
-    ctx: WorkspaceContext,
-    *,
-    action_key: str,
-) -> None:
-    """Enforce ``action_key`` on the caller's workspace or raise.
-
-    Wraps :func:`app.authz.require` and translates a caller-bug
-    (unknown key / invalid scope) into :class:`RuntimeError` so the
-    router can surface it as 500 without confusing it with the 403
-    that a genuine :class:`~app.authz.PermissionDenied` produces.
-    """
-    try:
-        require(
-            session,
-            ctx,
-            action_key=action_key,
-            scope_kind="workspace",
-            scope_id=ctx.workspace_id,
-        )
-    except (UnknownActionKey, InvalidScope) as exc:
-        raise RuntimeError(
-            f"authz catalog misconfigured for {action_key!r}: {exc!s}"
-        ) from exc
-
-
 def _gate_or_self(
-    session: Session,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     target_user_id: str,
@@ -527,41 +495,15 @@ def _gate_or_self(
     Centralises the "requester-or-manager" rule shared by every
     cross-user write in this service. Raising
     :class:`UserAvailabilityOverridePermissionDenied` (not the bare
-    :class:`~app.authz.PermissionDenied`) lets the router's error
-    map stay narrow — one domain exception type per 403 shape.
+    seam :class:`SeamPermissionDenied`) lets the router's error map
+    stay narrow — one domain exception type per 403 shape.
     """
     if target_user_id == ctx.actor_id:
         return
     try:
-        _require_capability(session, ctx, action_key=cross_user_action)
-    except PermissionDenied as exc:
+        checker.require(cross_user_action)
+    except SeamPermissionDenied as exc:
         raise UserAvailabilityOverridePermissionDenied(str(exc)) from exc
-
-
-def _can_edit_others(session: Session, ctx: WorkspaceContext) -> bool:
-    """Return ``True`` iff the caller holds ``availability_overrides.edit_others``.
-
-    Mirrors :func:`app.domain.identity.user_leaves._can_edit_others`:
-    the canonical "is this caller a manager / owner" question routes
-    through the action catalog so the auto-approve trigger shares its
-    authority with every other ``edit_others`` gate in this module.
-    """
-    try:
-        require(
-            session,
-            ctx,
-            action_key="availability_overrides.edit_others",
-            scope_kind="workspace",
-            scope_id=ctx.workspace_id,
-        )
-    except PermissionDenied:
-        return False
-    except (UnknownActionKey, InvalidScope) as exc:
-        raise RuntimeError(
-            "authz catalog misconfigured for "
-            f"'availability_overrides.edit_others': {exc!s}"
-        ) from exc
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +512,8 @@ def _can_edit_others(session: Session, ctx: WorkspaceContext) -> bool:
 
 
 def list_overrides(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     filters: UserAvailabilityOverrideListFilter | None = None,
@@ -606,43 +549,32 @@ def list_overrides(
     if target_user_id is None:
         # Manager inbox — no per-user filter means cross-user surface.
         try:
-            _require_capability(
-                session, ctx, action_key="availability_overrides.view_others"
-            )
-        except PermissionDenied as exc:
+            checker.require("availability_overrides.view_others")
+        except SeamPermissionDenied as exc:
             raise UserAvailabilityOverridePermissionDenied(str(exc)) from exc
     else:
         _gate_or_self(
-            session,
+            checker,
             ctx,
             target_user_id=target_user_id,
             cross_user_action="availability_overrides.view_others",
         )
 
-    stmt = select(UserAvailabilityOverride).where(
-        UserAvailabilityOverride.workspace_id == ctx.workspace_id,
-        UserAvailabilityOverride.deleted_at.is_(None),
+    rows = repo.list(
+        workspace_id=ctx.workspace_id,
+        limit=limit,
+        after_id=after_id,
+        user_id=target_user_id,
+        status=resolved.status,
+        from_date=resolved.from_date,
+        to_date=resolved.to_date,
     )
-    if target_user_id is not None:
-        stmt = stmt.where(UserAvailabilityOverride.user_id == target_user_id)
-    if resolved.status == "approved":
-        stmt = stmt.where(UserAvailabilityOverride.approved_at.is_not(None))
-    elif resolved.status == "pending":
-        stmt = stmt.where(UserAvailabilityOverride.approved_at.is_(None))
-    if resolved.from_date is not None:
-        stmt = stmt.where(UserAvailabilityOverride.date >= resolved.from_date)
-    if resolved.to_date is not None:
-        stmt = stmt.where(UserAvailabilityOverride.date <= resolved.to_date)
-    if after_id is not None:
-        stmt = stmt.where(UserAvailabilityOverride.id > after_id)
-    stmt = stmt.order_by(UserAvailabilityOverride.id.asc()).limit(limit + 1)
-
-    rows = session.scalars(stmt).all()
     return [_row_to_view(r) for r in rows]
 
 
 def get_override(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     override_id: str,
@@ -654,9 +586,9 @@ def get_override(
     :class:`UserAvailabilityOverrideNotFound` (404, not 403) per §01
     "tenant surface is not enumerable".
     """
-    row = _load_row(session, ctx, override_id=override_id)
+    row = _load_row(repo, ctx, override_id=override_id)
     _gate_or_self(
-        session,
+        checker,
         ctx,
         target_user_id=row.user_id,
         cross_user_action="availability_overrides.view_others",
@@ -670,7 +602,8 @@ def get_override(
 
 
 def create_override(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     body: UserAvailabilityOverrideCreate,
@@ -706,14 +639,10 @@ def create_override(
 
     try:
         if target_user_id != ctx.actor_id:
-            _require_capability(
-                session, ctx, action_key="availability_overrides.edit_others"
-            )
+            checker.require("availability_overrides.edit_others")
         else:
-            _require_capability(
-                session, ctx, action_key="availability_overrides.create_self"
-            )
-    except PermissionDenied as exc:
+            checker.require("availability_overrides.create_self")
+    except SeamPermissionDenied as exc:
         raise UserAvailabilityOverridePermissionDenied(str(exc)) from exc
 
     # Defence-in-depth: the DTO already enforces these, but a Python
@@ -737,9 +666,8 @@ def create_override(
     # ``date.weekday()`` returns Mon=0..Sun=6 — matches the
     # :class:`UserWeeklyAvailability.weekday` ISO encoding (see the
     # column's CHECK constraint).
-    weekly = _load_weekly_for_weekday(
-        session,
-        ctx,
+    weekly = repo.find_weekly_pattern(
+        workspace_id=ctx.workspace_id,
         user_id=target_user_id,
         weekday=body.date.weekday(),
     )
@@ -750,13 +678,15 @@ def create_override(
         override_ends=body.ends_local,
     )
 
-    auto_approve = (not approval_required) or _can_edit_others(session, ctx)
+    auto_approve = (not approval_required) or checker.has(
+        "availability_overrides.edit_others"
+    )
     approved_at: datetime | None = now if auto_approve else None
     approved_by: str | None = ctx.actor_id if auto_approve else None
 
     row_id = new_ulid(clock=clock)
-    row = UserAvailabilityOverride(
-        id=row_id,
+    row = repo.insert(
+        override_id=row_id,
         workspace_id=ctx.workspace_id,
         user_id=target_user_id,
         date=body.date,
@@ -767,16 +697,12 @@ def create_override(
         approval_required=approval_required,
         approved_at=approved_at,
         approved_by=approved_by,
-        created_at=now,
-        updated_at=now,
-        deleted_at=None,
+        now=now,
     )
-    session.add(row)
-    session.flush()
 
     view = _row_to_view(row)
     write_audit(
-        session,
+        repo.session,
         ctx,
         entity_kind="user_availability_override",
         entity_id=row.id,
@@ -788,7 +714,8 @@ def create_override(
 
 
 def update_override(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     override_id: str,
@@ -811,10 +738,10 @@ def update_override(
     """
     resolved_clock = clock if clock is not None else SystemClock()
     now = resolved_clock.now()
-    row = _load_row(session, ctx, override_id=override_id)
+    row = _load_row(repo, ctx, override_id=override_id)
 
     _gate_or_self(
-        session,
+        checker,
         ctx,
         target_user_id=row.user_id,
         cross_user_action="availability_overrides.edit_others",
@@ -830,16 +757,17 @@ def update_override(
     if not sent:
         return _row_to_view(row)
 
-    # Compute the post-update shape before mutating so the BOTH-OR-NEITHER
-    # invariant catches a half-set PATCH (sender clears starts_local
-    # without clearing ends_local, etc.) at the boundary instead of at
-    # flush time. ``model_fields_set`` distinguishes "field was sent"
-    # from "field was not sent" so an explicit JSON ``null`` clears
-    # a nullable column while an omitted field preserves it. ``available``
-    # is non-nullable on the row, so a sent ``null`` is treated as
-    # "unchanged" (the wire shape exposes ``bool | None`` only because
-    # FastAPI's PATCH idiom needs a Python default for the optional
-    # field; there is no semantic "clear" for a non-nullable bool).
+    # Compute the post-update shape before invoking the repo so the
+    # BOTH-OR-NEITHER invariant catches a half-set PATCH (sender
+    # clears starts_local without clearing ends_local, etc.) at the
+    # boundary instead of at flush time. ``model_fields_set``
+    # distinguishes "field was sent" from "field was not sent" so an
+    # explicit JSON ``null`` clears a nullable column while an omitted
+    # field preserves it. ``available`` is non-nullable on the row,
+    # so a sent ``null`` is treated as "unchanged" (the wire shape
+    # exposes ``bool | None`` only because FastAPI's PATCH idiom
+    # needs a Python default for the optional field; there is no
+    # semantic "clear" for a non-nullable bool).
     new_available = (
         body.available
         if "available" in sent and body.available is not None
@@ -863,38 +791,72 @@ def update_override(
             "starts_local / ends_local"
         )
 
-    before = _row_to_view(row)
-    changed = False
-
-    if (
+    # Detect deltas before invoking the repo — a zero-delta PATCH
+    # skips both the SA write and the audit row. For nullable fields
+    # we distinguish "send JSON null to clear" from "field omitted".
+    # ``model_fields_set`` carries the distinction; the repo's
+    # ``clear_*`` flags carry it through to the SQL.
+    available_changed = (
         "available" in sent
         and body.available is not None
         and body.available != row.available
-    ):
-        row.available = body.available
-        changed = True
-    if "starts_local" in sent and body.starts_local != row.starts_local:
-        row.starts_local = body.starts_local
-        changed = True
-    if "ends_local" in sent and body.ends_local != row.ends_local:
-        row.ends_local = body.ends_local
-        changed = True
-    if "reason" in sent and body.reason != row.reason:
-        row.reason = body.reason
-        changed = True
+    )
+    starts_clear = "starts_local" in sent and body.starts_local is None
+    starts_set = (
+        "starts_local" in sent
+        and body.starts_local is not None
+        and body.starts_local != row.starts_local
+    )
+    ends_clear = "ends_local" in sent and body.ends_local is None
+    ends_set = (
+        "ends_local" in sent
+        and body.ends_local is not None
+        and body.ends_local != row.ends_local
+    )
+    reason_clear = "reason" in sent and body.reason is None
+    reason_set = (
+        "reason" in sent and body.reason is not None and body.reason != row.reason
+    )
 
+    # ``clear`` flags only meaningful when the row currently holds a
+    # value — otherwise a "clear None over None" is not a delta.
+    starts_clear_effective = starts_clear and row.starts_local is not None
+    ends_clear_effective = ends_clear and row.ends_local is not None
+    reason_clear_effective = reason_clear and row.reason is not None
+
+    changed = (
+        available_changed
+        or starts_clear_effective
+        or starts_set
+        or ends_clear_effective
+        or ends_set
+        or reason_clear_effective
+        or reason_set
+    )
+
+    before = _row_to_view(row)
     if not changed:
         return before
 
-    row.updated_at = now
-    session.flush()
-    after = _row_to_view(row)
+    after_row = repo.update_fields(
+        workspace_id=ctx.workspace_id,
+        override_id=override_id,
+        available=body.available if available_changed else None,
+        starts_local=body.starts_local if starts_set else None,
+        ends_local=body.ends_local if ends_set else None,
+        reason=body.reason if reason_set else None,
+        clear_starts_local=starts_clear_effective,
+        clear_ends_local=ends_clear_effective,
+        clear_reason=reason_clear_effective,
+        now=now,
+    )
+    after = _row_to_view(after_row)
 
     write_audit(
-        session,
+        repo.session,
         ctx,
         entity_kind="user_availability_override",
-        entity_id=row.id,
+        entity_id=after.id,
         action="user_availability_override.updated",
         diff={
             "before": _view_to_diff_dict(before),
@@ -906,7 +868,8 @@ def update_override(
 
 
 def approve_override(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     override_id: str,
@@ -931,13 +894,11 @@ def approve_override(
     """
     resolved_clock = clock if clock is not None else SystemClock()
     now = resolved_clock.now()
-    row = _load_row(session, ctx, override_id=override_id)
+    row = _load_row(repo, ctx, override_id=override_id)
 
     try:
-        _require_capability(
-            session, ctx, action_key="availability_overrides.edit_others"
-        )
-    except PermissionDenied as exc:
+        checker.require("availability_overrides.edit_others")
+    except SeamPermissionDenied as exc:
         raise UserAvailabilityOverridePermissionDenied(str(exc)) from exc
 
     if row.approved_at is not None:
@@ -946,17 +907,19 @@ def approve_override(
         )
 
     before = _row_to_view(row)
-    row.approved_at = now
-    row.approved_by = ctx.actor_id
-    row.updated_at = now
-    session.flush()
-    after = _row_to_view(row)
+    after_row = repo.stamp_approved(
+        workspace_id=ctx.workspace_id,
+        override_id=override_id,
+        approved_by=ctx.actor_id,
+        now=now,
+    )
+    after = _row_to_view(after_row)
 
     write_audit(
-        session,
+        repo.session,
         ctx,
         entity_kind="user_availability_override",
-        entity_id=row.id,
+        entity_id=after.id,
         action="user_availability_override.approved",
         diff={
             "before": _view_to_diff_dict(before),
@@ -968,7 +931,8 @@ def approve_override(
 
 
 def reject_override(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     override_id: str,
@@ -998,13 +962,11 @@ def reject_override(
     """
     resolved_clock = clock if clock is not None else SystemClock()
     now = resolved_clock.now()
-    row = _load_row(session, ctx, override_id=override_id)
+    row = _load_row(repo, ctx, override_id=override_id)
 
     try:
-        _require_capability(
-            session, ctx, action_key="availability_overrides.edit_others"
-        )
-    except PermissionDenied as exc:
+        checker.require("availability_overrides.edit_others")
+    except SeamPermissionDenied as exc:
         raise UserAvailabilityOverridePermissionDenied(str(exc)) from exc
 
     if row.approved_at is not None:
@@ -1014,22 +976,28 @@ def reject_override(
         )
 
     before = _row_to_view(row)
-    row.deleted_at = now
-    row.updated_at = now
+
+    folded_reason: str | None = None
     if reason_md is not None and reason_md.strip():
         # Concatenate rather than overwrite so the worker's original
         # request stays visible alongside the rejection rationale.
         # An empty / whitespace-only reason is treated as no reason.
         prefix = f"{row.reason}\n\n" if row.reason else ""
-        row.reason = f"{prefix}Rejected: {reason_md}"
-    session.flush()
-    after = _row_to_view(row)
+        folded_reason = f"{prefix}Rejected: {reason_md}"
+
+    after_row = repo.soft_delete(
+        workspace_id=ctx.workspace_id,
+        override_id=override_id,
+        reason=folded_reason,
+        now=now,
+    )
+    after = _row_to_view(after_row)
 
     write_audit(
-        session,
+        repo.session,
         ctx,
         entity_kind="user_availability_override",
-        entity_id=row.id,
+        entity_id=after.id,
         action="user_availability_override.rejected",
         diff={
             "before": _view_to_diff_dict(before),
@@ -1042,7 +1010,8 @@ def reject_override(
 
 
 def delete_override(
-    session: Session,
+    repo: UserAvailabilityOverrideRepository,
+    checker: CapabilityChecker,
     ctx: WorkspaceContext,
     *,
     override_id: str,
@@ -1062,26 +1031,31 @@ def delete_override(
     """
     resolved_clock = clock if clock is not None else SystemClock()
     now = resolved_clock.now()
-    row = _load_row(session, ctx, override_id=override_id)
+    row = _load_row(repo, ctx, override_id=override_id)
 
     _gate_or_self(
-        session,
+        checker,
         ctx,
         target_user_id=row.user_id,
         cross_user_action="availability_overrides.edit_others",
     )
 
     before = _row_to_view(row)
-    row.deleted_at = now
-    row.updated_at = now
-    session.flush()
-    after = _row_to_view(row)
+    after_row = repo.soft_delete(
+        workspace_id=ctx.workspace_id,
+        override_id=override_id,
+        # No reason mutation on the canonical withdraw path — the
+        # worker's original explanation survives intact.
+        reason=None,
+        now=now,
+    )
+    after = _row_to_view(after_row)
 
     write_audit(
-        session,
+        repo.session,
         ctx,
         entity_kind="user_availability_override",
-        entity_id=row.id,
+        entity_id=after.id,
         action="user_availability_override.deleted",
         diff={
             "before": _view_to_diff_dict(before),

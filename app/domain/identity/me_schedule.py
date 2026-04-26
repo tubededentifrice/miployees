@@ -79,9 +79,6 @@ from app.adapters.db.tasks.models import Occurrence
 from app.domain.identity.user_availability_overrides import (
     UserAvailabilityOverrideView,
 )
-from app.domain.identity.user_availability_overrides import (
-    _row_to_view as _override_row_to_view,
-)
 from app.domain.identity.user_leaves import UserLeaveView
 from app.domain.identity.user_leaves import (
     _row_to_view as _leave_row_to_view,
@@ -220,6 +217,40 @@ class SchedulePayload:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _override_row_to_view(
+    row: UserAvailabilityOverride,
+) -> UserAvailabilityOverrideView:
+    """Project a SQLAlchemy ``UserAvailabilityOverride`` row into the public view.
+
+    Inlined here (cd-r5j2) because
+    :mod:`app.domain.identity.user_availability_overrides` no longer
+    accepts ORM rows on its private ``_row_to_view`` helper — that
+    helper now consumes the seam-shaped
+    :class:`~app.domain.identity.availability_ports.UserAvailabilityOverrideRow`.
+    :mod:`app.domain.identity.me_schedule` still walks the ORM directly
+    until its own seam refactor lands (covered by the
+    ``me_schedule -> app.adapters.db.availability.models`` cd-7qxh
+    ignore-import), so the conversion stays adjacent to the SQL that
+    produces it.
+    """
+    return UserAvailabilityOverrideView(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        user_id=row.user_id,
+        date=row.date,
+        available=row.available,
+        starts_local=row.starts_local,
+        ends_local=row.ends_local,
+        reason=row.reason,
+        approval_required=row.approval_required,
+        approved_at=row.approved_at,
+        approved_by=row.approved_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        deleted_at=row.deleted_at,
+    )
 
 
 def _holiday_row_to_view(row: PublicHoliday) -> PublicHolidayView:

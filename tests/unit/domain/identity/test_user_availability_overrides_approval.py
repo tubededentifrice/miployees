@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
-from app.adapters.db.availability.models import UserWeeklyAvailability
+from app.domain.identity.availability_ports import UserWeeklyAvailabilityRow
 from app.domain.identity.user_availability_overrides import (
     _compute_approval_required,
 )
@@ -25,9 +25,14 @@ from app.domain.identity.user_availability_overrides import (
 _PINNED = datetime(2026, 4, 25)
 
 
-def _weekly(starts: time | None, ends: time | None) -> UserWeeklyAvailability:
-    """Construct an unpersisted weekly row for the calculator's input."""
-    return UserWeeklyAvailability(
+def _weekly(starts: time | None, ends: time | None) -> UserWeeklyAvailabilityRow:
+    """Construct a seam-shaped weekly row for the calculator's input.
+
+    Post-cd-r5j2 the calculator consumes the seam-level
+    :class:`UserWeeklyAvailabilityRow` projection (not the SQLAlchemy
+    ORM row), keeping the pure-function suite free of SA imports.
+    """
+    return UserWeeklyAvailabilityRow(
         id="01HWWEEKLY00000000000000",
         workspace_id="01HWWS00000000000000000000",
         user_id="01HWUSER0000000000000000",
