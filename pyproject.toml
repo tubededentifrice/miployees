@@ -224,11 +224,12 @@ asyncio_mode = "auto"
 # (per-worker SQLite file / Postgres testcontainer). To debug a single
 # test serially, override the worker count: ``uv run pytest -n0 <path>``
 # (xdist itself accepts ``-n0`` and skips the worker fork).
-addopts = "--import-mode=importlib -n auto --dist worksteal"
+addopts = "--import-mode=importlib -n auto --dist worksteal -m \"not schemathesis\""
 pythonpath = ["."]
 markers = [
     "integration: marks tests as integration (deselect with '-m \"not integration\"')",
     "pg_only: test requires Postgres (skipped when CREWDAY_TEST_DB=sqlite)",
+    "schemathesis: API-contract tests that drive the schemathesis CLI as a subprocess (cd-3j25). Excluded from the default unit/integration runs via ``addopts = -m 'not schemathesis'`` — opt in with ``pytest -m schemathesis``.",
 ]
 
 [tool.coverage.run]

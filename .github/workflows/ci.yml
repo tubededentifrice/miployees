@@ -162,6 +162,47 @@ jobs:
       - name: pytest (integration)
         run: uv run pytest tests/integration -x -q
 
+  schemathesis:
+    # API contract sweep (cd-3j25, spec
+    # ``docs/specs/17-testing-quality.md`` §"API contract" +
+    # §"Quality gates"). Boots the FastAPI app under ``uvicorn``,
+    # mints a Bearer token via the seed helper, then runs
+    # ``schemathesis run`` with the custom checks under
+    # ``tests/contract/hooks.py`` registered through
+    # ``SCHEMATHESIS_HOOKS``.
+    #
+    # **Blocking once the included operation set is clean.** Today
+    # the gate runs against a curated allowlist in
+    # ``scripts/schemathesis_run.sh`` (``INCLUDE_ARGS``); broadening
+    # it surfaces ~270 real schema-conformance bugs the spec wants
+    # fixed first. Per-context follow-up Beads tasks track the
+    # cleanup; each one widens the include list. The CI step is
+    # blocking from day one — if the gate flags a regression on the
+    # narrow set, the PR doesn't merge.
+    #
+    # Single Python (3.12) — schemathesis is HTTP-out-of-process so
+    # the version matrix that lint/type/unit run buys nothing here.
+    # Budget per §17 is < 5 min; the runner caps at
+    # ``--max-examples=20`` per operation, well inside that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: uv sync --group dev
+      - name: schemathesis (contract sweep)
+        # The runner script handles uvicorn lifecycle, seed helper,
+        # token mint, and tear-down. ``make schemathesis`` is the
+        # same gate developers run locally so the CI surface stays
+        # predictable.
+        run: make schemathesis
+
   e2e:
     # Browser-driven journeys (cd-asvl, spec
     # docs/specs/17-testing-quality.md §"End-to-end"). Brings up the
