@@ -19,7 +19,7 @@ Coverage:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -29,6 +29,10 @@ from sqlalchemy.orm import Session
 
 from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.expenses.models import ExpenseClaim
+from app.adapters.db.expenses.repositories import (
+    SqlAlchemyCapabilityChecker,
+    SqlAlchemyExpensesRepository,
+)
 from app.adapters.db.workspace.models import WorkEngagement
 from app.adapters.llm.ports import (
     ChatMessage,
@@ -38,9 +42,11 @@ from app.adapters.llm.ports import (
 )
 from app.config import Settings
 from app.domain.expenses import (
-    attach_receipt,
-    create_claim,
+    ExpenseAttachmentView,
+    ExpenseClaimView,
+    ReceiptKind,
 )
+from app.domain.expenses import claims as _claims_module
 from app.domain.expenses.claims import ExpenseClaimCreate
 from app.tenancy import WorkspaceContext, tenant_agnostic
 from app.util.clock import FrozenClock
@@ -62,15 +68,75 @@ _OCR_MODEL = "test/gemma-vision"
 
 
 # ---------------------------------------------------------------------------
+# Seam compat shims (cd-0e8i)
+# ---------------------------------------------------------------------------
+#
+# The cd-0e8i refactor flipped :mod:`app.domain.expenses.claims`'s
+# public API to ``(repo, checker, ctx, *, ...)``. The integration
+# coverage here doesn't yet feed seams through; these wrappers rebuild
+# the SA pair on each call so the legacy session-based shape keeps
+# working until cd-sxmz wires the worker job onto the seam.
+
+
+def _make_seam_pair(
+    session: Session, ctx: WorkspaceContext
+) -> tuple[SqlAlchemyExpensesRepository, SqlAlchemyCapabilityChecker]:
+    return (
+        SqlAlchemyExpensesRepository(session),
+        SqlAlchemyCapabilityChecker(session, ctx),
+    )
+
+
+def create_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    body: ExpenseClaimCreate,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.create_claim(repo, checker, ctx, body=body, clock=clock)
+
+
+def attach_receipt(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    blob_hash: str,
+    content_type: str,
+    size_bytes: int,
+    storage: InMemoryStorage,
+    kind: ReceiptKind = "receipt",
+    pages: int | None = None,
+    clock: FrozenClock | None = None,
+    extraction_runner: Callable[..., Any] | None = None,
+) -> ExpenseAttachmentView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.attach_receipt(
+        repo,
+        checker,
+        ctx,
+        claim_id=claim_id,
+        blob_hash=blob_hash,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        storage=storage,
+        kind=kind,
+        pages=pages,
+        clock=clock,
+        extraction_runner=extraction_runner,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Stub LLM (matches the unit-test stub shape — kept local to avoid a
 # cross-tier import the unit tests own).
 # ---------------------------------------------------------------------------
 
 
 class StubLLMClient:
-    def __init__(
-        self, payloads: list[dict[str, Any]] | dict[str, Any]
-    ) -> None:
+    def __init__(self, payloads: list[dict[str, Any]] | dict[str, Any]) -> None:
         if isinstance(payloads, dict):
             payloads = [payloads]
         self._payloads = payloads

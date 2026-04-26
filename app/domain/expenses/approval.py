@@ -86,6 +86,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.db.expenses.models import (
     _REIMBURSED_VIA_VALUES,
+    ExpenseAttachment,
     ExpenseClaim,
 )
 from app.adapters.db.workspace.models import WorkEngagement
@@ -98,11 +99,13 @@ from app.authz import (
 )
 from app.domain.expenses.claims import (
     ClaimNotFound,
+    ExpenseAttachmentView,
     ExpenseCategory,
     ExpenseClaimView,
     _ensure_utc,
-    _load_row,
-    _row_to_view,
+    _narrow_category,
+    _narrow_kind,
+    _narrow_state,
     _validate_category,
     _validate_currency,
     _validate_purchased_at_not_future,
@@ -323,6 +326,123 @@ class ReimburseBody(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("paid_at must be a timezone-aware datetime; got naive.")
         return value
+
+
+# ---------------------------------------------------------------------------
+# ORM-bound helpers (cd-zoj4 follow-up will migrate these onto the seam)
+# ---------------------------------------------------------------------------
+#
+# The cd-0e8i refactor pulled :mod:`app.domain.expenses.claims` off
+# :mod:`app.adapters.db.expenses.models`, so the
+# ``_load_row(session, ctx, ...)`` / ``_row_to_view(session, row)`` /
+# ``_load_attachments(session, ...)`` helpers approval previously
+# imported from claims now live here as local equivalents until the
+# cd-zoj4 follow-up rewires this module onto
+# :class:`~app.domain.expenses.ports.ExpensesRepository` end-to-end.
+#
+# The import edges (``app.domain.expenses.approval ->
+# app.adapters.db.expenses.models`` / ``-> app.adapters.db.workspace.models``)
+# are already covered by the cd-9guk stopgap entries in
+# ``pyproject.toml``; nothing new gets added.
+
+
+def _load_row(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    include_deleted: bool = False,
+    for_update: bool = False,
+) -> ExpenseClaim:
+    """Load ``claim_id`` scoped to the caller's workspace or raise.
+
+    Mirrors the cd-0e8i-removed
+    :func:`app.domain.expenses.claims._load_row` shape so the rest of
+    the approval flow keeps reading. ``include_deleted`` /
+    ``for_update`` follow the same semantics as the original.
+    """
+    stmt = select(ExpenseClaim).where(
+        ExpenseClaim.id == claim_id,
+        ExpenseClaim.workspace_id == ctx.workspace_id,
+    )
+    if not include_deleted:
+        stmt = stmt.where(ExpenseClaim.deleted_at.is_(None))
+    if for_update:
+        stmt = stmt.with_for_update()
+    row = session.scalars(stmt).one_or_none()
+    if row is None:
+        raise ClaimNotFound(claim_id)
+    return row
+
+
+def _load_attachments(
+    session: Session, *, workspace_id: str, claim_id: str
+) -> tuple[ExpenseAttachmentView, ...]:
+    """Return every attachment for ``claim_id`` in upload order.
+
+    Local copy of the cd-0e8i-removed
+    :func:`app.domain.expenses.claims._load_attachments` so
+    :func:`_row_to_view` can attach the receipts list to the projected
+    view.
+    """
+    stmt = (
+        select(ExpenseAttachment)
+        .where(
+            ExpenseAttachment.workspace_id == workspace_id,
+            ExpenseAttachment.claim_id == claim_id,
+        )
+        .order_by(ExpenseAttachment.created_at.asc(), ExpenseAttachment.id.asc())
+    )
+    rows = session.scalars(stmt).all()
+    return tuple(
+        ExpenseAttachmentView(
+            id=r.id,
+            claim_id=r.claim_id,
+            blob_hash=r.blob_hash,
+            kind=_narrow_kind(r.kind),
+            pages=r.pages,
+            created_at=_ensure_utc(r.created_at),
+        )
+        for r in rows
+    )
+
+
+def _row_to_view(session: Session, row: ExpenseClaim) -> ExpenseClaimView:
+    """Project a loaded :class:`ExpenseClaim` row into the domain read view.
+
+    Local copy of the cd-0e8i-removed
+    :func:`app.domain.expenses.claims._row_to_view`. Loads the
+    attachment tuple in the same SELECT pass — read views are always
+    whole-claim, never half-populated.
+    """
+    return ExpenseClaimView(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        work_engagement_id=row.work_engagement_id,
+        vendor=row.vendor,
+        purchased_at=_ensure_utc(row.purchased_at),
+        currency=row.currency,
+        total_amount_cents=row.total_amount_cents,
+        category=_narrow_category(row.category),
+        property_id=row.property_id,
+        note_md=row.note_md,
+        state=_narrow_state(row.state),
+        submitted_at=(
+            _ensure_utc(row.submitted_at) if row.submitted_at is not None else None
+        ),
+        decided_by=row.decided_by,
+        decided_at=(
+            _ensure_utc(row.decided_at) if row.decided_at is not None else None
+        ),
+        decision_note_md=row.decision_note_md,
+        created_at=_ensure_utc(row.created_at),
+        deleted_at=(
+            _ensure_utc(row.deleted_at) if row.deleted_at is not None else None
+        ),
+        attachments=_load_attachments(
+            session, workspace_id=row.workspace_id, claim_id=row.id
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

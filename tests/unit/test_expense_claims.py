@@ -35,6 +35,10 @@ from app.adapters.db.audit.models import AuditLog
 from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.base import Base
 from app.adapters.db.expenses.models import ExpenseAttachment, ExpenseClaim
+from app.adapters.db.expenses.repositories import (
+    SqlAlchemyCapabilityChecker,
+    SqlAlchemyExpensesRepository,
+)
 from app.adapters.db.identity.models import User, canonicalise_email
 from app.adapters.db.session import make_engine
 from app.adapters.db.workspace.models import WorkEngagement, Workspace
@@ -47,21 +51,17 @@ from app.domain.expenses import (
     ClaimPermissionDenied,
     ClaimStateTransitionInvalid,
     CurrencyInvalid,
+    ExpenseAttachmentView,
     ExpenseCategory,
     ExpenseClaimCreate,
     ExpenseClaimUpdate,
+    ExpenseClaimView,
+    ExpenseState,
     PurchaseDateInFuture,
+    ReceiptKind,
     TooManyAttachments,
-    attach_receipt,
-    cancel_claim,
-    create_claim,
-    detach_receipt,
-    get_claim,
-    list_for_user,
-    list_for_workspace,
-    submit_claim,
-    update_claim,
 )
+from app.domain.expenses import claims as _claims_module
 from app.events import ExpenseSubmitted, bus
 from app.tenancy.context import ActorGrantRole, WorkspaceContext
 from app.util.clock import FrozenClock
@@ -70,6 +70,181 @@ from tests._fakes.storage import InMemoryStorage
 
 _PINNED = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC)
 _PURCHASED = _PINNED - timedelta(days=2)
+
+
+# ---------------------------------------------------------------------------
+# Seam wiring (cd-0e8i)
+# ---------------------------------------------------------------------------
+#
+# Every public ``app.domain.expenses.claims`` function takes the
+# ``(repo, checker, ctx, *, ...)`` shape after the cd-0e8i seam
+# refactor. ``_make_seam_pair`` produces a fresh SA-backed pair per call so
+# the fixtures match the per-request pattern the production routes
+# use (``app.api.v1.expenses.make_seam_pair``). Tests that need to
+# call the same function multiple times typically build the pair once
+# and reuse it; we re-build per call here so each ``create_claim`` /
+# ``submit_claim`` call sees a fresh checker (no cached membership
+# probe).
+
+
+def _make_seam_pair(
+    session: Session, ctx: WorkspaceContext
+) -> tuple[SqlAlchemyExpensesRepository, SqlAlchemyCapabilityChecker]:
+    """Return a ``(repo, checker)`` pair backed by ``session`` + ``ctx``."""
+    return (
+        SqlAlchemyExpensesRepository(session),
+        SqlAlchemyCapabilityChecker(session, ctx),
+    )
+
+
+# Thin session-based wrappers around the cd-0e8i seam-driven public
+# API. Each wrapper builds a fresh ``(repo, checker)`` pair via
+# :func:`_make_seam_pair` so the test bodies keep the legacy
+# ``(session, ctx, *, ...)`` call shape — the smaller diff against
+# the pre-refactor coverage. The seam-shape coverage proper lives in
+# :mod:`tests.unit.domain.expenses.test_claims_seam`.
+
+
+def create_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    body: ExpenseClaimCreate,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.create_claim(repo, checker, ctx, body=body, clock=clock)
+
+
+def update_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    body: ExpenseClaimUpdate,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.update_claim(
+        repo, checker, ctx, claim_id=claim_id, body=body, clock=clock
+    )
+
+
+def get_claim(
+    session: Session, ctx: WorkspaceContext, *, claim_id: str
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.get_claim(repo, checker, ctx, claim_id=claim_id)
+
+
+def list_for_user(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    user_id: str | None = None,
+    state: ExpenseState | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> tuple[list[ExpenseClaimView], str | None]:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.list_for_user(
+        repo,
+        checker,
+        ctx,
+        user_id=user_id,
+        state=state,
+        limit=limit,
+        cursor=cursor,
+    )
+
+
+def list_for_workspace(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    state: ExpenseState | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> tuple[list[ExpenseClaimView], str | None]:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.list_for_workspace(
+        repo, checker, ctx, state=state, limit=limit, cursor=cursor
+    )
+
+
+def submit_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.submit_claim(
+        repo, checker, ctx, claim_id=claim_id, clock=clock
+    )
+
+
+def cancel_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    reason_md: str | None = None,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.cancel_claim(
+        repo, checker, ctx, claim_id=claim_id, reason_md=reason_md, clock=clock
+    )
+
+
+def attach_receipt(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    blob_hash: str,
+    content_type: str,
+    size_bytes: int,
+    storage: InMemoryStorage,
+    kind: ReceiptKind = "receipt",
+    pages: int | None = None,
+    clock: FrozenClock | None = None,
+) -> ExpenseAttachmentView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.attach_receipt(
+        repo,
+        checker,
+        ctx,
+        claim_id=claim_id,
+        blob_hash=blob_hash,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        storage=storage,
+        kind=kind,
+        pages=pages,
+        clock=clock,
+    )
+
+
+def detach_receipt(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    attachment_id: str,
+    clock: FrozenClock | None = None,
+) -> None:
+    repo, checker = _make_seam_pair(session, ctx)
+    _claims_module.detach_receipt(
+        repo,
+        checker,
+        ctx,
+        claim_id=claim_id,
+        attachment_id=attachment_id,
+        clock=clock,
+    )
 
 
 # ---------------------------------------------------------------------------

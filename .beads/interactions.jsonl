@@ -228,3 +228,5 @@
 {"id":"int-c3b46dce","kind":"field_change","created_at":"2026-04-26T04:45:19.913658387Z","actor":"tubededentifrice-dev","issue_id":"cd-v68a","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-bd476823","kind":"field_change","created_at":"2026-04-26T05:12:19.168306977Z","actor":"tubededentifrice-dev","issue_id":"cd-v3jp","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-39b3173d","kind":"field_change","created_at":"2026-04-26T05:12:23.035288535Z","actor":"tubededentifrice-dev","issue_id":"cd-4bsc","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-46f39553","kind":"field_change","created_at":"2026-04-26T05:50:29.121090123Z","actor":"tubededentifrice-dev","issue_id":"cd-0e8i","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-c7821693","kind":"field_change","created_at":"2026-04-26T05:50:31.466627495Z","actor":"tubededentifrice-dev","issue_id":"cd-2v4u","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}

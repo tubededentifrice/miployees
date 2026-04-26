@@ -107,6 +107,10 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.adapters.db.expenses.repositories import (
+    SqlAlchemyCapabilityChecker,
+    SqlAlchemyExpensesRepository,
+)
 from app.adapters.db.llm.models import LlmUsage as LlmUsageRow
 from app.adapters.llm.ports import LLMClient
 from app.adapters.storage.ports import Storage
@@ -198,6 +202,25 @@ _Db = Annotated[Session, Depends(db_session)]
 _Storage = Annotated[Storage, Depends(get_storage)]
 _Llm = Annotated[LLMClient, Depends(get_llm)]
 _AppSettings = Annotated[Settings, Depends(get_settings)]
+
+
+def make_seam_pair(
+    session: Session, ctx: WorkspaceContext
+) -> tuple[SqlAlchemyExpensesRepository, SqlAlchemyCapabilityChecker]:
+    """Construct the SA-backed expenses-context seam pair for a request.
+
+    Both seams (cd-v3jp) wrap the same ``(session, ctx)`` pair the rest
+    of the route would otherwise pass through to the service. Bundling
+    them in one helper keeps every endpoint's wiring to a single line
+    and pins the cross-seam contract: the audit writer rides
+    ``repo.session`` (same UoW), and the checker honours
+    ``ctx.workspace_id`` for every action key the service touches.
+    Mirrors :func:`app.api.v1.user_leaves.make_seam_pair`.
+    """
+    return (
+        SqlAlchemyExpensesRepository(session),
+        SqlAlchemyCapabilityChecker(session, ctx),
+    )
 
 
 # Mime types accepted by ``POST /expenses/scan``. Mirrors the
@@ -572,8 +595,9 @@ def create_expense_claim_route(
     session: _Db,
 ) -> ExpenseClaimPayload:
     """Insert a draft claim bound to the caller's engagement."""
+    repo, checker = make_seam_pair(session, ctx)
     try:
-        view = create_claim(session, ctx, body=body)
+        view = create_claim(repo, checker, ctx, body=body)
     except (
         ClaimPermissionDenied,
         CurrencyInvalid,
@@ -641,9 +665,11 @@ def list_expense_claims_route(
     target_user_id = ctx.actor_id if mine else user_id
     state_literal = _validate_state_filter(state)
     after_id = decode_cursor(cursor)
+    repo, checker = make_seam_pair(session, ctx)
     try:
         rows, next_raw = list_for_user(
-            session,
+            repo,
+            checker,
             ctx,
             user_id=target_user_id,
             state=state_literal,
@@ -753,8 +779,9 @@ def get_pending_reimbursement_route(
       probe surfaces a 403 ``claim_permission_denied`` envelope.
     """
     resolved_user_id = ctx.actor_id if user_id == "me" else user_id
+    repo, checker = make_seam_pair(session, ctx)
     try:
-        view = pending_reimbursement(session, ctx, user_id=resolved_user_id)
+        view = pending_reimbursement(repo, checker, ctx, user_id=resolved_user_id)
     except ClaimPermissionDenied as exc:
         raise _http_for_claim_error(exc) from exc
     return PendingReimbursementResponse.from_view(view)
@@ -772,8 +799,9 @@ def get_expense_claim_route(
     session: _Db,
 ) -> ExpenseClaimPayload:
     """Return the claim identified by ``claim_id`` or 404."""
+    repo, checker = make_seam_pair(session, ctx)
     try:
-        view = get_claim(session, ctx, claim_id=claim_id)
+        view = get_claim(repo, checker, ctx, claim_id=claim_id)
     except (ClaimNotFound, ClaimPermissionDenied) as exc:
         raise _http_for_claim_error(exc) from exc
     return ExpenseClaimPayload.from_view(view)
@@ -798,8 +826,9 @@ def patch_expense_claim_route(
     untouched. The 409 ``claim_not_editable`` envelope fires when
     the caller PATCHes anything past the draft state.
     """
+    repo, checker = make_seam_pair(session, ctx)
     try:
-        view = update_claim(session, ctx, claim_id=claim_id, body=body)
+        view = update_claim(repo, checker, ctx, claim_id=claim_id, body=body)
     except (
         ClaimNotFound,
         ClaimNotEditable,
@@ -829,8 +858,9 @@ def cancel_expense_claim_route(
     transition table. Returns 204 with no body — the spec §12
     DELETE convention.
     """
+    repo, checker = make_seam_pair(session, ctx)
     try:
-        cancel_claim(session, ctx, claim_id=claim_id)
+        cancel_claim(repo, checker, ctx, claim_id=claim_id)
     except (
         ClaimNotFound,
         ClaimPermissionDenied,
@@ -857,8 +887,9 @@ def submit_expense_claim_route(
     not in ``draft``; the SPA should refresh its view if a worker
     thinks a previous submit was lost.
     """
+    repo, checker = make_seam_pair(session, ctx)
     try:
-        view = submit_claim(session, ctx, claim_id=claim_id)
+        view = submit_claim(repo, checker, ctx, claim_id=claim_id)
     except (
         ClaimNotFound,
         ClaimPermissionDenied,
@@ -906,9 +937,11 @@ def attach_expense_receipt_route(
     wired (the runner is just ``None``).
     """
     runner = _build_attach_runner(llm=llm, settings=settings, storage=storage)
+    repo, checker = make_seam_pair(session, ctx)
     try:
         view = attach_receipt(
-            session,
+            repo,
+            checker,
             ctx,
             claim_id=claim_id,
             blob_hash=body.blob_hash,
@@ -1009,9 +1042,11 @@ def detach_expense_receipt_route(
     :func:`~app.domain.expenses.claims.detach_receipt` docstring for
     the GC rationale.
     """
+    repo, checker = make_seam_pair(session, ctx)
     try:
         detach_receipt(
-            session,
+            repo,
+            checker,
             ctx,
             claim_id=claim_id,
             attachment_id=attachment_id,
@@ -1045,8 +1080,9 @@ def list_expense_attachments_route(
     :func:`~app.domain.expenses.claims.get_claim` so the same authz
     and 404 path applies.
     """
+    repo, checker = make_seam_pair(session, ctx)
     try:
-        view = get_claim(session, ctx, claim_id=claim_id)
+        view = get_claim(repo, checker, ctx, claim_id=claim_id)
     except (ClaimNotFound, ClaimPermissionDenied) as exc:
         raise _http_for_claim_error(exc) from exc
     return ExpenseAttachmentListResponse(

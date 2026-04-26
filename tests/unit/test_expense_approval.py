@@ -41,6 +41,10 @@ from app.adapters.db.audit.models import AuditLog
 from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.base import Base
 from app.adapters.db.expenses.models import ExpenseClaim
+from app.adapters.db.expenses.repositories import (
+    SqlAlchemyCapabilityChecker,
+    SqlAlchemyExpensesRepository,
+)
 from app.adapters.db.identity.models import User, canonicalise_email
 from app.adapters.db.session import make_engine
 from app.adapters.db.workspace.models import WorkEngagement, Workspace
@@ -51,16 +55,16 @@ from app.domain.expenses import (
     ClaimNotFound,
     ClaimNotReimbursable,
     ExpenseClaimCreate,
+    ExpenseClaimView,
     ReimburseBody,
     ReimbursePermissionDenied,
     RejectBody,
     approve_claim,
-    create_claim,
     list_pending,
     mark_reimbursed,
     reject_claim,
-    submit_claim,
 )
+from app.domain.expenses import claims as _claims_module
 from app.events import (
     ExpenseApproved,
     ExpenseReimbursed,
@@ -73,6 +77,52 @@ from app.util.ulid import new_ulid
 
 _PINNED = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC)
 _PURCHASED = _PINNED - timedelta(days=2)
+
+
+# ---------------------------------------------------------------------------
+# Seam compat shims (cd-0e8i)
+# ---------------------------------------------------------------------------
+#
+# The cd-0e8i refactor flipped :mod:`app.domain.expenses.claims`'s public
+# API to ``(repo, checker, ctx, *, ...)``. Approval is still on the old
+# session-based API (cd-zoj4 follow-up); these thin wrappers re-create
+# the old call shape for the test fixtures so the approval-side
+# coverage doesn't have to thread the seam pair through every setup
+# helper. The wrappers build the SA pair fresh each call — cheap, and
+# matches the per-request shape the production routes use.
+
+
+def _make_seam_pair(
+    session: Session, ctx: WorkspaceContext
+) -> tuple[SqlAlchemyExpensesRepository, SqlAlchemyCapabilityChecker]:
+    return (
+        SqlAlchemyExpensesRepository(session),
+        SqlAlchemyCapabilityChecker(session, ctx),
+    )
+
+
+def create_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    body: ExpenseClaimCreate,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.create_claim(repo, checker, ctx, body=body, clock=clock)
+
+
+def submit_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.submit_claim(
+        repo, checker, ctx, claim_id=claim_id, clock=clock
+    )
 
 
 # ---------------------------------------------------------------------------

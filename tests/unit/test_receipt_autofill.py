@@ -29,7 +29,7 @@ criteria:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -43,6 +43,10 @@ from app.adapters.db.audit.models import AuditLog
 from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.base import Base
 from app.adapters.db.expenses.models import ExpenseClaim
+from app.adapters.db.expenses.repositories import (
+    SqlAlchemyCapabilityChecker,
+    SqlAlchemyExpensesRepository,
+)
 from app.adapters.db.identity.models import User, canonicalise_email
 from app.adapters.db.llm.models import LlmUsage as LlmUsageRow
 from app.adapters.db.session import make_engine
@@ -55,10 +59,11 @@ from app.adapters.llm.ports import (
 )
 from app.config import Settings
 from app.domain.expenses import (
-    attach_receipt,
-    create_claim,
-    submit_claim,
+    ExpenseAttachmentView,
+    ExpenseClaimView,
+    ReceiptKind,
 )
+from app.domain.expenses import claims as _claims_module
 from app.domain.expenses.autofill import (
     AUTOFILL_CAPABILITY,
     AUTOFILL_CONFIDENCE_THRESHOLD,
@@ -81,6 +86,81 @@ from tests._fakes.storage import InMemoryStorage
 _PINNED = datetime(2026, 4, 19, 12, 0, 0, tzinfo=UTC)
 _PURCHASED = _PINNED - timedelta(days=2)
 _OCR_MODEL = "test/gemma-vision"
+
+
+# ---------------------------------------------------------------------------
+# Seam compat shims (cd-0e8i)
+# ---------------------------------------------------------------------------
+#
+# The cd-0e8i refactor flipped :mod:`app.domain.expenses.claims`'s
+# public API to ``(repo, checker, ctx, *, ...)``. Autofill is still on
+# the old session-based shape (cd-sxmz follow-up); these wrappers
+# rebuild the SA seam pair on each call so the autofill-side coverage
+# can keep using the legacy session-based call shape until then.
+
+
+def _make_seam_pair(
+    session: Session, ctx: WorkspaceContext
+) -> tuple[SqlAlchemyExpensesRepository, SqlAlchemyCapabilityChecker]:
+    return (
+        SqlAlchemyExpensesRepository(session),
+        SqlAlchemyCapabilityChecker(session, ctx),
+    )
+
+
+def create_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    body: ExpenseClaimCreate,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.create_claim(repo, checker, ctx, body=body, clock=clock)
+
+
+def submit_claim(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    clock: FrozenClock | None = None,
+) -> ExpenseClaimView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.submit_claim(
+        repo, checker, ctx, claim_id=claim_id, clock=clock
+    )
+
+
+def attach_receipt(
+    session: Session,
+    ctx: WorkspaceContext,
+    *,
+    claim_id: str,
+    blob_hash: str,
+    content_type: str,
+    size_bytes: int,
+    storage: InMemoryStorage,
+    kind: ReceiptKind = "receipt",
+    pages: int | None = None,
+    clock: FrozenClock | None = None,
+    extraction_runner: Callable[..., Any] | None = None,
+) -> ExpenseAttachmentView:
+    repo, checker = _make_seam_pair(session, ctx)
+    return _claims_module.attach_receipt(
+        repo,
+        checker,
+        ctx,
+        claim_id=claim_id,
+        blob_hash=blob_hash,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        storage=storage,
+        kind=kind,
+        pages=pages,
+        clock=clock,
+        extraction_runner=extraction_runner,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -302,9 +382,7 @@ def _grant(s: Session, *, workspace_id: str, user_id: str, grant_role: str) -> N
     s.flush()
 
 
-def _bootstrap_engagement(
-    s: Session, *, workspace_id: str, user_id: str
-) -> str:
+def _bootstrap_engagement(s: Session, *, workspace_id: str, user_id: str) -> str:
     eng_id = new_ulid()
     s.add(
         WorkEngagement(
@@ -424,9 +502,7 @@ def _audit_rows(session: Session, *, workspace_id: str) -> list[AuditLog]:
     return list(session.scalars(stmt).all())
 
 
-def _llm_usage_rows(
-    session: Session, *, workspace_id: str
-) -> list[LlmUsageRow]:
+def _llm_usage_rows(session: Session, *, workspace_id: str) -> list[LlmUsageRow]:
     stmt = (
         select(LlmUsageRow)
         .where(LlmUsageRow.workspace_id == workspace_id)
@@ -771,9 +847,7 @@ class TestRunExtractionHappyPath:
             session, ctx, storage=storage, claim_id=view.id, clock=clock
         )
         llm2 = StubLLMClient(
-            chat_payload=_high_confidence_payload(
-                vendor="Other Vendor", amount="55.00"
-            )
+            chat_payload=_high_confidence_payload(vendor="Other Vendor", amount="55.00")
         )
         result = run_extraction(
             session,
@@ -863,9 +937,7 @@ class TestRunExtractionFailures:
         storage: InMemoryStorage,
         settings: Settings,
     ) -> None:
-        ctx, claim_id, att_id, clock = self._setup_draft(
-            session, worker_env, storage
-        )
+        ctx, claim_id, att_id, clock = self._setup_draft(session, worker_env, storage)
         llm = StubLLMClient(chat_payload="not-json-at-all")
 
         with pytest.raises(ExtractionParseError):
@@ -902,9 +974,7 @@ class TestRunExtractionFailures:
         storage: InMemoryStorage,
         settings: Settings,
     ) -> None:
-        ctx, claim_id, att_id, clock = self._setup_draft(
-            session, worker_env, storage
-        )
+        ctx, claim_id, att_id, clock = self._setup_draft(session, worker_env, storage)
         bad = _high_confidence_payload(purchased_at="2026-04-17T12:30:00")
         llm = StubLLMClient(chat_payload=bad)
 
@@ -927,9 +997,7 @@ class TestRunExtractionFailures:
         storage: InMemoryStorage,
         settings: Settings,
     ) -> None:
-        ctx, claim_id, att_id, clock = self._setup_draft(
-            session, worker_env, storage
-        )
+        ctx, claim_id, att_id, clock = self._setup_draft(session, worker_env, storage)
         bad = _high_confidence_payload(currency="ZZZ")
         llm = StubLLMClient(chat_payload=bad)
 
@@ -952,9 +1020,7 @@ class TestRunExtractionFailures:
         storage: InMemoryStorage,
         settings: Settings,
     ) -> None:
-        ctx, claim_id, att_id, clock = self._setup_draft(
-            session, worker_env, storage
-        )
+        ctx, claim_id, att_id, clock = self._setup_draft(session, worker_env, storage)
         llm = StubLLMClient(chat_error=LlmRateLimited("rate-limited 3x"))
 
         with pytest.raises(ExtractionRateLimited):
@@ -988,9 +1054,7 @@ class TestRunExtractionFailures:
         storage: InMemoryStorage,
         settings: Settings,
     ) -> None:
-        ctx, claim_id, att_id, clock = self._setup_draft(
-            session, worker_env, storage
-        )
+        ctx, claim_id, att_id, clock = self._setup_draft(session, worker_env, storage)
         llm = StubLLMClient(chat_error=LlmProviderError("400 Bad Request"))
 
         with pytest.raises(ExtractionProviderError):
@@ -1012,9 +1076,7 @@ class TestRunExtractionFailures:
         storage: InMemoryStorage,
         settings: Settings,
     ) -> None:
-        ctx, claim_id, att_id, clock = self._setup_draft(
-            session, worker_env, storage
-        )
+        ctx, claim_id, att_id, clock = self._setup_draft(session, worker_env, storage)
         llm = StubLLMClient(chat_error=LlmTransportError("502 Bad Gateway"))
 
         with pytest.raises(ExtractionProviderError):
@@ -1036,9 +1098,7 @@ class TestRunExtractionFailures:
         storage: InMemoryStorage,
         settings: Settings,
     ) -> None:
-        ctx, claim_id, att_id, clock = self._setup_draft(
-            session, worker_env, storage
-        )
+        ctx, claim_id, att_id, clock = self._setup_draft(session, worker_env, storage)
         llm = StubLLMClient(chat_error=TimeoutError("read timeout"))
 
         with pytest.raises(ExtractionTimeout):
@@ -1344,9 +1404,7 @@ class TestAttachReceiptRunner:
 
         attachments = list(
             session.scalars(
-                select(ExpenseAttachment).where(
-                    ExpenseAttachment.claim_id == view.id
-                )
+                select(ExpenseAttachment).where(ExpenseAttachment.claim_id == view.id)
             )
         )
         assert len(attachments) == 1

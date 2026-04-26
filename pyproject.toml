@@ -481,28 +481,26 @@ ignore_imports = [
     "app.domain.tasks.comments -> app.adapters.db.identity.models",
     "app.domain.tasks.comments -> app.adapters.db.workspace.models",
     "app.domain.tasks.comments -> app.authz",
-    # v1 stopgap (cd-7rfu, cd-9guk, cd-95zb):
-    # ``app.domain.expenses.claims`` reads :class:`ExpenseClaim` /
-    # :class:`ExpenseAttachment` and ``app.domain.expenses.approval``
-    # reads :class:`ExpenseClaim` from
+    # v1 stopgap (cd-9guk, cd-95zb): ``app.domain.expenses.approval``
+    # reads :class:`ExpenseClaim` / :class:`ExpenseAttachment` from
     # ``app.adapters.db.expenses.models`` (plus the module-private
-    # ``_STATE_VALUES`` / ``_CATEGORY_VALUES`` /
-    # ``_ATTACHMENT_KIND_VALUES`` / ``_REIMBURSED_VIA_VALUES`` value
-    # tuples). Both also read :class:`WorkEngagement` from
-    # ``app.adapters.db.workspace.models`` (per-engagement budget +
-    # routing). Both also call :func:`app.authz.require` for the
-    # ``expenses.create`` / ``expenses.approve`` defence-in-depth
-    # checks — same transitive-walk reasoning as the
-    # ``app.domain.tasks.oneoff -> app.authz`` stopgap above.
-    # ``app.domain.expenses.autofill`` additionally reads
-    # :class:`LlmUsage` from ``app.adapters.db.llm.models`` to
-    # record post-flight token spend (same envelope as the LLM
-    # router/budget stopgaps). Same Protocol-seam pattern as the
-    # tasks / messaging services; tracked by cd-duv6 — drops once
-    # the expenses + workspace + llm repositories land.
-    "app.domain.expenses.claims -> app.adapters.db.expenses.models",
-    "app.domain.expenses.claims -> app.adapters.db.workspace.models",
-    "app.domain.expenses.claims -> app.authz",
+    # ``_STATE_VALUES`` / ``_REIMBURSED_VIA_VALUES`` value tuples) and
+    # :class:`WorkEngagement` from ``app.adapters.db.workspace.models``
+    # (engagement-membership reads). It also calls
+    # :func:`app.authz.require` for the ``expenses.approve`` /
+    # ``expenses.reimburse`` defence-in-depth checks — same transitive-
+    # walk reasoning as the ``app.domain.tasks.oneoff -> app.authz``
+    # stopgap above. ``app.domain.expenses.autofill`` additionally reads
+    # :class:`LlmUsage` from ``app.adapters.db.llm.models`` to record
+    # post-flight token spend (same envelope as the LLM router/budget
+    # stopgaps).
+    #
+    # The ``app.domain.expenses.claims`` edges that previously lived
+    # here dropped with cd-0e8i, which rewired the claims service onto
+    # the cd-v3jp ``ExpensesRepository`` + ``CapabilityChecker``
+    # Protocol seams. The remaining approval / autofill stopgaps drop
+    # alongside the cd-zoj4 (approval) and cd-sxmz (autofill) follow-
+    # ups, both blocked on cd-0e8i.
     "app.domain.expenses.approval -> app.adapters.db.expenses.models",
     "app.domain.expenses.approval -> app.adapters.db.workspace.models",
     "app.domain.expenses.approval -> app.authz",
@@ -519,14 +517,6 @@ ignore_imports = [
     "app.domain.identity.work_roles -> app.adapters.db.workspace.models",
     "app.domain.identity.user_work_roles -> app.adapters.db.workspace.models",
     "app.domain.identity.work_engagements -> app.adapters.db.workspace.models",
-    # v1 stopgap (cd-7qxh): ``app.domain.expenses.claims`` reads
-    # :class:`User.id` / :class:`User.display_name` from
-    # ``app.adapters.db.identity.models`` for the per-user breakdown
-    # in ``pending_reimbursement`` (the manager UI surfaces "Maya's
-    # outstanding"). Same Protocol-seam pattern as the
-    # other ``expenses.*`` stopgaps above; tracked by cd-duv6
-    # (extended scope) — drops once the identity repository lands.
-    "app.domain.expenses.claims -> app.adapters.db.identity.models",
     # v1 stopgap (cd-yqm4):
     # ``app.domain.identity.user_workspace_refresh`` is the canonical
     # reconciler for the derived ``user_workspace`` junction. It reads
