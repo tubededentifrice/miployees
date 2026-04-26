@@ -239,7 +239,9 @@ def test_task_overdue_rejects_naive_overdue_since() -> None:
             correlation_id="corr_1",
             occurred_at=_utc(),
             task_id="task_1",
+            assigned_user_id=None,
             overdue_since=datetime(2026, 4, 19, 11, 0, 0),  # naive
+            slipped_minutes=15,
         )
 
 
@@ -265,7 +267,9 @@ def test_task_overdue_rejects_non_utc_aware_overdue_since() -> None:
             correlation_id="corr_1",
             occurred_at=_utc(),
             task_id="task_1",
+            assigned_user_id=None,
             overdue_since=datetime(2026, 4, 19, 11, 0, 0, tzinfo=minus_three),
+            slipped_minutes=15,
         )
 
 

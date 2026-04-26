@@ -32,6 +32,8 @@ from app.worker.scheduler import (
     IDEMPOTENCY_SWEEP_JOB_ID,
     LLM_BUDGET_REFRESH_INTERVAL_SECONDS,
     LLM_BUDGET_REFRESH_JOB_ID,
+    OVERDUE_DETECT_INTERVAL_SECONDS,
+    OVERDUE_DETECT_JOB_ID,
     USER_WORKSPACE_REFRESH_INTERVAL_SECONDS,
     USER_WORKSPACE_REFRESH_JOB_ID,
     create_scheduler,
@@ -69,7 +71,7 @@ class TestCreateScheduler:
 class TestRegisterJobs:
     def test_registers_expected_ids(self) -> None:
         """Standard job set: heartbeat + generator + idempotency-sweep
-        + llm-budget + user_workspace-refresh.
+        + llm-budget + user_workspace-refresh + overdue-detect.
         """
         sched = create_scheduler()
         register_jobs(sched)
@@ -83,6 +85,7 @@ class TestRegisterJobs:
             IDEMPOTENCY_SWEEP_JOB_ID,
             HEARTBEAT_JOB_ID,
             LLM_BUDGET_REFRESH_JOB_ID,
+            OVERDUE_DETECT_JOB_ID,
             USER_WORKSPACE_REFRESH_JOB_ID,
         }
 
@@ -116,10 +119,52 @@ class TestRegisterJobs:
             IDEMPOTENCY_SWEEP_JOB_ID,
             HEARTBEAT_JOB_ID,
             LLM_BUDGET_REFRESH_JOB_ID,
+            OVERDUE_DETECT_JOB_ID,
             USER_WORKSPACE_REFRESH_JOB_ID,
         }
-        assert len(ids) == 5
-        assert len(sched.get_jobs()) == 5
+        assert len(ids) == 6
+        assert len(sched.get_jobs()) == 6
+
+
+# ---------------------------------------------------------------------------
+# Overdue sweeper job (cd-hurw)
+# ---------------------------------------------------------------------------
+
+
+class TestOverdueDetectJob:
+    """Registration shape for the 5-minute overdue-sweeper job.
+
+    The body's per-workspace fan-out (skip demo-expired tenants,
+    isolate broken workspaces, sum flipped counts) is covered
+    end-to-end in ``tests/integration/test_tasks_overdue_tick.py``
+    against a real engine — the unit layer pins the registration
+    metadata so a future refactor cannot silently change the
+    operator-visible cadence.
+    """
+
+    def test_adds_overdue_detect_job_at_5min_interval(self) -> None:
+        """Job is registered with the pinned interval + coalesce knobs."""
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        sched = create_scheduler()
+        register_jobs(sched)
+
+        job = sched.get_job(OVERDUE_DETECT_JOB_ID)
+        assert job is not None, (
+            f"{OVERDUE_DETECT_JOB_ID} not registered by register_jobs"
+        )
+
+        # IntervalTrigger at 300 s (5 min).
+        assert isinstance(job.trigger, IntervalTrigger)
+        assert job.trigger.interval.total_seconds() == 300.0
+        assert OVERDUE_DETECT_INTERVAL_SECONDS == 300
+
+        # Wrapper knobs: misfire grace = interval (one-tick-late is
+        # idempotent; two-ticks-late is a stuck-scheduler signal),
+        # single instance, coalesce on.
+        assert job.misfire_grace_time == OVERDUE_DETECT_INTERVAL_SECONDS
+        assert job.coalesce is True
+        assert job.max_instances == 1
 
 
 # ---------------------------------------------------------------------------

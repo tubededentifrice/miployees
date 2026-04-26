@@ -10,10 +10,11 @@ missing. A statement that sneaks past the tenancy filter without a
 ``workspace_id`` predicate is the exact bug this case exists to
 catch (§17 "Cross-tenant regression test" case (b)).
 
-The current v1 worker registry is small — only
-:func:`app.worker.tasks.generator.generate_task_occurrences` ships
-today. Every future job added to the registry MUST add a matching
-case here; the parity gate in
+The v1 worker registry currently covers
+:func:`app.worker.tasks.generator.generate_task_occurrences` (cd-22e)
+and :func:`app.worker.tasks.overdue.detect_overdue` (cd-hurw); both
+have a matching case below. Every future job added to the registry
+MUST add a matching case here; the parity gate in
 :mod:`tests.tenant.test_repository_parity` enforces that link so a
 new job cannot ship cross-tenant-blind.
 
@@ -54,6 +55,7 @@ from app.tenancy import tenant_agnostic
 from app.tenancy.registry import scoped_tables
 from app.util.ulid import new_ulid
 from app.worker.tasks.generator import generate_task_occurrences
+from app.worker.tasks.overdue import detect_overdue
 from tests.tenant.conftest import TenantSeed
 
 pytestmark = pytest.mark.integration
@@ -64,9 +66,10 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 
-# Fully-qualified name → callable. Today the only registered job is
-# the task generator; adding a new job with no matching test case
-# here fails :func:`TestWorkerRegistryParity.test_every_job_covered`.
+# Fully-qualified name → callable. Currently covers the task
+# generator (cd-22e) and the overdue sweeper (cd-hurw); adding a new
+# job with no matching test case here fails
+# :func:`TestWorkerRegistryParity.test_every_job_covered`.
 #
 # The "registry" is a hand-maintained tuple because
 # :mod:`app.worker.tasks` hasn't settled its runtime registry shape
@@ -76,6 +79,10 @@ _WORKER_REGISTRY: tuple[tuple[str, Any], ...] = (
     (
         "app.worker.tasks.generator.generate_task_occurrences",
         generate_task_occurrences,
+    ),
+    (
+        "app.worker.tasks.overdue.detect_overdue",
+        detect_overdue,
     ),
 )
 
@@ -344,6 +351,70 @@ def seeded_schedules(
 class TestWorkerSqlIsWorkspaceScoped:
     """Case (b) — every emitted SQL statement binds the ctx's workspace_id."""
 
+    def test_overdue_binds_ctx_workspace_id_only(
+        self,
+        engine: Engine,
+        tenant_session_factory: sessionmaker[Session],
+        tenant_a: TenantSeed,
+        tenant_b: TenantSeed,
+    ) -> None:
+        """Run :func:`detect_overdue` under ctx ``B``; assert no ``A`` leaks.
+
+        The sweeper SELECTs ``occurrence`` rows in flippable states +
+        per-row UPDATEs the matched ones. Both sides MUST bind
+        ``ctx.workspace_id`` (no occurrence rows are seeded; the empty
+        SELECT still emits the predicate, which is what the harness
+        captures). The ``workspace.settings_json`` SELECT inside
+        :func:`resolve_overdue_grace_minutes` is tenant-agnostic by
+        design (the workspace table is the tenancy anchor) and is
+        excluded from the scoped-table predicate via
+        :func:`_statement_targets_scoped_table` — same posture the
+        generator's audit-row write enjoys.
+        """
+        from app.tenancy.current import reset_current, set_current
+
+        capture = _SqlCapture()
+        event.listen(engine, "before_cursor_execute", capture)
+        try:
+            with tenant_session_factory() as session:
+                token = set_current(tenant_b.ctx)
+                try:
+                    detect_overdue(
+                        tenant_b.ctx,
+                        session=session,
+                        now=_ACTIVE_NOW,
+                        grace_minutes=15,
+                    )
+                    session.commit()
+                finally:
+                    reset_current(token)
+        finally:
+            event.remove(engine, "before_cursor_execute", capture)
+
+        assert capture.entries, (
+            "detect_overdue emitted zero statements — capture hook is mis-wired"
+        )
+
+        offenders: list[tuple[str, str]] = []
+        for stmt, params in capture.entries:
+            table = _statement_targets_scoped_table(stmt)
+            if table is None:
+                continue
+            try:
+                _assert_workspace_bound(
+                    stmt,
+                    params,
+                    expected_workspace_id=tenant_b.workspace_id,
+                    forbidden_workspace_id=tenant_a.workspace_id,
+                )
+            except AssertionError as exc:
+                offenders.append((stmt, str(exc)))
+
+        assert not offenders, (
+            "detect_overdue emitted statements that failed the "
+            f"workspace-scope check: {offenders!r}"
+        )
+
     def test_generator_binds_ctx_workspace_id_only(
         self,
         engine: Engine,
@@ -425,6 +496,7 @@ class TestWorkerRegistryParity:
         """
         covered: set[str] = {
             "app.worker.tasks.generator.generate_task_occurrences",
+            "app.worker.tasks.overdue.detect_overdue",
         }
         uncovered = [
             name for name, _callable in _WORKER_REGISTRY if name not in covered

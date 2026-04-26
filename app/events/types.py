@@ -417,17 +417,55 @@ class TaskCommentAdded(Event):
 
 @register
 class TaskOverdue(Event):
-    """A task occurrence is past its due time without completion."""
+    """A task occurrence is past its due time without completion.
+
+    Published by :func:`app.worker.tasks.overdue.detect_overdue` once
+    per ``state IN ('scheduled', 'pending', 'in_progress')`` row whose
+    ``ends_at + grace`` falls below ``now``. The payload carries the
+    foreign-key + diagnostic data the §10 notification fanout and the
+    SSE-driven manager dashboard need to react without re-reading the
+    row:
+
+    * ``task_id`` — the affected occurrence; the FK every subscriber
+      uses to fetch context (assignee, property, scheduled time).
+    * ``assigned_user_id`` — current assignee, ``None`` when the row
+      is still unassigned. The §10 notification fanout uses this to
+      decide whether to ping the worker; an unassigned overdue still
+      reaches the manager surface via the workspace-wide subscription.
+    * ``overdue_since`` — UTC instant the sweeper flipped the row.
+      Mirrors ``occurrence.overdue_since``; carried on the event so a
+      subscriber that only watches the bus does not have to re-fetch
+      the row to render "overdue 12 minutes ago".
+    * ``slipped_minutes`` — minutes between ``ends_at`` and the
+      sweeper's ``now`` (floored). Diagnostic; lets dashboards
+      bucket "just slipped" vs. "stuck for hours" without parsing
+      ``overdue_since`` against the row's SLA.
+    """
 
     name: ClassVar[str] = "task.overdue"
 
     task_id: str
+    assigned_user_id: str | None
     overdue_since: datetime
+    slipped_minutes: int
 
     @field_validator("overdue_since")
     @classmethod
     def _overdue_since_is_utc(cls, value: datetime) -> datetime:
         return _require_aware_utc(value)
+
+    @field_validator("slipped_minutes")
+    @classmethod
+    def _slipped_minutes_non_negative(cls, value: int) -> int:
+        # The sweeper always computes ``floor((now - ends_at) / 60)``
+        # under a precondition that ``ends_at + grace < now``; the
+        # value can be zero only when ``grace == 0`` and the rounding
+        # cuts the residual sub-minute, but never negative. Reject a
+        # negative payload at publish time so a future caller bug
+        # surfaces immediately rather than fanning out to subscribers.
+        if value < 0:
+            raise ValueError(f"slipped_minutes must be non-negative; got {value}")
+        return value
 
 
 @register

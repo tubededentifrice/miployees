@@ -87,6 +87,8 @@ __all__ = [
     "IDEMPOTENCY_SWEEP_JOB_ID",
     "LLM_BUDGET_REFRESH_INTERVAL_SECONDS",
     "LLM_BUDGET_REFRESH_JOB_ID",
+    "OVERDUE_DETECT_INTERVAL_SECONDS",
+    "OVERDUE_DETECT_JOB_ID",
     "USER_WORKSPACE_REFRESH_INTERVAL_SECONDS",
     "USER_WORKSPACE_REFRESH_JOB_ID",
     "create_scheduler",
@@ -144,6 +146,20 @@ LLM_BUDGET_REFRESH_JOB_ID: str = "llm_budget_refresh_aggregate"
 # within 60 s"). Pulled out as a module-level constant so tests can
 # import it rather than re-derive the number from the spec.
 LLM_BUDGET_REFRESH_INTERVAL_SECONDS: int = 60
+
+# Stable job id for the soft-overdue sweeper tick (cd-hurw). The
+# per-workspace fan-out built by :func:`_make_overdue_fanout_body`
+# calls :func:`~app.worker.tasks.overdue.detect_overdue` once per
+# workspace under a system-actor :class:`WorkspaceContext`.
+OVERDUE_DETECT_JOB_ID: str = "detect_overdue"
+
+# Interval for the overdue sweeper. Spec §06 + cd-hurw pin 5 minutes
+# (and surface the cadence as a per-workspace setting
+# ``tasks.overdue_tick_seconds`` for future tuning). Pulled out as a
+# module-level constant so tests and the scheduler-wiring code share
+# the same number without re-deriving it from the spec.
+OVERDUE_DETECT_INTERVAL_SECONDS: int = 300
+
 
 # Stable job id for the ``user_workspace`` derive-refresh tick (cd-yqm4).
 # The reconciler in
@@ -395,6 +411,7 @@ def register_jobs(
         GENERATOR_JOB_ID,
         IDEMPOTENCY_SWEEP_JOB_ID,
         LLM_BUDGET_REFRESH_JOB_ID,
+        OVERDUE_DETECT_JOB_ID,
         USER_WORKSPACE_REFRESH_JOB_ID,
     ):
         with contextlib.suppress(JobLookupError):
@@ -515,6 +532,39 @@ def register_jobs(
         max_instances=1,
         coalesce=True,
         misfire_grace_time=90,
+    )
+
+    # --- 5 min soft-overdue sweeper fan-out (cd-hurw) ---
+    # Single-workspace callable in ``app/worker/tasks/overdue.py``;
+    # the per-tick fan-out across workspaces is built by
+    # :func:`_make_overdue_fanout_body`. Interval-anchored at 5 min;
+    # the cadence matches the spec default and the
+    # ``tasks.overdue_tick_seconds`` workspace setting (whose
+    # per-tenant override is the cd-settings-cascade follow-up — the
+    # scheduler wires the deployment-wide default for now). The
+    # detect_overdue body is itself idempotent (the load query
+    # excludes ``state='overdue'`` rows and the per-row UPDATE
+    # re-asserts the source-state predicate so a manual transition
+    # between ticks is preserved), so a misfire that runs late or a
+    # coalesced tick is strictly safe.
+    scheduler.add_job(
+        wrap_job(
+            _make_overdue_fanout_body(resolved_clock),
+            job_id=OVERDUE_DETECT_JOB_ID,
+            clock=resolved_clock,
+        ),
+        trigger=IntervalTrigger(seconds=OVERDUE_DETECT_INTERVAL_SECONDS),
+        id=OVERDUE_DETECT_JOB_ID,
+        name=OVERDUE_DETECT_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        # ``misfire_grace_time = OVERDUE_DETECT_INTERVAL_SECONDS`` —
+        # one tick late is fine (the body is idempotent), two-ticks
+        # late is a signal the scheduler is stuck and a skip is
+        # preferable to a stacked catch-up that hammers the DB on an
+        # already-strained host.
+        misfire_grace_time=OVERDUE_DETECT_INTERVAL_SECONDS,
     )
 
     # --- 5 min user_workspace derive-refresh (cd-yqm4) ---
@@ -929,6 +979,130 @@ def _make_generator_fanout_body(clock: Clock) -> Callable[[], None]:
                 "total_tasks_created": total_tasks_created,
                 "total_skipped_duplicate": total_skipped_duplicate,
                 "total_skipped_for_closure": total_skipped_for_closure,
+            },
+        )
+
+    return _body
+
+
+def _make_overdue_fanout_body(clock: Clock) -> Callable[[], None]:
+    """Build the 5-minute soft-overdue sweeper fan-out body (cd-hurw).
+
+    Mirror of :func:`_make_generator_fanout_body` for the overdue
+    sweeper: enumerate every live workspace, bind a system-actor
+    :class:`WorkspaceContext`, run
+    :func:`~app.worker.tasks.overdue.detect_overdue` per tenant inside
+    a SAVEPOINT so a single broken workspace does not roll back its
+    siblings' updates. Demo-expired workspaces are skipped (same §24
+    rationale the generator fan-out cites).
+
+    Structured-log emission:
+
+    * ``event="worker.overdue.workspace.tick"`` (INFO) — per workspace,
+      with ``workspace_id``, ``workspace_slug``, ``flipped_count``,
+      ``skipped_already_overdue``, ``skipped_manual_transition``. The
+      per-workspace payload operator dashboards key on for "which
+      tenants are stacking overdue tasks?".
+    * ``event="worker.overdue.workspace.failed"`` (WARNING) — per
+      workspace, with ``workspace_id`` + the exception class name.
+    * ``event="worker.overdue.tick.summary"`` (INFO) — once per tick,
+      with ``total_workspaces``, ``total_workspaces_skipped`` (demo-
+      expired), ``total_workspaces_failed``, ``total_flipped``,
+      ``total_skipped_manual_transition``. Sums of the matching
+      :class:`OverdueReport` fields.
+
+    The :func:`detect_overdue` import is deferred into the closure
+    body so module import order stays robust — same pattern the
+    sibling generator fan-out uses.
+    """
+
+    def _body() -> None:
+        from sqlalchemy.orm import Session as _Session
+
+        from app.adapters.db.workspace.models import Workspace
+        from app.tenancy import tenant_agnostic
+        from app.tenancy.current import reset_current, set_current
+        from app.worker.tasks.overdue import detect_overdue
+
+        now = clock.now()
+
+        total_workspaces = 0
+        total_workspaces_skipped = 0
+        total_workspaces_failed = 0
+        total_flipped = 0
+        total_skipped_manual_transition = 0
+
+        with make_uow() as session:
+            assert isinstance(session, _Session)
+
+            with tenant_agnostic():
+                rows = list(session.execute(select(Workspace.id, Workspace.slug)).all())
+                workspace_ids = [row.id for row in rows]
+                expired_ids = _demo_expired_workspace_ids(
+                    session, workspace_ids, now=now
+                )
+
+            for row in rows:
+                workspace_id = row.id
+                workspace_slug = row.slug
+                total_workspaces += 1
+
+                if workspace_id in expired_ids:
+                    total_workspaces_skipped += 1
+                    continue
+
+                ctx = _system_actor_context(
+                    workspace_id=workspace_id,
+                    workspace_slug=workspace_slug,
+                )
+                token = set_current(ctx)
+                try:
+                    try:
+                        with session.begin_nested():
+                            report = detect_overdue(
+                                ctx,
+                                session=session,
+                                clock=clock,
+                            )
+                    except Exception as exc:
+                        total_workspaces_failed += 1
+                        _log.warning(
+                            "worker.overdue.workspace.failed",
+                            extra={
+                                "event": "worker.overdue.workspace.failed",
+                                "workspace_id": workspace_id,
+                                "workspace_slug": workspace_slug,
+                                "error": type(exc).__name__,
+                            },
+                        )
+                        continue
+                finally:
+                    reset_current(token)
+
+                total_flipped += report.flipped_count
+                total_skipped_manual_transition += report.skipped_manual_transition
+
+                _log.info(
+                    "worker.overdue.workspace.tick",
+                    extra={
+                        "event": "worker.overdue.workspace.tick",
+                        "workspace_id": workspace_id,
+                        "workspace_slug": workspace_slug,
+                        "flipped_count": report.flipped_count,
+                        "skipped_already_overdue": report.skipped_already_overdue,
+                        "skipped_manual_transition": (report.skipped_manual_transition),
+                    },
+                )
+
+        _log.info(
+            "worker.overdue.tick.summary",
+            extra={
+                "event": "worker.overdue.tick.summary",
+                "total_workspaces": total_workspaces,
+                "total_workspaces_skipped": total_workspaces_skipped,
+                "total_workspaces_failed": total_workspaces_failed,
+                "total_flipped": total_flipped,
+                "total_skipped_manual_transition": total_skipped_manual_transition,
             },
         )
 

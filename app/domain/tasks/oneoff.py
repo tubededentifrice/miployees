@@ -408,6 +408,12 @@ class TaskView:
     created_by: str
     is_personal: bool
     created_at: datetime
+    # cd-hurw soft-overdue marker. ``None`` when the row is not
+    # currently overdue (either it never slipped or a manual transition
+    # cleared it). Carried on the view so :func:`TaskPayload.from_view`
+    # can pin ``overdue=True`` from the column instead of re-computing
+    # the time-derived projection — the column wins when present.
+    overdue_since: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -922,6 +928,9 @@ def _row_to_view(row: Occurrence) -> TaskView:
         created_by=row.created_by_user_id or "",
         is_personal=row.is_personal,
         created_at=_ensure_utc(row.created_at),
+        overdue_since=_ensure_utc(row.overdue_since)
+        if row.overdue_since is not None
+        else None,
     )
 
 

@@ -109,9 +109,11 @@ _ASSIGNEE_ROLE_VALUES: tuple[str, ...] = (
 # widens the enum with ``scheduled`` (pre-materialisation state
 # used by the scheduler worker as it stages future rows) and
 # ``cancelled`` (set by :func:`app.domain.tasks.schedules.delete`
-# when a parent schedule is soft-deleted). The full §06 machine
-# (``completed``, ``overdue``) lands with the scheduler worker and
-# the overdue-sweeper follow-ups.
+# when a parent schedule is soft-deleted). cd-hurw widens it with
+# ``overdue``, the soft state the sweeper worker
+# (:mod:`app.worker.tasks.overdue`) flips a task into when
+# ``ends_at + grace`` is past — §06 "State machine" pins it as
+# never-terminal.
 _OCCURRENCE_STATE_VALUES: tuple[str, ...] = (
     "scheduled",
     "pending",
@@ -120,6 +122,7 @@ _OCCURRENCE_STATE_VALUES: tuple[str, ...] = (
     "skipped",
     "approved",
     "cancelled",
+    "overdue",
 )
 
 # Allowed ``evidence.kind`` values — the §02 evidence taxonomy. The
@@ -605,6 +608,15 @@ class Occurrence(Base):
     # compat with pre-cd-22e rows.
     originally_scheduled_for: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    # cd-hurw soft-overdue marker (§06 "State machine"). The sweeper
+    # stamps this with ``now`` when it flips a row into ``overdue``;
+    # any manual transition (start / complete / skip / cancel /
+    # revert_overdue) clears it back to NULL. NULL therefore means
+    # "not currently overdue", whether the row never slipped or
+    # whether a manual transition recovered it.
+    overdue_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -700,6 +712,17 @@ class Occurrence(Base):
             "workspace_id",
             "state",
             "starts_at",
+        ),
+        # cd-hurw sweeper hot path: "find every task in
+        # scheduled / pending / in_progress whose ends_at + grace is
+        # past" — the ``state IN (...)`` prefix is the selective leg,
+        # and ``overdue_since`` trails so the sibling "already overdue,
+        # skip" branch stays cheap on a per-tenant scan.
+        Index(
+            "ix_occurrence_workspace_state_overdue_since",
+            "workspace_id",
+            "state",
+            "overdue_since",
         ),
         # cd-22e idempotency guard: two generator runs over the same
         # window must not materialise the same ``(schedule_id,

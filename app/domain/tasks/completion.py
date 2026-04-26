@@ -172,9 +172,8 @@ __all__ = [
 
 # The §06 enum, broken out so ``_assert_transition`` + the public
 # view stay readable. ``overdue`` is accepted as an in-enum source
-# for the revert path today — the actual DB CHECK does not yet
-# carry it; the widening migration lands with the spec-drift
-# follow-up filed alongside cd-7am7.
+# for the revert path; the cd-hurw migration widened the DB CHECK
+# to admit the value alongside the rest of the §06 set.
 TaskStateName = Literal[
     "scheduled",
     "pending",
@@ -782,6 +781,12 @@ def start(
     _assert_transition(previous, "in_progress")
 
     task.state = "in_progress"
+    # §06 "State machine": "On any manual state change ...
+    # overdue_since is cleared." A worker pushing ``start`` after the
+    # sweeper had flipped the row is the canonical path back from
+    # ``overdue → in_progress``; clear the marker so the next sweeper
+    # tick does not see the row.
+    task.overdue_since = None
     session.flush()
 
     _audit(
@@ -901,6 +906,12 @@ def complete(
     task.state = "done"
     task.completed_at = now
     task.completed_by_user_id = ctx.actor_id
+    # §06 "State machine": clear ``overdue_since`` on any manual
+    # transition. The completion path catches the most common
+    # "overdue → done" exit; the column reverts to NULL alongside
+    # the state flip so reports never see a "done" row that still
+    # claims to be overdue.
+    task.overdue_since = None
     session.flush()
 
     if note_md is not None and note_md.strip():
@@ -1022,6 +1033,11 @@ def skip(
 
     task.state = "skipped"
     task.cancellation_reason = reason
+    # §06 "State machine": clear ``overdue_since`` on any manual
+    # transition. A worker / manager skipping an overdue task moves
+    # it out of the sweeper's purview; the marker reverts to NULL
+    # alongside the state flip.
+    task.overdue_since = None
     session.flush()
 
     _audit(
@@ -1084,6 +1100,11 @@ def cancel(
 
     task.state = "cancelled"
     task.cancellation_reason = reason
+    # §06 "State machine": clear ``overdue_since`` on any manual
+    # transition. An owner / manager cancelling an overdue task moves
+    # it out of the sweeper's purview; the marker reverts to NULL
+    # alongside the state flip.
+    task.overdue_since = None
     session.flush()
 
     _audit(
@@ -1122,14 +1143,10 @@ def revert_overdue(
     """Flip a soft-``overdue`` task back to ``pending`` or ``in_progress``.
 
     Per §06 "State machine": ``overdue`` is a soft state, set by
-    the sweeper worker when ``due_by_utc`` is past. On any manual
-    state change the row reverts to the chosen value and
-    ``overdue_since`` is cleared.
-
-    The ``overdue_since`` column is part of the §06 spec-drift
-    follow-up — until it lands this entry point is a thin wrapper
-    around ``state = target_state``, auditing the decision so the
-    manager can trace the revert.
+    the sweeper worker (:mod:`app.worker.tasks.overdue`) when
+    ``ends_at + grace`` is past. On any manual state change the row
+    reverts to the chosen value and ``overdue_since`` is cleared
+    so the next sweeper tick will not see the row in its result set.
 
     Owners / managers / workers (on their own task) may call; the
     same permission rule as :func:`complete` / :func:`start`.
@@ -1143,9 +1160,11 @@ def revert_overdue(
         )
 
     previous = task.state
+    previous_overdue_since = task.overdue_since
     _assert_transition(previous, target_state)
 
     task.state = target_state
+    task.overdue_since = None
     session.flush()
 
     _audit(
@@ -1155,8 +1174,13 @@ def revert_overdue(
         task=task,
         action="task.revert_overdue",
         diff={
-            "before": {"state": previous},
-            "after": {"state": target_state},
+            "before": {
+                "state": previous,
+                "overdue_since": previous_overdue_since.isoformat()
+                if previous_overdue_since is not None
+                else None,
+            },
+            "after": {"state": target_state, "overdue_since": None},
         },
     )
     return _state_view(task, state=target_state)

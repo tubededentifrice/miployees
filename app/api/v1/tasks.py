@@ -101,7 +101,7 @@ from fastapi import (
     status,
 )
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.adapters.db.places.models import Property
@@ -435,8 +435,11 @@ class TaskPayload(BaseModel):
 
     * ``overdue`` — boolean: the task is past its scheduled UTC
       anchor and not yet in a terminal state. Mirrors §06's soft-
-      overdue rule without needing the ``overdue_since`` column that
-      is still pending migration.
+      overdue rule. The cd-hurw column ``overdue_since`` (set by the
+      sweeper worker) wins when present; for rows the sweeper has
+      not yet visited (between the slip and the next 5-minute tick)
+      we fall back to the time-derived projection so the manager
+      surface does not show a stale "on time" chip.
     * ``time_window_local`` — ``"HH:MM-HH:MM"`` in the property
       timezone, computed from ``scheduled_for_utc`` + the task's
       ``duration_minutes`` (fallback to 30 minutes when the column
@@ -742,9 +745,29 @@ _TERMINAL_STATES: frozenset[str] = frozenset({"done", "skipped", "cancelled"})
 
 
 def _compute_overdue(view: TaskView, now_utc: datetime) -> bool:
-    """``True`` when the task is past its UTC anchor + not terminal."""
+    """``True`` when the task is past its UTC anchor + not terminal.
+
+    The §06 sweeper (:mod:`app.worker.tasks.overdue`) is the canonical
+    writer of the soft state: it flips ``state='overdue'`` and stamps
+    ``overdue_since`` once ``ends_at + grace`` is past. The column
+    therefore takes priority — when the sweeper has visited the row
+    we trust its verdict regardless of the comparison below. For
+    rows the sweeper hasn't reached yet (between the slip and the
+    next 5-minute tick), fall back to the time-derived projection
+    so the manager surface doesn't show a stale "on time" chip until
+    the sweeper catches up.
+    """
     if view.state in _TERMINAL_STATES:
         return False
+    # Column wins when present — the sweeper has already decided this
+    # row is overdue. The state itself is also ``'overdue'`` in that
+    # case (the sweeper writes both fields atomically) but the column
+    # check is the explicit signal; checking it first lets a future
+    # divergence (e.g. a manual ``revert_overdue`` that cleared the
+    # column without flipping ``state`` for some reason) lean on the
+    # column rather than a stale state name.
+    if view.overdue_since is not None or view.state == "overdue":
+        return True
     anchor = view.scheduled_for_utc
     if anchor.tzinfo is None:
         anchor = anchor.replace(tzinfo=ZoneInfo("UTC"))
@@ -1614,14 +1637,22 @@ def list_tasks_route(
     stmt = select(Occurrence).where(Occurrence.workspace_id == ctx.workspace_id)
     if state is not None:
         if state == "overdue":
-            # ``overdue`` is a derived projection (see
-            # :func:`_compute_overdue`) — the DB column never stores
-            # ``'overdue'``. Translate the query into the predicate
-            # the column understands so ``?state=overdue`` actually
-            # returns rows instead of collapsing to an empty page.
+            # cd-hurw: ``overdue`` is now a real DB state, but the
+            # sweeper only flips a row at most every 5 minutes — a
+            # task that slipped 30 seconds ago is still
+            # ``state='pending'`` until the next tick. Cover both:
+            # rows the sweeper has already visited (``state='overdue'``
+            # OR ``overdue_since IS NOT NULL``) and rows the sweeper
+            # has not reached yet (``state IN (pending, in_progress)``
+            # AND ``starts_at < now``). Mirror of
+            # :func:`_compute_overdue`'s prefer-column-then-time logic.
             stmt = stmt.where(
-                Occurrence.state.in_(("pending", "in_progress")),
-                Occurrence.starts_at < now,
+                or_(
+                    Occurrence.state == "overdue",
+                    Occurrence.overdue_since.is_not(None),
+                    (Occurrence.state.in_(("pending", "in_progress")))
+                    & (Occurrence.starts_at < now),
+                )
             )
         else:
             stmt = stmt.where(Occurrence.state == state)
