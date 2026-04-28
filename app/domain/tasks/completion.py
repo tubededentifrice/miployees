@@ -123,6 +123,13 @@ from app.adapters.storage.ports import (
     Storage,
 )
 from app.audit import write_audit
+from app.domain.tasks.evidence import (
+    EvidencePolicyError,
+    EvidenceUpload,
+    delete_evidence,
+    normalize_photo_bytes,
+    snapshot_checklist,
+)
 from app.events.bus import EventBus
 from app.events.bus import bus as default_event_bus
 from app.events.types import (
@@ -139,9 +146,11 @@ __all__ = [
     "ChecklistRequiredResolver",
     "EvidenceContentTypeNotAllowed",
     "EvidenceGpsPayloadInvalid",
+    "EvidencePolicyError",
     "EvidencePolicyResolver",
     "EvidenceRequired",
     "EvidenceTooLarge",
+    "EvidenceUpload",
     "EvidenceView",
     "FileEvidenceKind",
     "InvalidStateTransition",
@@ -158,9 +167,11 @@ __all__ = [
     "add_note_evidence",
     "cancel",
     "complete",
+    "delete_evidence",
     "list_evidence",
     "revert_overdue",
     "skip",
+    "snapshot_checklist",
     "start",
 ]
 
@@ -673,8 +684,16 @@ def _has_photo_evidence(session: Session, task: Occurrence) -> bool:
         .where(
             Evidence.occurrence_id == task.id,
             Evidence.kind == "photo",
+            Evidence.deleted_at.is_(None),
         )
         .limit(1)
+    )
+    return row is not None
+
+
+def _has_checklist_items(session: Session, task: Occurrence) -> bool:
+    row = session.scalar(
+        select(ChecklistItem.id).where(ChecklistItem.occurrence_id == task.id).limit(1)
     )
     return row is not None
 
@@ -917,6 +936,15 @@ def complete(
     if note_md is not None and note_md.strip():
         _write_note_evidence(
             session, ctx, task=task, note_md=note_md, clock=resolved_clock
+        )
+
+    if _has_checklist_items(session, task):
+        snapshot_checklist(
+            session,
+            ctx,
+            task.id,
+            clock=resolved_clock,
+            event_bus=resolved_bus,
         )
 
     # --- Side-effects. --------------------------------------------
@@ -1537,11 +1565,18 @@ def add_file_evidence(
         # sees the actual shape, not the multipart-form lie.
         raise EvidenceContentTypeNotAllowed(kind=kind, content_type=sniffed_type)
 
+    gps_lat: float | None = None
+    gps_lon: float | None = None
+    stored_payload = payload
     if kind == "gps":
         # Parse + validate BEFORE storage so a malformed payload never
         # lands in the blob store (and the audit row carries the
         # rejection reason instead of an opaque blob hash).
-        _validate_gps_payload(payload)
+        gps_payload = _validate_gps_payload(payload)
+        gps_lat = float(gps_payload["lat"])
+        gps_lon = float(gps_payload["lon"])
+    elif kind == "photo":
+        stored_payload = normalize_photo_bytes(payload, sniffed_type)
 
     # Hash + store. The Storage port is idempotent: the same hash on a
     # repeat upload returns the existing blob's metadata without
@@ -1550,8 +1585,8 @@ def add_file_evidence(
     # a worker who attaches the same photo to two tasks gets two rows.
     # The persisted ``content_type`` is the sniffed verdict, not the
     # declared header — what the bytes are, not what the client claimed.
-    blob_hash = hashlib.sha256(payload).hexdigest()
-    storage.put(blob_hash, io.BytesIO(payload), content_type=sniffed_type)
+    blob_hash = hashlib.sha256(stored_payload).hexdigest()
+    storage.put(blob_hash, io.BytesIO(stored_payload), content_type=sniffed_type)
 
     row = Evidence(
         id=new_ulid(),
@@ -1560,8 +1595,12 @@ def add_file_evidence(
         kind=kind,
         blob_hash=blob_hash,
         note_md=None,
+        gps_lat=gps_lat,
+        gps_lon=gps_lon,
+        checklist_snapshot_json=None,
         created_at=resolved_clock.now(),
         created_by_user_id=ctx.actor_id,
+        deleted_at=None,
     )
     session.add(row)
     session.flush()
@@ -1585,6 +1624,7 @@ def add_file_evidence(
                 # sniffed; both in the allow-list).
                 "declared_content_type": content_type,
                 "size_bytes": size_bytes,
+                "stored_size_bytes": len(stored_payload),
             }
         },
     )

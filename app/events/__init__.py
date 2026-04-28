@@ -25,6 +25,7 @@ from app.events.types import (
     TaskCommentAdded,
     TaskCompleted,
     TaskCreated,
+    TaskEvidenceAdded,
     TaskOverdue,
     TaskUpdated,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "TaskCommentAdded",
     "TaskCompleted",
     "TaskCreated",
+    "TaskEvidenceAdded",
     "TaskOverdue",
     "TaskUpdated",
     "bus",

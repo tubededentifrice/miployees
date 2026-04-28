@@ -66,6 +66,7 @@ __all__ = [
     "TaskCommentAdded",
     "TaskCompleted",
     "TaskCreated",
+    "TaskEvidenceAdded",
     "TaskOverdue",
     "TaskPrimaryUnavailable",
     "TaskReassigned",
@@ -314,6 +315,22 @@ class TaskCompleted(Event):
 
     task_id: str
     completed_by: str
+
+
+@register
+class TaskEvidenceAdded(Event):
+    """An evidence row was attached to a task occurrence.
+
+    Payload carries identifiers and the closed evidence kind only; clients
+    fetch row details through REST under the usual task visibility checks.
+    """
+
+    name: ClassVar[str] = "task.evidence_added"
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager", "worker", "client")
+
+    task_id: str
+    evidence_id: str
+    kind: Literal["photo", "voice", "note", "checklist_snapshot", "gps"]
 
 
 @register

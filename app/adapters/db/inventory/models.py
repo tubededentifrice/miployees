@@ -56,6 +56,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.adapters.db.base import Base
@@ -346,7 +347,7 @@ class Movement(Base):
         ),
     )
 
-    @property
+    @hybrid_property
     def occurrence_id(self) -> str | None:
         """Backward-compatible Python alias for task-source rows."""
         return self.source_task_id
@@ -354,6 +355,11 @@ class Movement(Base):
     @occurrence_id.setter
     def occurrence_id(self, value: str | None) -> None:
         self.source_task_id = value
+
+    @occurrence_id.expression
+    @classmethod
+    def occurrence_id(cls) -> Mapped[str | None]:
+        return cls.source_task_id
 
     @property
     def created_by(self) -> str | None:

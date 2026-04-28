@@ -51,6 +51,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -129,7 +130,13 @@ _OCCURRENCE_STATE_VALUES: tuple[str, ...] = (
 # matching ``required_evidence`` enum is a strict superset (it also
 # carries ``none``, which is a template-level "no evidence
 # required" marker rather than a stored-artefact kind).
-_EVIDENCE_KIND_VALUES: tuple[str, ...] = ("photo", "note", "voice", "gps")
+_EVIDENCE_KIND_VALUES: tuple[str, ...] = (
+    "photo",
+    "note",
+    "voice",
+    "gps",
+    "checklist_snapshot",
+)
 
 # Allowed ``comment.kind`` values (cd-cfe4) — the §06 "Task notes are
 # the agent inbox" taxonomy. ``user`` is a human author (worker /
@@ -788,7 +795,7 @@ class ChecklistItem(Base):
 
 
 class Evidence(Base):
-    """Artefact attached to an :class:`Occurrence` — photo / note / voice / gps.
+    """Artefact attached to an :class:`Occurrence`.
 
     ``blob_hash`` is the content-addressed pointer into the asset
     store and is ``NULL`` for the ``note`` kind (the note body lives
@@ -816,6 +823,11 @@ class Evidence(Base):
     # kind. The domain layer enforces the "note ↔ note_md" pairing
     # at write time.
     note_md: Mapped[str | None] = mapped_column(String, nullable=True)
+    gps_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gps_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    checklist_snapshot_json: Mapped[list[Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -824,6 +836,9 @@ class Evidence(Base):
         ForeignKey("user.id", ondelete="SET NULL"),
         nullable=True,
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -831,6 +846,7 @@ class Evidence(Base):
             name="kind",
         ),
         Index("ix_evidence_workspace_occurrence", "workspace_id", "occurrence_id"),
+        Index("ix_evidence_workspace_deleted", "workspace_id", "deleted_at"),
     )
 
 

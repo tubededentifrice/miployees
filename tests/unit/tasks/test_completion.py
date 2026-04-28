@@ -620,6 +620,43 @@ class TestComplete:
         )
         assert result.state == "done"
 
+    def test_photo_require_ignores_deleted_prelinked_photo_evidence(
+        self, session: Session, clock: FrozenClock, bus: EventBus
+    ) -> None:
+        ws = _bootstrap_workspace(session)
+        prop = _bootstrap_property(session)
+        worker = _bootstrap_user(session)
+        occ = _bootstrap_occurrence(
+            session,
+            workspace_id=ws,
+            property_id=prop,
+            assignee_user_id=worker,
+            photo_evidence="required",
+        )
+        session.add(
+            Evidence(
+                id=new_ulid(),
+                workspace_id=ws,
+                occurrence_id=occ,
+                kind="photo",
+                blob_hash="sha256-deleted",
+                note_md=None,
+                created_at=_PINNED,
+                created_by_user_id=worker,
+                deleted_at=_PINNED,
+            )
+        )
+        session.flush()
+
+        with pytest.raises(EvidenceRequired):
+            complete(
+                session,
+                _ctx(ws, role="worker", owner=False, actor_id=worker),
+                occ,
+                clock=clock,
+                event_bus=bus,
+            )
+
     def test_photo_optional_is_permissive(
         self, session: Session, clock: FrozenClock, bus: EventBus
     ) -> None:
@@ -1725,6 +1762,43 @@ class _PinnedSniffer:
 
 class TestAddFileEvidenceMimeSniff:
     """Spec §15: "MIME sniffed server-side; we trust the sniff, not the header"."""
+
+    def test_photo_jpeg_exif_stripped_before_storage(
+        self, session: Session, clock: FrozenClock
+    ) -> None:
+        from tests._fakes.storage import InMemoryStorage
+
+        ws = _bootstrap_workspace(session)
+        prop = _bootstrap_property(session)
+        occ = _bootstrap_occurrence(session, workspace_id=ws, property_id=prop)
+        author = _bootstrap_user(session)
+        storage = InMemoryStorage()
+        exif = b"Exif\x00\x00gps"
+        jpeg = (
+            b"\xff\xd8"
+            + b"\xff\xe1"
+            + (len(exif) + 2).to_bytes(2, "big")
+            + exif
+            + b"\xff\xda\x00\x08scanpixels\xff\xd9"
+        )
+
+        view = add_file_evidence(
+            session,
+            _ctx(ws, actor_id=author),
+            task_id=occ,
+            kind="photo",
+            payload=jpeg,
+            content_type="image/jpeg",
+            storage=storage,
+            mime_sniffer=_PinnedSniffer("image/jpeg"),
+            clock=clock,
+        )
+
+        assert view.blob_hash is not None
+        with storage.get(view.blob_hash) as fh:
+            stored = fh.read()
+        assert b"Exif\x00\x00" not in stored
+        assert b"scanpixels" in stored
 
     def test_evil_exe_declared_as_png_rejected(
         self, session: Session, clock: FrozenClock
