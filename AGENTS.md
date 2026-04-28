@@ -95,9 +95,9 @@ a request you disagree with.
 
 ## Keep this file fresh
 
-Treat `AGENTS.md`, `CLAUDE.md`, `.claude/skills/`, and
-`.claude/agents/` as living instructions. Update them in the same turn
-when:
+Treat `AGENTS.md` / `CLAUDE.md` (same file; `CLAUDE.md` is a symlink
+for Claude compatibility), `.claude/skills/`, and `.claude/agents/` as
+living instructions. Update them in the same turn when:
 
 - An instruction was wrong, stale, or missing and cost you a retry.
 - A skill's procedure failed or produced the wrong output shape.
@@ -229,8 +229,8 @@ crew.day uses **Beads** (`bd` CLI) as its task queue. Anything
 bigger than a typo or obvious same-file fix should have a Beads
 issue so follow-ups don't get lost between sessions.
 
-If `bd` isn't on `PATH`, skip Beads steps and leave a note for a
-Beads-equipped agent. Do not install tooling unless the user asks.
+If `bd` isn't on `PATH`, skip Beads steps. Do not install tooling
+unless the user asks.
 
 ```bash
 bd ready                              # what's unblocked right now
