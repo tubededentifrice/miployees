@@ -44,13 +44,16 @@ class TestItemModel:
         assert item.unit == "pkg"
         assert item.created_at == _PINNED
         # Nullable columns default to ``None``.
+        assert item.property_id is None
         assert item.category is None
         assert item.barcode is None
+        assert item.barcode_ean13 is None
         assert item.min_qty is None
+        assert item.deleted_at is None
 
-    def test_every_unit_value_constructs(self) -> None:
-        """Each of the seven v1 unit values builds a valid row."""
-        units = ("ea", "l", "kg", "m", "pkg", "box", "other")
+    def test_unit_is_free_text(self) -> None:
+        """§08 keeps units operator-authored, not enum-constrained."""
+        units = ("each", "pack", "kg", "liter", "roll", "sleeve/10", "stere")
         for index, unit in enumerate(units):
             item = Item(
                 id=f"01HWA000000000000000000IT{index}",
@@ -72,23 +75,33 @@ class TestItemModel:
             unit="l",
             category="cleaning",
             barcode="3017620422003",
+            barcode_ean13="3017620422003",
             current_qty=Decimal("4.5000"),
             min_qty=Decimal("2.0000"),
+            reorder_target=Decimal("6.0000"),
+            vendor="Supply Co",
+            vendor_url="https://supplier.example/items/dish-soap",
+            unit_cost_cents=1299,
+            tags_json=["cleaning", "kitchen"],
+            notes_md="Buy lavender when possible.",
             created_at=_PINNED,
         )
         assert item.category == "cleaning"
         assert item.barcode == "3017620422003"
+        assert item.barcode_ean13 == "3017620422003"
         assert item.current_qty == Decimal("4.5000")
         assert item.min_qty == Decimal("2.0000")
+        assert item.reorder_target == Decimal("6.0000")
+        assert item.vendor == "Supply Co"
+        assert item.vendor_url == "https://supplier.example/items/dish-soap"
+        assert item.unit_cost_cents == 1299
+        assert item.tags_json == ["cleaning", "kitchen"]
+        assert item.notes_md == "Buy lavender when possible."
 
     def test_tablename(self) -> None:
         assert Item.__tablename__ == "inventory_item"
 
-    def test_unit_check_present(self) -> None:
-        # Constraint name ``unit`` on the model; the shared naming
-        # convention rewrites it to ``ck_inventory_item_unit`` on the
-        # bound column, so match by suffix (mirrors the sibling
-        # ``instructions`` / ``time`` / ``payroll`` test pattern).
+    def test_unit_check_absent(self) -> None:
         checks = [
             c
             for c in Item.__table_args__
@@ -96,17 +109,21 @@ class TestItemModel:
             and c.name is not None
             and str(c.name).endswith("unit")
         ]
-        assert len(checks) == 1
-        sql = str(checks[0].sqltext)
-        for unit in ("ea", "l", "kg", "m", "pkg", "box", "other"):
-            assert unit in sql, f"{unit} missing from CHECK constraint"
+        assert checks == []
 
-    def test_unique_workspace_sku_present(self) -> None:
-        """Key acceptance: UNIQUE ``(workspace_id, sku)``."""
-        uniques = [u for u in Item.__table_args__ if isinstance(u, UniqueConstraint)]
-        assert len(uniques) == 1
-        assert [c.name for c in uniques[0].columns] == ["workspace_id", "sku"]
-        assert uniques[0].name == "uq_inventory_item_workspace_sku"
+    def test_active_sku_and_barcode_unique_indexes_present(self) -> None:
+        indexes = [i for i in Item.__table_args__ if isinstance(i, Index)]
+        by_name = {i.name: i for i in indexes}
+        sku = by_name["uq_inventory_item_workspace_property_sku_active"]
+        barcode = by_name["uq_inventory_item_workspace_property_barcode_active"]
+        assert sku.unique is True
+        assert [c.name for c in sku.columns] == ["workspace_id", "property_id", "sku"]
+        assert barcode.unique is True
+        assert [c.name for c in barcode.columns] == [
+            "workspace_id",
+            "property_id",
+            "barcode_ean13",
+        ]
 
 
 class TestMovementModel:

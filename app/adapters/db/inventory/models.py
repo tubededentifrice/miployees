@@ -36,14 +36,11 @@ workspace-scoped via the package's ``__init__``. FK hygiene:
   (the consume-on-task worker) rather than a user. Audit linkage
   lives in :mod:`app.adapters.db.audit`, not here.
 
-Allowed enum values — the v1 slice matches cd-bxt's explicit
+Allowed enum values — the movement v1 slice matches cd-bxt's explicit
 taxonomy:
 
-* ``unit`` values: ``ea | l | kg | m | pkg | box | other``. Spec §08
-  names ``each | pack | kg | liter | roll`` — the slightly different
-  taxonomy here matches the task body and the mock surface. Widening
-  or aligning on the spec's vocabulary is a one-line CHECK-list
-  change in a later migration.
+* ``unit`` is free text per spec §08. The UI may suggest common values,
+  but the database deliberately carries no CHECK constraint.
 * ``reason`` values: ``receive | issue | adjust | consume``. Spec §02
   §"Enums" names a richer ``restock | consume | adjust | waste |
   transfer_in | transfer_out | audit_correction``; the narrower set
@@ -64,6 +61,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -72,6 +70,7 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -81,24 +80,11 @@ from app.adapters.db.base import Base
 # docstring for the load-order contract. ``workspace.id`` FKs below
 # resolve against ``Base.metadata`` only if ``workspace.models`` has
 # been imported, so we register it here as a side effect.
+from app.adapters.db.places import models as _places_models  # noqa: F401
 from app.adapters.db.workspace import models as _workspace_models  # noqa: F401
 
 __all__ = ["Item", "Movement", "ReorderRule"]
 
-
-# Allowed ``inventory_item.unit`` values — the v1 taxonomy matching
-# cd-bxt's explicit scope. The richer §08 vocabulary (``each | pack
-# | kg | liter | roll``) is a superset-adjacent variant; aligning
-# the two is a later CHECK-list update without a data rewrite.
-_UNIT_VALUES: tuple[str, ...] = (
-    "ea",
-    "l",
-    "kg",
-    "m",
-    "pkg",
-    "box",
-    "other",
-)
 
 # Allowed ``inventory_movement.reason`` values — the v1 slice. The
 # richer §02 / §08 enum (``restock | consume | adjust | waste |
@@ -127,21 +113,13 @@ def _in_clause(values: tuple[str, ...]) -> str:
 class Item(Base):
     """A stock-keeping unit tracked by the workspace.
 
-    An item binds a ``(workspace, sku)`` pair to a human-friendly
-    name, a unit-of-measure (enum), optional category and barcode,
-    and two cached quantities: ``current_qty`` (the running total
-    recomputed from the movement ledger, defaulted to 0) and
-    ``min_qty`` (the reorder threshold, nullable — NULL means "no
-    low-stock alert for this item"). ``created_at`` anchors the
-    audit timeline.
+    An item binds an optional property-scoped SKU to a human-friendly
+    name, a free-text unit-of-measure, optional category / tags /
+    barcode / vendor metadata, cached quantities, and soft-delete
+    timestamps.
 
-    UNIQUE ``(workspace_id, sku)`` enforces cd-bxt's acceptance
-    criterion: a workspace cannot have two items sharing a SKU. The
-    richer §08 surface (``vendor`` / ``vendor_url`` /
-    ``unit_cost_cents`` / ``tags`` / ``notes_md`` / ``deleted_at``
-    soft-delete) lands with cd-jkwr and later follow-ups; the v1
-    slice is the minimum the consume-on-task worker (§08) needs to
-    resolve a movement against a live item row.
+    Partial unique indexes enforce that active rows cannot share SKU
+    or barcode inside one ``(workspace_id, property_id)`` scope.
     """
 
     __tablename__ = "inventory_item"
@@ -152,15 +130,18 @@ class Item(Base):
         ForeignKey("workspace.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # Free-form stock-keeping unit. The composite UNIQUE
-    # ``(workspace_id, sku)`` enforces the one-sku-per-workspace
-    # invariant at the DB.
-    sku: Mapped[str] = mapped_column(String, nullable=False)
+    property_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("property.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # Free-form stock-keeping unit. cd-jkwr scopes uniqueness to active
+    # rows per (workspace, property); SKU itself remains optional.
+    sku: Mapped[str | None] = mapped_column(String, nullable=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    # The CHECK enum clamps the v1 unit taxonomy at the DB layer;
-    # the domain layer validates against the same list before the
-    # write reaches here. Widening to §08's vocabulary lands in a
-    # later migration.
+    # §08 makes unit operator-authored free text. There is no CHECK
+    # constraint; UI pickers may suggest common values but must allow
+    # custom entries.
     unit: Mapped[str] = mapped_column(String, nullable=False)
     # Optional grouping label (``cleaning``, ``guest-amenity``, …).
     # A richer ``tags`` array lands with the §08 follow-up; until
@@ -171,6 +152,7 @@ class Item(Base):
     # §"Barcode scanning"). Free-form string — validated length /
     # checksum at the domain layer.
     barcode: Mapped[str | None] = mapped_column(String, nullable=True)
+    barcode_ean13: Mapped[str | None] = mapped_column(String, nullable=True)
     # Cached running total — recomputed from the :class:`Movement`
     # ledger in the domain layer, stored here so the "low stock"
     # report can scan items without scanning the ledger. Default 0
@@ -187,22 +169,48 @@ class Item(Base):
     # low-stock alert for this item" — an optional flag rather than
     # the zero-default used for ``current_qty``.
     min_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    reorder_target: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
+    vendor: Mapped[str | None] = mapped_column(String, nullable=True)
+    vendor_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    unit_cost_cents: Mapped[int | None] = mapped_column(nullable=True)
+    tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    notes_md: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
-        CheckConstraint(
-            f"unit IN ({_in_clause(_UNIT_VALUES)})",
-            name="unit",
-        ),
-        # Per-acceptance: a workspace cannot mint two items sharing
-        # a SKU. The composite UNIQUE also powers the "fetch by sku"
-        # lookup the §08 barcode UI runs on every scan.
-        UniqueConstraint(
+        Index(
+            "ix_inventory_item_workspace_property_deleted",
             "workspace_id",
+            "property_id",
+            "deleted_at",
+        ),
+        Index(
+            "uq_inventory_item_workspace_property_sku_active",
+            "workspace_id",
+            "property_id",
             "sku",
-            name="uq_inventory_item_workspace_sku",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL AND sku IS NOT NULL"),
+            postgresql_where=text("deleted_at IS NULL AND sku IS NOT NULL"),
+        ),
+        Index(
+            "uq_inventory_item_workspace_property_barcode_active",
+            "workspace_id",
+            "property_id",
+            "barcode_ean13",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL AND barcode_ean13 IS NOT NULL"),
+            postgresql_where=text("deleted_at IS NULL AND barcode_ean13 IS NOT NULL"),
         ),
     )
 

@@ -1346,9 +1346,11 @@ GET    /tasks/{id}/instructions    # resolved set
 ### Inventory
 
 ```
-GET    /inventory                        # items
-POST   /inventory
-PATCH  /inventory/{id}
+GET    /inventory/properties/{pid}/items # active items; `?barcode=...` returns one item or 404
+POST   /inventory/properties/{pid}/items
+PATCH  /inventory/properties/{pid}/items/{id}
+DELETE /inventory/properties/{pid}/items/{id}         # soft-delete; idempotent
+POST   /inventory/properties/{pid}/items/{id}/restore # idempotent restore
 POST   /inventory/{id}/movements         # append a movement
 GET    /inventory/{id}/movements         # full per-item history (paginated)
 POST   /inventory/{id}/adjust            # body {observed_on_hand: number, reason, note?}; 422 "nothing_to_adjust" on zero delta

@@ -32,8 +32,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.identity.models import User
 from app.adapters.db.inventory.models import Item, Movement, ReorderRule
+from app.adapters.db.places.models import Property, PropertyWorkspace
 from app.adapters.db.workspace.models import Workspace
-from app.tenancy import registry
+from app.tenancy import registry, tenant_agnostic
 from app.tenancy.context import WorkspaceContext
 from app.tenancy.current import reset_current, set_current
 from app.tenancy.orm_filter import TenantFilterMissing, install_tenant_filter
@@ -121,6 +122,38 @@ def _bootstrap(
     return workspace, user
 
 
+def _seed_property_workspace(
+    session: Session,
+    *,
+    workspace: Workspace,
+    property_id: str,
+    label: str = "Inventory property",
+) -> str:
+    with tenant_agnostic():
+        session.add(
+            Property(
+                id=property_id,
+                address=f"{label} address",
+                timezone="UTC",
+                tags_json=[],
+                created_at=_PINNED,
+            )
+        )
+        session.flush()
+        session.add(
+            PropertyWorkspace(
+                property_id=property_id,
+                workspace_id=workspace.id,
+                label=label,
+                membership_role="owner_workspace",
+                status="active",
+                created_at=_PINNED,
+            )
+        )
+        session.flush()
+    return property_id
+
+
 class TestMigrationShape:
     """The migration lands all three tables with correct keys + indexes."""
 
@@ -134,19 +167,57 @@ class TestMigrationShape:
         expected = {
             "id",
             "workspace_id",
+            "property_id",
             "sku",
             "name",
             "unit",
             "category",
             "barcode",
+            "barcode_ean13",
             "current_qty",
             "min_qty",
+            "reorder_target",
+            "vendor",
+            "vendor_url",
+            "unit_cost_cents",
+            "tags_json",
+            "notes_md",
             "created_at",
+            "updated_at",
+            "deleted_at",
         }
         assert set(cols) == expected
-        for nullable in ("category", "barcode", "min_qty"):
+        for nullable in (
+            "property_id",
+            "sku",
+            "category",
+            "barcode",
+            "barcode_ean13",
+            "min_qty",
+            "reorder_target",
+            "vendor",
+            "vendor_url",
+            "unit_cost_cents",
+            "notes_md",
+            "updated_at",
+            "deleted_at",
+        ):
             assert cols[nullable]["nullable"] is True, f"{nullable} must be nullable"
-        for notnull in expected - {"category", "barcode", "min_qty"}:
+        for notnull in expected - {
+            "property_id",
+            "sku",
+            "category",
+            "barcode",
+            "barcode_ean13",
+            "min_qty",
+            "reorder_target",
+            "vendor",
+            "vendor_url",
+            "unit_cost_cents",
+            "notes_md",
+            "updated_at",
+            "deleted_at",
+        }:
             assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
 
     def test_inventory_item_fks(self, engine: Engine) -> None:
@@ -156,17 +227,35 @@ class TestMigrationShape:
         }
         assert fks[("workspace_id",)]["referred_table"] == "workspace"
         assert fks[("workspace_id",)]["options"].get("ondelete") == "CASCADE"
+        assert fks[("property_id",)]["referred_table"] == "property"
+        assert fks[("property_id",)]["options"].get("ondelete") == "CASCADE"
 
-    def test_inventory_item_unique_workspace_sku(self, engine: Engine) -> None:
-        uniques = {
-            u["name"]: u
-            for u in inspect(engine).get_unique_constraints("inventory_item")
+    def test_inventory_item_active_unique_indexes(self, engine: Engine) -> None:
+        indexes = {
+            ix["name"]: ix for ix in inspect(engine).get_indexes("inventory_item")
         }
-        assert "uq_inventory_item_workspace_sku" in uniques
-        assert uniques["uq_inventory_item_workspace_sku"]["column_names"] == [
+        assert indexes["ix_inventory_item_workspace_property_deleted"][
+            "column_names"
+        ] == ["workspace_id", "property_id", "deleted_at"]
+        assert indexes["uq_inventory_item_workspace_property_sku_active"][
+            "column_names"
+        ] == [
             "workspace_id",
+            "property_id",
             "sku",
         ]
+        assert indexes["uq_inventory_item_workspace_property_sku_active"]["unique"] == 1
+        assert indexes["uq_inventory_item_workspace_property_barcode_active"][
+            "column_names"
+        ] == [
+            "workspace_id",
+            "property_id",
+            "barcode_ean13",
+        ]
+        assert (
+            indexes["uq_inventory_item_workspace_property_barcode_active"]["unique"]
+            == 1
+        )
 
     def test_inventory_movement_columns(self, engine: Engine) -> None:
         cols = {c["name"]: c for c in inspect(engine).get_columns("inventory_movement")}
@@ -478,29 +567,27 @@ class TestReorderRuleCrud:
 class TestCheckConstraints:
     """CHECK constraints reject values outside the v1 enums / bounds."""
 
-    def test_bogus_unit_rejected(self, db_session: Session) -> None:
+    def test_unit_is_free_text(self, db_session: Session) -> None:
         workspace, user = _bootstrap(
             db_session,
-            email="bogus-unit@example.com",
-            display="BogusUnit",
-            slug="bogus-unit-ws",
-            name="BogusUnitWS",
+            email="free-unit@example.com",
+            display="FreeUnit",
+            slug="free-unit-ws",
+            name="FreeUnitWS",
         )
         token = set_current(_ctx_for(workspace, user.id))
         try:
-            db_session.add(
-                Item(
-                    id="01HWA00000000000000000ITBX",
-                    workspace_id=workspace.id,
-                    sku="BOGUS-1",
-                    name="Bogus",
-                    unit="gallon",  # not in enum
-                    created_at=_PINNED,
-                )
+            item = Item(
+                id="01HWA00000000000000000ITBX",
+                workspace_id=workspace.id,
+                sku="FREE-UNIT",
+                name="Free unit",
+                unit="operator carton",
+                created_at=_PINNED,
             )
-            with pytest.raises(IntegrityError):
-                db_session.flush()
-            db_session.rollback()
+            db_session.add(item)
+            db_session.flush()
+            assert db_session.get(Item, item.id).unit == "operator carton"
         finally:
             reset_current(token)
 
@@ -653,8 +740,10 @@ class TestCheckConstraints:
 class TestUniqueConstraints:
     """UNIQUE composites enforce the v1 invariants."""
 
-    def test_duplicate_workspace_sku_rejected(self, db_session: Session) -> None:
-        """Key acceptance: a workspace cannot mint two ``sku``-equal items."""
+    def test_duplicate_active_property_sku_rejected(
+        self, db_session: Session
+    ) -> None:
+        """Key acceptance: a property cannot have two active items sharing a SKU."""
         workspace, user = _bootstrap(
             db_session,
             email="sku-dup@example.com",
@@ -662,12 +751,18 @@ class TestUniqueConstraints:
             slug="sku-dup-ws",
             name="SkuDupWS",
         )
+        property_id = _seed_property_workspace(
+            db_session,
+            workspace=workspace,
+            property_id="01HWA00000000000000000PRDA",
+        )
         token = set_current(_ctx_for(workspace, user.id))
         try:
             db_session.add(
                 Item(
                     id="01HWA00000000000000000ITDA",
                     workspace_id=workspace.id,
+                    property_id=property_id,
                     sku="DUP-1",
                     name="Dup 1",
                     unit="ea",
@@ -680,7 +775,8 @@ class TestUniqueConstraints:
                 Item(
                     id="01HWA00000000000000000ITDB",
                     workspace_id=workspace.id,
-                    sku="DUP-1",  # same workspace, same SKU
+                    property_id=property_id,
+                    sku="DUP-1",  # same workspace, property, SKU
                     name="Dup 2",
                     unit="pkg",
                     created_at=_PINNED,
@@ -692,8 +788,65 @@ class TestUniqueConstraints:
         finally:
             reset_current(token)
 
+    def test_same_sku_different_properties_allowed(
+        self, db_session: Session
+    ) -> None:
+        """Uniqueness is scoped to active rows per workspace and property."""
+        workspace, user = _bootstrap(
+            db_session,
+            email="sku-prop@example.com",
+            display="SkuProp",
+            slug="sku-prop-ws",
+            name="SkuPropWS",
+        )
+        property_a = _seed_property_workspace(
+            db_session,
+            workspace=workspace,
+            property_id="01HWA00000000000000000PRXA",
+            label="A",
+        )
+        property_b = _seed_property_workspace(
+            db_session,
+            workspace=workspace,
+            property_id="01HWA00000000000000000PRXB",
+            label="B",
+        )
+
+        token = set_current(_ctx_for(workspace, user.id))
+        try:
+            db_session.add_all(
+                [
+                    Item(
+                        id="01HWA00000000000000000ITXA",
+                        workspace_id=workspace.id,
+                        property_id=property_a,
+                        sku="TP-2PLY-12",
+                        name="TP (A)",
+                        unit="pkg",
+                        created_at=_PINNED,
+                    ),
+                    Item(
+                        id="01HWA00000000000000000ITXB",
+                        workspace_id=workspace.id,
+                        property_id=property_b,
+                        sku="TP-2PLY-12",
+                        name="TP (B)",
+                        unit="pkg",
+                        created_at=_PINNED,
+                    ),
+                ]
+            )
+            db_session.flush()
+
+            rows = db_session.scalars(
+                select(Item).where(Item.sku == "TP-2PLY-12")
+            ).all()
+            assert {r.property_id for r in rows} == {property_a, property_b}
+        finally:
+            reset_current(token)
+
     def test_same_sku_different_workspaces_allowed(self, db_session: Session) -> None:
-        """Uniqueness is on ``(workspace_id, sku)`` — two workspaces may share a SKU."""
+        """Two workspaces may still share a SKU."""
         ws_a, user_a = _bootstrap(
             db_session,
             email="sku-iso-a@example.com",
