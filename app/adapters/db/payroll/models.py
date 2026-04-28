@@ -73,7 +73,7 @@ from app.adapters.db.base import Base
 from app.adapters.db.identity import models as _identity_models  # noqa: F401
 from app.adapters.db.workspace import models as _workspace_models  # noqa: F401
 
-__all__ = ["PayPeriod", "PayRule", "Payslip"]
+__all__ = ["PayPeriod", "PayRule", "PayoutDestination", "Payslip"]
 
 
 # Allowed ``pay_period.state`` values — the v1 lifecycle matching
@@ -343,6 +343,12 @@ class Payslip(Base):
     # once signed. The PDF itself lives in blob storage so a purge
     # can drop it while keeping the row intact.
     pdf_blob_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    payout_snapshot_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    payout_manifest_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -363,4 +369,49 @@ class Payslip(Base):
             "user_id",
             name="uq_payslip_pay_period_user",
         ),
+    )
+
+
+class PayoutDestination(Base):
+    """Worker payout routing destination.
+
+    The full payout service lands in the payroll feature stream; this
+    table is the privacy-critical subset needed by the purge flow. The
+    secret routing payload lives in ``secret_envelope`` and this row
+    carries only a pointer plus display metadata that can be scrubbed
+    while preserving historical payslip references.
+    """
+
+    __tablename__ = "payout_destination"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    currency: Mapped[str] = mapped_column(String, nullable=False)
+    display_stub: Mapped[str | None] = mapped_column(String, nullable=True)
+    secret_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    country: Mapped[str | None] = mapped_column(String, nullable=True)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("LENGTH(currency) = 3", name="currency_length"),
+        Index("ix_payout_destination_workspace_user", "workspace_id", "user_id"),
     )

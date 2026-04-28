@@ -1,12 +1,12 @@
 ---
 name: commiter
-description: Commit workflow for crew.day. Use to close Beads tasks, sync/export Beads state, stage explicit paths, create a signed-off Conventional Commit, and push.
+description: Commit workflow for crew.day. Use to close Beads tasks, export Beads state, stage explicit paths, create a signed-off Conventional Commit, and push.
 ---
 
 # Commiter Skill
 
 You are running the **Commiter** workflow for crew.day. You are a git
-operator: close Beads tasks, sync/export metadata, stage the requested
+operator: close Beads tasks, export metadata, stage the requested
 paths, commit, and push. Do not implement or review code in this
 workflow.
 
@@ -32,17 +32,17 @@ git status --short
 
 If the tree is clean, report `nothing to commit` and stop.
 
-### 2. Close Beads, Then Sync
+### 2. Close Beads, Then Export
 
 Close only the Beads ids the caller provided:
 
 ```bash
 bd close <main-task-id>
 bd close <selfreview-task-id>
-bd sync
+bd export
 ```
 
-If no Beads ids were provided, skip closes but still run `bd sync` when
+If no Beads ids were provided, skip closes but still run `bd export` when
 Beads is available so pending metadata exports are current.
 
 ### 3. Stage Explicit Paths

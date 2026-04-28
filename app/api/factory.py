@@ -87,6 +87,7 @@ from app.api.v1.auth import logout as logout_module
 from app.api.v1.auth import magic as magic_module
 from app.api.v1.auth import me as me_module
 from app.api.v1.auth import me_avatar as me_avatar_module
+from app.api.v1.auth import me_export as me_export_module
 from app.api.v1.auth import me_tokens as me_tokens_module
 from app.api.v1.auth import passkey as passkey_module
 from app.api.v1.auth import recovery as recovery_module
@@ -454,6 +455,13 @@ def _mount_auth_routers(
     # the other ``/me`` endpoints.
     app.include_router(
         me_avatar_module.build_me_avatar_router(),
+        prefix=bare_prefix,
+    )
+    # /me/export — identity-scoped privacy access export (§15). Bare
+    # host because the subject is the authenticated human across every
+    # workspace they belong to.
+    app.include_router(
+        me_export_module.build_me_export_router(),
         prefix=bare_prefix,
     )
     # /auth/logout — session-teardown ceremony invoked by the SPA's

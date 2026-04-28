@@ -456,7 +456,7 @@ bd comments list <id>
 ### Sync
 
 ```bash
-bd sync   # export to jsonl for git
+bd export # export to jsonl for git
 ```
 
 ## Common mistakes

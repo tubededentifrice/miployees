@@ -65,6 +65,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
 from app.adapters.db.session import make_uow
+from app.config import get_settings
 from app.observability.metrics import (
     WORKER_JOB_DURATION_SECONDS,
     WORKER_JOBS_TOTAL,
@@ -94,6 +95,7 @@ __all__ = [
     "POLL_ICAL_INTERVAL_SECONDS",
     "POLL_ICAL_JOB_ID",
     "POLL_ICAL_MISFIRE_GRACE_SECONDS",
+    "RETENTION_ROTATION_JOB_ID",
     "USER_WORKSPACE_REFRESH_INTERVAL_SECONDS",
     "USER_WORKSPACE_REFRESH_JOB_ID",
     "WEBHOOK_DISPATCH_INTERVAL_SECONDS",
@@ -262,6 +264,11 @@ WEBHOOK_DISPATCH_JOB_ID: str = "webhook_dispatch"
 # itself a no-op on rows in terminal state, so a tick that fires
 # while no rows are due is cheap.
 WEBHOOK_DISPATCH_INTERVAL_SECONDS: int = 30
+
+# Stable job id for §15 operational-log retention. The body archives
+# rows past each workspace's configured retention window to
+# ``$DATA_DIR/archive/<table>.jsonl.gz`` and deletes the originals.
+RETENTION_ROTATION_JOB_ID: str = "rotate_operational_logs"
 
 
 # Job-body type. Downstream tasks supply either a synchronous callable
@@ -498,6 +505,7 @@ def register_jobs(
         USER_WORKSPACE_REFRESH_JOB_ID,
         APPROVAL_TTL_JOB_ID,
         WEBHOOK_DISPATCH_JOB_ID,
+        RETENTION_ROTATION_JOB_ID,
     ):
         with contextlib.suppress(JobLookupError):
             scheduler.remove_job(pending_id)
@@ -584,6 +592,22 @@ def register_jobs(
         trigger=CronTrigger(hour=3, minute=0),
         id=IDEMPOTENCY_SWEEP_JOB_ID,
         name=IDEMPOTENCY_SWEEP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # --- Daily operational-log retention rotation (cd-vrfg) ---
+    scheduler.add_job(
+        wrap_job(
+            _make_retention_rotation_body(resolved_clock),
+            job_id=RETENTION_ROTATION_JOB_ID,
+            clock=resolved_clock,
+        ),
+        trigger=CronTrigger(hour=3, minute=30),
+        id=RETENTION_ROTATION_JOB_ID,
+        name=RETENTION_ROTATION_JOB_ID,
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -856,6 +880,25 @@ def _make_webhook_dispatch_body(clock: Clock) -> Callable[[], None]:
         # to re-emit. Discard the report — operators read it off the
         # structured-log stream, not the wrapper's return.
         dispatch_due_webhooks(clock=clock)
+
+    return _body
+
+
+def _make_retention_rotation_body(clock: Clock) -> Callable[[], None]:
+    """Build the daily operational-log retention body."""
+
+    def _body() -> None:
+        from app.worker.tasks.privacy import run_retention_rotation
+
+        results = run_retention_rotation(data_dir=get_settings().data_dir, clock=clock)
+        _log.info(
+            "worker.retention.tick",
+            extra={
+                "event": "worker.retention.tick",
+                "tables": [result.table for result in results],
+                "archived_rows": sum(result.archived_rows for result in results),
+            },
+        )
 
     return _body
 

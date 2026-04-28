@@ -76,6 +76,7 @@ from app.domain.payroll.rules import (
     soft_delete_rule,
     update_rule,
 )
+from app.domain.privacy import payout_manifest_available
 from app.tenancy import WorkspaceContext
 
 __all__ = [
@@ -161,6 +162,13 @@ class PayRuleListResponse(BaseModel):
     has_more: bool = False
 
 
+class PayoutManifestResponse(BaseModel):
+    """JIT payout manifest placeholder for issued payslips."""
+
+    payslip_id: str
+    status: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -240,6 +248,7 @@ def build_payroll_router() -> APIRouter:
     api = APIRouter(tags=["payroll"])
 
     edit_gate = Depends(Permission("pay_rules.edit", scope_kind="workspace"))
+    payout_gate = Depends(Permission("payroll.issue_payslip", scope_kind="workspace"))
 
     @api.get(
         "/users/{user_id}/pay-rules",
@@ -404,6 +413,36 @@ def build_payroll_router() -> APIRouter:
         except PayRuleLocked as exc:
             raise _http_for_locked(exc) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @api.post(
+        "/payslips/{payslip_id}/payout_manifest",
+        response_model=PayoutManifestResponse,
+        operation_id="payroll.payslips.payout_manifest",
+        summary="Stream the payout manifest for a payslip",
+        dependencies=[payout_gate],
+    )
+    def payout_manifest(
+        ctx: _Ctx,
+        session: _Db,
+        payslip_id: Annotated[
+            str,
+            Path(
+                min_length=1,
+                max_length=_MAX_ID_LEN,
+                description="Payslip id.",
+            ),
+        ],
+    ) -> PayoutManifestResponse:
+        if not payout_manifest_available(
+            session,
+            payslip_id=payslip_id,
+            workspace_id=ctx.workspace_id,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail={"error": "payout_manifest_purged"},
+            )
+        return PayoutManifestResponse(payslip_id=payslip_id, status="available")
 
     return api
 

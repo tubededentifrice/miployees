@@ -26,10 +26,10 @@ rules", §"Pay period", §"Payslip".
 
 from __future__ import annotations
 
-from app.adapters.db.payroll.models import PayPeriod, PayRule, Payslip
+from app.adapters.db.payroll.models import PayPeriod, PayRule, PayoutDestination, Payslip
 from app.tenancy.registry import register
 
-for _table in ("pay_rule", "pay_period", "payslip"):
+for _table in ("pay_rule", "pay_period", "payslip", "payout_destination"):
     register(_table)
 
-__all__ = ["PayPeriod", "PayRule", "Payslip"]
+__all__ = ["PayPeriod", "PayRule", "PayoutDestination", "Payslip"]
