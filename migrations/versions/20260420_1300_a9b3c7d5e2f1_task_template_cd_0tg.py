@@ -48,9 +48,9 @@ Column rationale:
   surfaced on the task detail screen.
 * ``priority`` — four-value enum (``low | normal | high | urgent``)
   used by the manager's sort + chip.
-* ``inventory_consumption_json`` — flat SKU → qty payload for the
-  consume-on-task worker (§08). JSON rather than a join table for
-  the v1 slice; promoted to a proper row model with cd-jkwr.
+* ``inventory_effects_json`` — list of ``{item_ref, kind, qty}``
+  payloads for the consume/produce task-completion worker (§08).
+  JSON rather than a join table for the v1 slice.
 * ``llm_hints_md`` — free-text hints the agent inbox (§06) passes to
   the LLM when explaining the task.
 * ``deleted_at`` — soft-delete marker. Nullable; live rows carry
@@ -170,10 +170,10 @@ def upgrade() -> None:
         )
         batch_op.add_column(
             sa.Column(
-                "inventory_consumption_json",
+                "inventory_effects_json",
                 sa.JSON(),
                 nullable=False,
-                server_default="{}",
+                server_default="[]",
             )
         )
         batch_op.add_column(sa.Column("llm_hints_md", sa.String(), nullable=True))
@@ -237,7 +237,7 @@ def downgrade() -> None:
         batch_op.drop_constraint("property_scope", type_="check")
         batch_op.drop_column("deleted_at")
         batch_op.drop_column("llm_hints_md")
-        batch_op.drop_column("inventory_consumption_json")
+        batch_op.drop_column("inventory_effects_json")
         batch_op.drop_column("priority")
         batch_op.drop_column("linked_instruction_ids")
         batch_op.drop_column("photo_evidence")

@@ -6,7 +6,7 @@ the full §02 / §06 task-template shape needed by the manager UI
 (``name``, ``role_id``, ``duration_minutes``, ``property_scope`` +
 ``listed_property_ids``, ``area_scope`` + ``listed_area_ids``,
 ``photo_evidence`` three-value enum, ``priority``, ``linked_
-instruction_ids``, ``inventory_consumption_json``, ``llm_hints_md``,
+instruction_ids``, ``inventory_effects_json``, ``llm_hints_md``,
 ``deleted_at``). The cd-chd slice's original columns (``title``,
 ``default_duration_min``, ``required_evidence``, ``photo_required``,
 ``default_assignee_role``) remain in place for backward compat with
@@ -189,7 +189,7 @@ class TaskTemplate(Base):
     surface (``name``, ``role_id``, ``duration_minutes``,
     ``property_scope`` + ``listed_property_ids``, ``area_scope`` +
     ``listed_area_ids``, ``photo_evidence``, ``priority``,
-    ``linked_instruction_ids``, ``inventory_consumption_json``,
+    ``linked_instruction_ids``, ``inventory_effects_json``,
     ``llm_hints_md``, ``deleted_at``). The legacy cd-chd columns
     (``title``, ``default_duration_min``, ``required_evidence``,
     ``photo_required``, ``default_assignee_role``) remain in place
@@ -274,10 +274,10 @@ class TaskTemplate(Base):
     )
     # cd-0tg priority enum. Server default ``'normal'``.
     priority: Mapped[str] = mapped_column(String, nullable=False, default="normal")
-    # SKU → qty map consumed by the on-task inventory worker (§08).
-    # JSON rather than a join table for v1; promoted with cd-jkwr.
-    inventory_consumption_json: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
+    # List of {item_ref, kind, qty} inventory effects (§08). JSON
+    # rather than a join table for v1.
+    inventory_effects_json: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
     )
     # Free-text hints the agent inbox (§06) passes to the LLM when
     # explaining the task.

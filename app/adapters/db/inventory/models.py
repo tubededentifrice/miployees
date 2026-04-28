@@ -1,14 +1,13 @@
-"""Item / Movement / ReorderRule SQLAlchemy models.
+"""Inventory item, movement, stocktake, and reorder-rule models.
 
-v1 slice per cd-bxt — sufficient for the ``inventory_item`` CRUD
-follow-up (cd-jkwr) and the consume-on-task-completion worker (§08
-§"Consumption on task completion") to layer business rules on top.
-The richer §02 / §08 surface (``on_hand`` recomputation from the
-movement ledger, ``deleted_at`` soft-delete, ``vendor`` /
-``vendor_url`` / ``unit_cost_cents`` / ``tags`` / ``notes_md`` on
-:class:`Item`, ``inventory_snapshot`` rollups, transfer correlation,
-the wider reason enum, the wider unit vocabulary) lands with those
-follow-ups without breaking this migration's public write contract.
+The inventory context stores a property-scoped SKU catalog and an
+append-only movement ledger per §08. Quantities use
+``Numeric(14, 4, asdecimal=True)`` for the practical decimal
+precision contract, item units are operator-authored free text, and
+movement reasons use the final stock-change taxonomy:
+``restock | consume | produce | waste | theft | loss | found |
+returned_to_vendor | transfer_in | transfer_out | audit_correction |
+adjust``.
 
 Every table carries a ``workspace_id`` column and is registered as
 workspace-scoped via the package's ``__init__``. FK hygiene:
@@ -16,7 +15,7 @@ workspace-scoped via the package's ``__init__``. FK hygiene:
 * ``workspace_id`` cascades on delete — sweeping a workspace sweeps
   its stock library, ledger, and reorder rules (the §15 tombstone /
   export worker snapshots first).
-* ``item_id`` on :class:`Movement` and :class:`ReorderRule` cascades —
+* ``item_id`` on :class:`Movement` and :class:`ReorderRule` cascades -
   deleting an :class:`Item` drops every movement and reorder rule
   referencing it in one go. The two child rows have no meaning
   independent of their parent: a ledger entry without an item is an
@@ -24,29 +23,13 @@ workspace-scoped via the package's ``__init__``. FK hygiene:
   resurrect the item's worker task on the next hourly
   ``check_reorder_points`` pass. The normal archive path (cd-jkwr)
   is a ``deleted_at`` soft-delete on the item row, not a hard DELETE.
-* ``occurrence_id`` on :class:`Movement` is a plain :class:`str`
-  soft-ref (no SQL foreign key). Spec §08 §"Consumption on task
-  completion" names the consuming occurrence, but §06's occurrence
-  identifier is still landing; keeping it as a soft-ref here lets
-  the domain layer resolve it without pinning this migration to a
-  cross-package shape that is still in motion. Same pattern as
-  ``shift.property_id`` in :mod:`app.adapters.db.time`.
-* ``created_by`` on :class:`Movement` is a plain :class:`str`
-  soft-ref — the actor on a consume row may be a system process
-  (the consume-on-task worker) rather than a user. Audit linkage
-  lives in :mod:`app.adapters.db.audit`, not here.
-
-Allowed enum values — the movement v1 slice matches cd-bxt's explicit
-taxonomy:
-
-* ``unit`` is free text per spec §08. The UI may suggest common values,
-  but the database deliberately carries no CHECK constraint.
-* ``reason`` values: ``receive | issue | adjust | consume``. Spec §02
-  §"Enums" names a richer ``restock | consume | adjust | waste |
-  transfer_in | transfer_out | audit_correction``; the narrower set
-  here is what the v1 slice needs to record a single stock movement,
-  and the widening lands with the transfer + waste + audit
-  follow-ups.
+* ``source_task_id`` and ``source_stocktake_id`` on :class:`Movement`
+  are nullable FKs to the task row and property-wide reconciliation
+  session that caused the movement. Routine manual rows leave both
+  NULL.
+* ``actor_id`` on :class:`Movement` and :class:`Stocktake` points to
+  ``user.id`` with ``SET NULL`` so history survives user deletion;
+  ``actor_kind`` distinguishes human, agent, and system authors.
 
 Money, SKU, barcode columns stay plain :class:`str` / :class:`int` —
 no catalog lookup in the v1 schema; the domain layer validates.
@@ -65,6 +48,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKey,
     Index,
     Numeric,
@@ -80,23 +64,35 @@ from app.adapters.db.base import Base
 # docstring for the load-order contract. ``workspace.id`` FKs below
 # resolve against ``Base.metadata`` only if ``workspace.models`` has
 # been imported, so we register it here as a side effect.
+from app.adapters.db.identity import models as _identity_models  # noqa: F401
 from app.adapters.db.places import models as _places_models  # noqa: F401
+from app.adapters.db.tasks import models as _tasks_models  # noqa: F401
 from app.adapters.db.workspace import models as _workspace_models  # noqa: F401
 
-__all__ = ["Item", "Movement", "ReorderRule"]
+__all__ = ["Item", "Movement", "ReorderRule", "Stocktake"]
 
 
-# Allowed ``inventory_movement.reason`` values — the v1 slice. The
-# richer §02 / §08 enum (``restock | consume | adjust | waste |
-# transfer_in | transfer_out | audit_correction``) lands with the
-# transfer + waste + audit follow-ups; the narrower set here covers
-# the minimum the consume-on-task worker (§08) + manual restock /
-# issue / adjust UI need.
 _REASON_VALUES: tuple[str, ...] = (
-    "receive",
-    "issue",
-    "adjust",
+    "restock",
     "consume",
+    "produce",
+    "waste",
+    "theft",
+    "loss",
+    "found",
+    "returned_to_vendor",
+    "transfer_in",
+    "transfer_out",
+    "audit_correction",
+    "adjust",
+)
+_MOVEMENT_ACTOR_KIND_VALUES: tuple[str, ...] = ("user", "agent", "system")
+_STOCKTAKE_ACTOR_KIND_VALUES: tuple[str, ...] = ("user", "agent")
+_MOVEMENT_REASON_ENUM = Enum(
+    *_REASON_VALUES,
+    name="inventory_movement_reason",
+    native_enum=True,
+    create_constraint=True,
 )
 
 
@@ -157,20 +153,19 @@ class Item(Base):
     # ledger in the domain layer, stored here so the "low stock"
     # report can scan items without scanning the ledger. Default 0
     # because a freshly-minted item has no movements yet.
-    # ``Numeric(18, 4)`` is spec-portable: SQLite stores it as TEXT,
-    # Postgres as NUMERIC(18, 4); both preserve the 4-dp precision
-    # needed for fractional units (0.25 kg, 1.500 l).
-    current_qty: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, default=Decimal("0")
+    on_hand: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4, asdecimal=True), nullable=False, default=Decimal("0")
     )
     # Reorder threshold — the periodic ``check_reorder_points``
-    # worker (§08 §"Reorder logic") ensures an open restock task
-    # exists when ``current_qty <= min_qty``. NULL means "no
+    # worker (§08 §"Reorder logic") ensures an open restock task exists
+    # when ``on_hand <= reorder_point``. NULL means "no
     # low-stock alert for this item" — an optional flag rather than
-    # the zero-default used for ``current_qty``.
-    min_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    # the zero-default used for ``on_hand``.
+    reorder_point: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 4, asdecimal=True), nullable=True
+    )
     reorder_target: Mapped[Decimal | None] = mapped_column(
-        Numeric(18, 4), nullable=True
+        Numeric(14, 4, asdecimal=True), nullable=True
     )
     vendor: Mapped[str | None] = mapped_column(String, nullable=True)
     vendor_url: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -214,27 +209,83 @@ class Item(Base):
         ),
     )
 
+    @property
+    def current_qty(self) -> Decimal:
+        """Backward-compatible Python alias for service code still being renamed."""
+        return self.on_hand
+
+    @current_qty.setter
+    def current_qty(self, value: Decimal) -> None:
+        self.on_hand = value
+
+    @property
+    def min_qty(self) -> Decimal | None:
+        """Backward-compatible Python alias for service code still being renamed."""
+        return self.reorder_point
+
+    @min_qty.setter
+    def min_qty(self, value: Decimal | None) -> None:
+        self.reorder_point = value
+
+
+class Stocktake(Base):
+    """A property-wide inventory reconciliation session."""
+
+    __tablename__ = "inventory_stocktake"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    property_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("property.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    actor_kind: Mapped[str] = mapped_column(String, nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    note_md: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            f"actor_kind IN ({_in_clause(_STOCKTAKE_ACTOR_KIND_VALUES)})",
+            name="actor_kind",
+        ),
+        Index(
+            "ix_inventory_stocktake_workspace_property_started",
+            "workspace_id",
+            "property_id",
+            text("started_at DESC"),
+        ),
+    )
+
 
 class Movement(Base):
     """An append-only ledger row recording one stock change.
 
-    A movement carries a signed :class:`Decimal` ``delta``
-    (``receive`` rows are positive, ``issue`` / ``consume`` negative,
-    ``adjust`` either sign), a reason enum pinning the cause, an
-    optional occurrence pointer (when the movement flows from a
-    completed §06 task), an optional markdown note, and the usual
-    audit pair (``created_by`` / ``created_at``).
+    A movement carries a signed :class:`Decimal` ``delta`` and a reason
+    enum pinning the cause. Task-driven consumption/production rows set
+    ``source_task_id``; stocktake reconciliation rows set
+    ``source_stocktake_id``.
 
-    The ``(workspace_id, item_id, created_at)`` index powers the
+    The ``(workspace_id, item_id, at)`` index powers the
     "ledger for this item, newest first" lookup the item-detail
     screen runs on every open (§08 §"Reports"). Leading
     ``workspace_id`` lets the tenant filter ride the same B-tree;
-    ``item_id`` carries the equality filter; ``created_at`` carries
+    ``item_id`` carries the equality filter; ``at`` carries
     the ORDER BY DESC.
-
-    The narrower v1 reason enum (``receive | issue | adjust |
-    consume``) widens to §02 / §08's full vocabulary with the
-    transfer + waste + audit follow-ups — see the module docstring.
     """
 
     __tablename__ = "inventory_movement"
@@ -253,47 +304,90 @@ class Movement(Base):
         ForeignKey("inventory_item.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # Signed decimal — positive for stock gain (``receive``),
-    # negative for loss (``issue`` / ``consume``), either sign for
-    # ``adjust``. No CHECK on the sign; the domain layer enforces
-    # the per-reason sign rules.
-    delta: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    reason: Mapped[str] = mapped_column(String, nullable=False)
-    # Soft-ref :class:`str` — see the module docstring. NULL when
-    # the movement is not tied to a task occurrence (manual restock,
-    # a standalone adjust row).
-    occurrence_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    note_md: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
+    # Signed decimal — positive for stock gain, negative for stock
+    # loss, either sign for audit/manual correction. No CHECK on the
+    # sign; the domain layer enforces per-reason sign rules.
+    delta: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4, asdecimal=True), nullable=False
     )
-    # Soft-ref :class:`str` — see the module docstring. NULL when
-    # the movement is written by a system process (the
-    # consume-on-task worker has no user id to pin).
-    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    reason: Mapped[str] = mapped_column(_MOVEMENT_REASON_ENUM, nullable=False)
+    source_task_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("occurrence.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_stocktake_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("inventory_stocktake.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    actor_kind: Mapped[str] = mapped_column(String, nullable=False, default="system")
+    actor_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
-            f"reason IN ({_in_clause(_REASON_VALUES)})",
-            name="reason",
+            f"actor_kind IN ({_in_clause(_MOVEMENT_ACTOR_KIND_VALUES)})",
+            name="actor_kind",
         ),
         # Per-acceptance: "ledger for this item, newest first" rides
         # the composite B-tree. Leading ``workspace_id`` lets the
         # tenant filter's equality predicate ride the same index.
         Index(
-            "ix_inventory_movement_workspace_item_created",
+            "ix_inventory_movement_workspace_item_at",
             "workspace_id",
             "item_id",
-            "created_at",
+            "at",
         ),
     )
+
+    @property
+    def occurrence_id(self) -> str | None:
+        """Backward-compatible Python alias for task-source rows."""
+        return self.source_task_id
+
+    @occurrence_id.setter
+    def occurrence_id(self, value: str | None) -> None:
+        self.source_task_id = value
+
+    @property
+    def created_by(self) -> str | None:
+        """Backward-compatible Python alias for actor id."""
+        return self.actor_id
+
+    @created_by.setter
+    def created_by(self, value: str | None) -> None:
+        self.actor_id = value
+
+    @property
+    def created_at(self) -> datetime:
+        """Backward-compatible Python alias for movement timestamp."""
+        return self.at
+
+    @created_at.setter
+    def created_at(self, value: datetime) -> None:
+        self.at = value
+
+    @property
+    def note_md(self) -> str | None:
+        """Backward-compatible Python alias for the movement note."""
+        return self.note
+
+    @note_md.setter
+    def note_md(self, value: str | None) -> None:
+        self.note = value
 
 
 class ReorderRule(Base):
     """The reorder-threshold rule for a single item.
 
     A rule binds a ``(workspace, item)`` pair to a ``reorder_at``
-    threshold (the ``current_qty`` level at or below which the
+    threshold (the ``on_hand`` level at or below which the
     periodic ``check_reorder_points`` worker opens a restock task)
     and a ``reorder_qty`` target (the quantity the restock task
     should bring the item back up to). An ``enabled`` kill switch
@@ -323,14 +417,18 @@ class ReorderRule(Base):
         ForeignKey("inventory_item.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # Threshold: open a restock task when ``item.current_qty <=
+    # Threshold: open a restock task when ``item.on_hand <=
     # reorder_at``. Non-negative (a negative threshold is a data
     # bug — the domain would never fire).
-    reorder_at: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    reorder_at: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4, asdecimal=True), nullable=False
+    )
     # Target quantity to bring the item back up to — not a delta,
     # but a level. Strictly positive (ordering zero units is
     # meaningless).
-    reorder_qty: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    reorder_qty: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4, asdecimal=True), nullable=False
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     __table_args__ = (

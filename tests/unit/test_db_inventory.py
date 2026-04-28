@@ -17,9 +17,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint
+from sqlalchemy import CheckConstraint, Enum, Index, Numeric, UniqueConstraint
 
-from app.adapters.db.inventory import Item, Movement, ReorderRule
+from app.adapters.db.inventory import Item, Movement, ReorderRule, Stocktake
 from app.adapters.db.inventory import models as inventory_models
 
 _PINNED = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
@@ -48,7 +48,7 @@ class TestItemModel:
         assert item.category is None
         assert item.barcode is None
         assert item.barcode_ean13 is None
-        assert item.min_qty is None
+        assert item.reorder_point is None
         assert item.deleted_at is None
 
     def test_unit_is_free_text(self) -> None:
@@ -76,8 +76,8 @@ class TestItemModel:
             category="cleaning",
             barcode="3017620422003",
             barcode_ean13="3017620422003",
-            current_qty=Decimal("4.5000"),
-            min_qty=Decimal("2.0000"),
+            on_hand=Decimal("4.5000"),
+            reorder_point=Decimal("2.0000"),
             reorder_target=Decimal("6.0000"),
             vendor="Supply Co",
             vendor_url="https://supplier.example/items/dish-soap",
@@ -89,8 +89,8 @@ class TestItemModel:
         assert item.category == "cleaning"
         assert item.barcode == "3017620422003"
         assert item.barcode_ean13 == "3017620422003"
-        assert item.current_qty == Decimal("4.5000")
-        assert item.min_qty == Decimal("2.0000")
+        assert item.on_hand == Decimal("4.5000")
+        assert item.reorder_point == Decimal("2.0000")
         assert item.reorder_target == Decimal("6.0000")
         assert item.vendor == "Supply Co"
         assert item.vendor_url == "https://supplier.example/items/dish-soap"
@@ -125,6 +125,14 @@ class TestItemModel:
             "barcode_ean13",
         ]
 
+    def test_quantity_columns_use_spec_precision(self) -> None:
+        for column_name in ("on_hand", "reorder_point", "reorder_target"):
+            column_type = Item.__table__.c[column_name].type
+            assert isinstance(column_type, Numeric)
+            assert column_type.precision == 14
+            assert column_type.scale == 4
+            assert column_type.asdecimal is True
+
 
 class TestMovementModel:
     """The ``Movement`` mapped class constructs from the v1 slice."""
@@ -135,18 +143,20 @@ class TestMovementModel:
             workspace_id="01HWA00000000000000000WSPA",
             item_id="01HWA00000000000000000ITMA",
             delta=Decimal("5.0000"),
-            reason="receive",
-            created_at=_PINNED,
+            reason="restock",
+            actor_kind="user",
+            actor_id="01HWA00000000000000000USRA",
+            at=_PINNED,
         )
         assert mv.id == "01HWA00000000000000000MVMA"
         assert mv.item_id == "01HWA00000000000000000ITMA"
         assert mv.delta == Decimal("5.0000")
-        assert mv.reason == "receive"
-        assert mv.created_at == _PINNED
+        assert mv.reason == "restock"
+        assert mv.at == _PINNED
         # Nullable columns default to ``None``.
-        assert mv.occurrence_id is None
-        assert mv.note_md is None
-        assert mv.created_by is None
+        assert mv.source_task_id is None
+        assert mv.source_stocktake_id is None
+        assert mv.note is None
 
     def test_negative_delta_construction(self) -> None:
         """Signed delta — a consume row carries a negative quantity."""
@@ -156,20 +166,34 @@ class TestMovementModel:
             item_id="01HWA00000000000000000ITMA",
             delta=Decimal("-2.5000"),
             reason="consume",
-            occurrence_id="01HWA00000000000000000OCCA",
-            note_md="Cleaning pass for Apt 3B",
-            created_by="01HWA00000000000000000USRA",
-            created_at=_PINNED,
+            source_task_id="01HWA00000000000000000OCCA",
+            actor_kind="user",
+            actor_id="01HWA00000000000000000USRA",
+            note="Cleaning pass for Apt 3B",
+            at=_PINNED,
         )
         assert mv.delta == Decimal("-2.5000")
         assert mv.reason == "consume"
-        assert mv.occurrence_id == "01HWA00000000000000000OCCA"
-        assert mv.note_md == "Cleaning pass for Apt 3B"
-        assert mv.created_by == "01HWA00000000000000000USRA"
+        assert mv.source_task_id == "01HWA00000000000000000OCCA"
+        assert mv.note == "Cleaning pass for Apt 3B"
+        assert mv.actor_id == "01HWA00000000000000000USRA"
 
     def test_every_reason_value_constructs(self) -> None:
-        """Each of the four v1 reason values builds a valid row."""
-        reasons = ("receive", "issue", "adjust", "consume")
+        """Each final §08 reason value builds a valid row."""
+        reasons = (
+            "restock",
+            "consume",
+            "produce",
+            "waste",
+            "theft",
+            "loss",
+            "found",
+            "returned_to_vendor",
+            "transfer_in",
+            "transfer_out",
+            "audit_correction",
+            "adjust",
+        )
         for index, reason in enumerate(reasons):
             mv = Movement(
                 id=f"01HWA000000000000000000MV{index}",
@@ -177,41 +201,86 @@ class TestMovementModel:
                 item_id="01HWA00000000000000000ITMA",
                 delta=Decimal("1"),
                 reason=reason,
-                created_at=_PINNED,
+                actor_kind="system",
+                at=_PINNED,
             )
             assert mv.reason == reason
 
     def test_tablename(self) -> None:
         assert Movement.__tablename__ == "inventory_movement"
 
-    def test_reason_check_present(self) -> None:
-        checks = [
-            c
-            for c in Movement.__table_args__
-            if isinstance(c, CheckConstraint)
-            and c.name is not None
-            and str(c.name).endswith("reason")
-        ]
-        assert len(checks) == 1
-        sql = str(checks[0].sqltext)
-        for reason in ("receive", "issue", "adjust", "consume"):
-            assert reason in sql, f"{reason} missing from CHECK constraint"
+    def test_reason_uses_dialect_enum(self) -> None:
+        reason_type = Movement.__table__.c.reason.type
+        assert isinstance(reason_type, Enum)
+        assert reason_type.name == "inventory_movement_reason"
+        assert reason_type.native_enum is True
+        assert reason_type.create_constraint is True
+        for reason in (
+            "restock",
+            "consume",
+            "produce",
+            "waste",
+            "theft",
+            "loss",
+            "found",
+            "returned_to_vendor",
+            "transfer_in",
+            "transfer_out",
+            "audit_correction",
+            "adjust",
+        ):
+            assert reason in reason_type.enums
+
+    def test_delta_uses_spec_precision(self) -> None:
+        column_type = Movement.__table__.c.delta.type
+        assert isinstance(column_type, Numeric)
+        assert column_type.precision == 14
+        assert column_type.scale == 4
+        assert column_type.asdecimal is True
 
     def test_ledger_index_present(self) -> None:
-        """Index: ``(workspace_id, item_id, created_at)`` for ledger lookup."""
+        """Index: ``(workspace_id, item_id, at)`` for ledger lookup."""
         indexes = [i for i in Movement.__table_args__ if isinstance(i, Index)]
         names = [i.name for i in indexes]
-        assert "ix_inventory_movement_workspace_item_created" in names
+        assert "ix_inventory_movement_workspace_item_at" in names
         target = next(
-            i
-            for i in indexes
-            if i.name == "ix_inventory_movement_workspace_item_created"
+            i for i in indexes if i.name == "ix_inventory_movement_workspace_item_at"
         )
         assert [c.name for c in target.columns] == [
             "workspace_id",
             "item_id",
-            "created_at",
+            "at",
         ]
+
+
+class TestStocktakeModel:
+    """The ``Stocktake`` mapped class constructs from the spec shape."""
+
+    def test_minimal_construction(self) -> None:
+        stocktake = Stocktake(
+            id="01HWA00000000000000000STKA",
+            workspace_id="01HWA00000000000000000WSPA",
+            property_id="01HWA00000000000000000PRPA",
+            started_at=_PINNED,
+            actor_kind="user",
+            actor_id="01HWA00000000000000000USRA",
+        )
+        assert stocktake.id == "01HWA00000000000000000STKA"
+        assert stocktake.property_id == "01HWA00000000000000000PRPA"
+        assert stocktake.completed_at is None
+        assert stocktake.actor_kind == "user"
+
+    def test_tablename(self) -> None:
+        assert Stocktake.__tablename__ == "inventory_stocktake"
+
+    def test_started_index_present(self) -> None:
+        indexes = [i for i in Stocktake.__table_args__ if isinstance(i, Index)]
+        target = next(
+            i
+            for i in indexes
+            if i.name == "ix_inventory_stocktake_workspace_property_started"
+        )
+        assert [c.name for c in target.columns][:2] == ["workspace_id", "property_id"]
 
 
 class TestReorderRuleModel:
@@ -283,12 +352,13 @@ class TestReorderRuleModel:
 
 
 class TestPackageReExports:
-    """``app.adapters.db.inventory`` re-exports every v1-slice model."""
+    """``app.adapters.db.inventory`` re-exports every inventory model."""
 
     def test_models_re_exported(self) -> None:
         assert Item is inventory_models.Item
         assert Movement is inventory_models.Movement
         assert ReorderRule is inventory_models.ReorderRule
+        assert Stocktake is inventory_models.Stocktake
 
 
 class TestRegistryIntent:
@@ -311,6 +381,7 @@ class TestRegistryIntent:
         for table in (
             "inventory_item",
             "inventory_movement",
+            "inventory_stocktake",
             "inventory_reorder_rule",
         ):
             registry.register(table)
@@ -318,6 +389,7 @@ class TestRegistryIntent:
         for table in (
             "inventory_item",
             "inventory_movement",
+            "inventory_stocktake",
             "inventory_reorder_rule",
         ):
             assert table in scoped, f"{table} must be scoped"
@@ -330,12 +402,14 @@ class TestRegistryIntent:
         for table in (
             "inventory_item",
             "inventory_movement",
+            "inventory_stocktake",
             "inventory_reorder_rule",
         ):
             registry.register(table)
         for table in (
             "inventory_item",
             "inventory_movement",
+            "inventory_stocktake",
             "inventory_reorder_rule",
         ):
             assert registry.is_scoped(table) is True

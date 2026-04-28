@@ -1111,6 +1111,7 @@ class AssetAction:
     linked_schedule_id: str | None = None
     description: str | None = None
     estimated_duration_minutes: int | None = None
+    inventory_effects_json: list[InventoryEffect] = field(default_factory=list)
 
 
 @dataclass
@@ -4200,6 +4201,14 @@ SETTINGS_CATALOG: list[SettingDefinition] = [
                       override_scope="W/P/E",
                       description="Whether employees can skip tasks by providing a reason.",
                       spec="05"),
+    SettingDefinition("inventory.apply_on_task", "Apply inventory effects on task completion", "bool", True,
+                      override_scope="W/P/U/WE/T",
+                      description="Gates both consume and produce effects declared on task templates and asset actions.",
+                      spec="08"),
+    SettingDefinition("inventory.shrinkage_alert_pct", "Shrinkage alert threshold (%)", "int", 10,
+                      override_scope="W/P",
+                      description="Digest highlights items whose theft plus loss over 30 days exceeds this percentage of rolling consumption.",
+                      spec="08"),
     SettingDefinition("assets.warranty_alert_days", "Warranty alert window (days)", "int", 30,
                       override_scope="W/P",
                       description="Days before warranty expiry to surface an alert.",

@@ -1,14 +1,9 @@
 """Integration tests for :mod:`app.adapters.db.inventory` against a real DB.
 
-Covers the post-migration schema shape (tables, unique composites,
-FKs, CHECK constraints, indexes), the referential-integrity contract
-on all three tables (``workspace_id`` CASCADE on all;
-``item_id`` CASCADE on both child tables), happy-path round-trip of
-every model (insert + select + update + delete), CHECK + UNIQUE
-violations, signed-delta round-trip, ``Numeric(18, 4)`` precision
-round-trip, cross-workspace isolation (SKU may repeat across
-workspaces), CASCADE on workspace delete (sweeps the library) and on
-item delete (sweeps movements + reorder rules), and tenant-filter
+Checks the post-migration inventory schema shape, referential
+integrity, model round-trips, CHECK/UNIQUE violations, signed-delta
+round-trips, ``Numeric(14, 4)`` precision, cross-workspace isolation,
+CASCADE on workspace and item delete, and tenant-filter
 behaviour (all three tables scoped; SELECT without a
 :class:`WorkspaceContext` raises :class:`TenantFilterMissing`).
 
@@ -31,7 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.identity.models import User
-from app.adapters.db.inventory.models import Item, Movement, ReorderRule
+from app.adapters.db.inventory.models import Item, Movement, ReorderRule, Stocktake
 from app.adapters.db.places.models import Property, PropertyWorkspace
 from app.adapters.db.workspace.models import Workspace
 from app.tenancy import registry, tenant_agnostic
@@ -51,6 +46,7 @@ _LATER = _PINNED + timedelta(hours=1)
 _INVENTORY_TABLES: tuple[str, ...] = (
     "inventory_item",
     "inventory_movement",
+    "inventory_stocktake",
     "inventory_reorder_rule",
 )
 
@@ -174,8 +170,8 @@ class TestMigrationShape:
             "category",
             "barcode",
             "barcode_ean13",
-            "current_qty",
-            "min_qty",
+            "on_hand",
+            "reorder_point",
             "reorder_target",
             "vendor",
             "vendor_url",
@@ -193,7 +189,7 @@ class TestMigrationShape:
             "category",
             "barcode",
             "barcode_ean13",
-            "min_qty",
+            "reorder_point",
             "reorder_target",
             "vendor",
             "vendor_url",
@@ -209,7 +205,7 @@ class TestMigrationShape:
             "category",
             "barcode",
             "barcode_ean13",
-            "min_qty",
+            "reorder_point",
             "reorder_target",
             "vendor",
             "vendor_url",
@@ -265,15 +261,22 @@ class TestMigrationShape:
             "item_id",
             "delta",
             "reason",
-            "occurrence_id",
-            "note_md",
-            "created_at",
-            "created_by",
+            "source_task_id",
+            "source_stocktake_id",
+            "actor_kind",
+            "actor_id",
+            "at",
+            "note",
         }
         assert set(cols) == expected
-        for nullable in ("occurrence_id", "note_md", "created_by"):
+        for nullable in ("source_task_id", "source_stocktake_id", "actor_id", "note"):
             assert cols[nullable]["nullable"] is True, f"{nullable} must be nullable"
-        for notnull in expected - {"occurrence_id", "note_md", "created_by"}:
+        for notnull in expected - {
+            "source_task_id",
+            "source_stocktake_id",
+            "actor_id",
+            "note",
+        }:
             assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
 
     def test_inventory_movement_fks(self, engine: Engine) -> None:
@@ -286,18 +289,64 @@ class TestMigrationShape:
         assert fks[("item_id",)]["referred_table"] == "inventory_item"
         # CASCADE — deleting an item drops its ledger.
         assert fks[("item_id",)]["options"].get("ondelete") == "CASCADE"
-        # ``occurrence_id`` and ``created_by`` are soft-refs; no FK.
-        assert ("occurrence_id",) not in fks
-        assert ("created_by",) not in fks
+        assert fks[("source_task_id",)]["referred_table"] == "occurrence"
+        assert fks[("source_task_id",)]["options"].get("ondelete") == "SET NULL"
+        assert fks[("source_stocktake_id",)]["referred_table"] == "inventory_stocktake"
+        assert fks[("source_stocktake_id",)]["options"].get("ondelete") == "SET NULL"
+        assert fks[("actor_id",)]["referred_table"] == "user"
+        assert fks[("actor_id",)]["options"].get("ondelete") == "SET NULL"
 
     def test_inventory_movement_index(self, engine: Engine) -> None:
         indexes = {
             ix["name"]: ix for ix in inspect(engine).get_indexes("inventory_movement")
         }
-        assert "ix_inventory_movement_workspace_item_created" in indexes
-        assert indexes["ix_inventory_movement_workspace_item_created"][
+        assert "ix_inventory_movement_workspace_item_at" in indexes
+        assert indexes["ix_inventory_movement_workspace_item_at"]["column_names"] == [
+            "workspace_id",
+            "item_id",
+            "at",
+        ]
+
+    def test_inventory_stocktake_columns(self, engine: Engine) -> None:
+        cols = {
+            c["name"]: c for c in inspect(engine).get_columns("inventory_stocktake")
+        }
+        expected = {
+            "id",
+            "workspace_id",
+            "property_id",
+            "started_at",
+            "completed_at",
+            "actor_kind",
+            "actor_id",
+            "note_md",
+        }
+        assert set(cols) == expected
+        for nullable in ("completed_at", "actor_id", "note_md"):
+            assert cols[nullable]["nullable"] is True, f"{nullable} must be nullable"
+        for notnull in expected - {"completed_at", "actor_id", "note_md"}:
+            assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
+
+    def test_inventory_stocktake_fks(self, engine: Engine) -> None:
+        fks = {
+            tuple(fk["constrained_columns"]): fk
+            for fk in inspect(engine).get_foreign_keys("inventory_stocktake")
+        }
+        assert fks[("workspace_id",)]["referred_table"] == "workspace"
+        assert fks[("workspace_id",)]["options"].get("ondelete") == "CASCADE"
+        assert fks[("property_id",)]["referred_table"] == "property"
+        assert fks[("property_id",)]["options"].get("ondelete") == "CASCADE"
+        assert fks[("actor_id",)]["referred_table"] == "user"
+        assert fks[("actor_id",)]["options"].get("ondelete") == "SET NULL"
+
+    def test_inventory_stocktake_index(self, engine: Engine) -> None:
+        indexes = {
+            ix["name"]: ix for ix in inspect(engine).get_indexes("inventory_stocktake")
+        }
+        assert "ix_inventory_stocktake_workspace_property_started" in indexes
+        assert indexes["ix_inventory_stocktake_workspace_property_started"][
             "column_names"
-        ] == ["workspace_id", "item_id", "created_at"]
+        ][:2] == ["workspace_id", "property_id"]
 
     def test_inventory_reorder_rule_columns(self, engine: Engine) -> None:
         cols = {
@@ -350,7 +399,7 @@ class TestItemCrud:
         )
         token = set_current(_ctx_for(workspace, user.id))
         try:
-            # Fractional quantities exercise the ``Numeric(18, 4)``
+            # Fractional quantities exercise the ``Numeric(14, 4)``
             # precision — 4dp is essential for items sold by
             # weight / volume (0.25 kg, 1.500 l).
             item = Item(
@@ -361,8 +410,8 @@ class TestItemCrud:
                 unit="pkg",
                 category="guest-amenity",
                 barcode="3017620422003",
-                current_qty=Decimal("14.2500"),
-                min_qty=Decimal("2.0000"),
+                on_hand=Decimal("14.2500"),
+                reorder_point=Decimal("2.0000"),
                 created_at=_PINNED,
             )
             db_session.add(item)
@@ -370,24 +419,24 @@ class TestItemCrud:
 
             reloaded = db_session.get(Item, item.id)
             assert reloaded is not None
-            assert isinstance(reloaded.current_qty, Decimal)
-            # Numeric(18, 4) preserves the 4dp precision across a
+            assert isinstance(reloaded.on_hand, Decimal)
+            # Numeric(14, 4) preserves the 4dp precision across a
             # flush + reload round-trip on both SQLite and Postgres.
-            assert reloaded.current_qty == Decimal("14.2500")
-            assert reloaded.min_qty == Decimal("2.0000")
+            assert reloaded.on_hand == Decimal("14.2500")
+            assert reloaded.reorder_point == Decimal("2.0000")
             assert reloaded.category == "guest-amenity"
             assert reloaded.barcode == "3017620422003"
             assert reloaded.unit == "pkg"
 
             # Update: rename + change threshold.
             reloaded.name = "Toilet paper (2-ply, 12-pack, premium)"
-            reloaded.min_qty = Decimal("3.0000")
+            reloaded.reorder_point = Decimal("3.0000")
             db_session.flush()
             db_session.expire_all()
             re_reloaded = db_session.get(Item, item.id)
             assert re_reloaded is not None
             assert re_reloaded.name == "Toilet paper (2-ply, 12-pack, premium)"
-            assert re_reloaded.min_qty == Decimal("3.0000")
+            assert re_reloaded.reorder_point == Decimal("3.0000")
 
             db_session.delete(re_reloaded)
             db_session.flush()
@@ -395,8 +444,8 @@ class TestItemCrud:
         finally:
             reset_current(token)
 
-    def test_current_qty_default_zero(self, db_session: Session) -> None:
-        """Newly-minted items default ``current_qty`` to 0."""
+    def test_on_hand_default_zero(self, db_session: Session) -> None:
+        """Newly-minted items default ``on_hand`` to 0."""
         workspace, user = _bootstrap(
             db_session,
             email="item-zero@example.com",
@@ -419,7 +468,7 @@ class TestItemCrud:
             db_session.expire_all()
             reloaded = db_session.get(Item, item.id)
             assert reloaded is not None
-            assert reloaded.current_qty == Decimal("0")
+            assert reloaded.on_hand == Decimal("0")
         finally:
             reset_current(token)
 
@@ -451,16 +500,17 @@ class TestMovementCrud:
             db_session.add(item)
             db_session.flush()
 
-            # Receive: positive delta.
-            receive = Movement(
+            # Restock: positive delta.
+            restock = Movement(
                 id="01HWA00000000000000000MV01",
                 workspace_id=workspace.id,
                 item_id=item.id,
                 delta=Decimal("12.0000"),
-                reason="receive",
-                note_md="Monthly restock",
-                created_by=user.id,
-                created_at=_PINNED,
+                reason="restock",
+                actor_kind="user",
+                actor_id=user.id,
+                note="Monthly restock",
+                at=_PINNED,
             )
             # Consume: negative delta flowing from a task occurrence.
             consume = Movement(
@@ -469,11 +519,11 @@ class TestMovementCrud:
                 item_id=item.id,
                 delta=Decimal("-0.7500"),
                 reason="consume",
-                occurrence_id="01HWA00000000000000000OCCA",
-                created_by=user.id,
-                created_at=_LATER,
+                actor_kind="user",
+                actor_id=user.id,
+                at=_LATER,
             )
-            db_session.add_all([receive, consume])
+            db_session.add_all([restock, consume])
             db_session.flush()
 
             # Ledger lookup: newest first rides the composite index.
@@ -481,7 +531,7 @@ class TestMovementCrud:
                 select(Movement)
                 .where(Movement.workspace_id == workspace.id)
                 .where(Movement.item_id == item.id)
-                .order_by(Movement.created_at.desc())
+                .order_by(Movement.at.desc())
             ).all()
             assert [r.id for r in rows] == [
                 "01HWA00000000000000000MV02",
@@ -494,15 +544,84 @@ class TestMovementCrud:
             assert isinstance(reloaded.delta, Decimal)
             assert reloaded.delta == Decimal("-0.7500")
             assert reloaded.reason == "consume"
-            assert reloaded.occurrence_id == "01HWA00000000000000000OCCA"
+            assert reloaded.source_task_id is None
 
             # Update: the note is mutable (a manager can annotate).
-            reloaded.note_md = "Cleaning pass for Apt 3B"
+            reloaded.note = "Cleaning pass for Apt 3B"
             db_session.flush()
             db_session.expire_all()
             re_reloaded = db_session.get(Movement, consume.id)
             assert re_reloaded is not None
-            assert re_reloaded.note_md == "Cleaning pass for Apt 3B"
+            assert re_reloaded.note == "Cleaning pass for Apt 3B"
+        finally:
+            reset_current(token)
+
+
+class TestStocktakeCrud:
+    """Insert + select + update round-trip on :class:`Stocktake`."""
+
+    def test_round_trip_with_source_stocktake_movement(
+        self, db_session: Session
+    ) -> None:
+        workspace, user = _bootstrap(
+            db_session,
+            email="stocktake-crud@example.com",
+            display="StocktakeCrud",
+            slug="stocktake-crud-ws",
+            name="StocktakeCrudWS",
+        )
+        property_id = _seed_property_workspace(
+            db_session,
+            workspace=workspace,
+            property_id="01HWA00000000000000000STPR",
+        )
+        token = set_current(_ctx_for(workspace, user.id))
+        try:
+            item = Item(
+                id="01HWA00000000000000000STIM",
+                workspace_id=workspace.id,
+                property_id=property_id,
+                sku="STOCKTAKE-1",
+                name="Stocktake item",
+                unit="each",
+                created_at=_PINNED,
+            )
+            stocktake = Stocktake(
+                id="01HWA00000000000000000STKA",
+                workspace_id=workspace.id,
+                property_id=property_id,
+                started_at=_PINNED,
+                actor_kind="user",
+                actor_id=user.id,
+                note_md="Quarterly count",
+            )
+            db_session.add_all([item, stocktake])
+            db_session.flush()
+
+            movement = Movement(
+                id="01HWA00000000000000000STMV",
+                workspace_id=workspace.id,
+                item_id=item.id,
+                delta=Decimal("-1.0000"),
+                reason="audit_correction",
+                source_stocktake_id=stocktake.id,
+                actor_kind="user",
+                actor_id=user.id,
+                at=_LATER,
+            )
+            db_session.add(movement)
+            db_session.flush()
+
+            reloaded = db_session.get(Stocktake, stocktake.id)
+            assert reloaded is not None
+            assert reloaded.completed_at is None
+            reloaded.completed_at = _LATER
+            db_session.flush()
+            db_session.expire_all()
+
+            reloaded_movement = db_session.get(Movement, movement.id)
+            assert reloaded_movement is not None
+            assert reloaded_movement.source_stocktake_id == stocktake.id
         finally:
             reset_current(token)
 
@@ -617,8 +736,9 @@ class TestCheckConstraints:
                     workspace_id=workspace.id,
                     item_id=item.id,
                     delta=Decimal("1"),
-                    reason="restock",  # richer §02 enum, not in v1 slice
-                    created_at=_PINNED,
+                    reason="receive",
+                    actor_kind="system",
+                    at=_PINNED,
                 )
             )
             with pytest.raises(IntegrityError):
@@ -740,9 +860,7 @@ class TestCheckConstraints:
 class TestUniqueConstraints:
     """UNIQUE composites enforce the v1 invariants."""
 
-    def test_duplicate_active_property_sku_rejected(
-        self, db_session: Session
-    ) -> None:
+    def test_duplicate_active_property_sku_rejected(self, db_session: Session) -> None:
         """Key acceptance: a property cannot have two active items sharing a SKU."""
         workspace, user = _bootstrap(
             db_session,
@@ -788,9 +906,7 @@ class TestUniqueConstraints:
         finally:
             reset_current(token)
 
-    def test_same_sku_different_properties_allowed(
-        self, db_session: Session
-    ) -> None:
+    def test_same_sku_different_properties_allowed(self, db_session: Session) -> None:
         """Uniqueness is scoped to active rows per workspace and property."""
         workspace, user = _bootstrap(
             db_session,
@@ -1043,8 +1159,9 @@ class TestCascadeOnItemDelete:
                 workspace_id=workspace.id,
                 item_id=item.id,
                 delta=Decimal("10"),
-                reason="receive",
-                created_at=_PINNED,
+                reason="restock",
+                actor_kind="system",
+                at=_PINNED,
             )
             mv2 = Movement(
                 id="01HWA00000000000000000MVC2",
@@ -1052,7 +1169,8 @@ class TestCascadeOnItemDelete:
                 item_id=item.id,
                 delta=Decimal("-1"),
                 reason="consume",
-                created_at=_LATER,
+                actor_kind="system",
+                at=_LATER,
             )
             rule = ReorderRule(
                 id="01HWA00000000000000000ROCD",
@@ -1120,8 +1238,9 @@ class TestCascadeOnWorkspaceDelete:
                     workspace_id=workspace.id,
                     item_id=item.id,
                     delta=Decimal("1"),
-                    reason="receive",
-                    created_at=_PINNED,
+                    reason="restock",
+                    actor_kind="system",
+                    at=_PINNED,
                 )
             )
             db_session.add(
@@ -1174,11 +1293,11 @@ class TestCascadeOnWorkspaceDelete:
 class TestTenantFilter:
     """All three inventory tables are workspace-scoped under the filter."""
 
-    @pytest.mark.parametrize("model", [Item, Movement, ReorderRule])
+    @pytest.mark.parametrize("model", [Item, Movement, Stocktake, ReorderRule])
     def test_read_without_ctx_raises(
         self,
         filtered_factory: sessionmaker[Session],
-        model: type[Item] | type[Movement] | type[ReorderRule],
+        model: type[Item] | type[Movement] | type[Stocktake] | type[ReorderRule],
     ) -> None:
         with (
             filtered_factory() as session,
