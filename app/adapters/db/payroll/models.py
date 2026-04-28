@@ -84,6 +84,7 @@ __all__ = ["PayPeriod", "PayRule", "PayoutDestination", "Payslip"]
 # marked paid, flipped by the payslip-paid trigger in the domain
 # layer — see §09 §"Transition to paid").
 _PAY_PERIOD_STATE_VALUES: tuple[str, ...] = ("open", "locked", "paid")
+_PAYSLIP_STATUS_VALUES: tuple[str, ...] = ("draft", "issued", "paid", "voided")
 
 
 def _in_clause(values: tuple[str, ...]) -> str:
@@ -343,6 +344,13 @@ class Payslip(Base):
     # once signed. The PDF itself lives in blob storage so a purge
     # can drop it while keeping the row intact.
     pdf_blob_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
+    issued_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     payout_snapshot_json: Mapped[dict[str, Any] | None] = mapped_column(
         JSON, nullable=True
     )
@@ -359,6 +367,10 @@ class Payslip(Base):
             "overtime_hours_decimal >= 0", name="overtime_hours_decimal_nonneg"
         ),
         CheckConstraint("gross_cents >= 0", name="gross_cents_nonneg"),
+        CheckConstraint(
+            f"status IN ({_in_clause(_PAYSLIP_STATUS_VALUES)})",
+            name="status",
+        ),
         # ``net_cents`` can legitimately be negative when deductions
         # exceed gross (rare, but valid — e.g. a cash advance
         # repayment). No CHECK on the sign; the domain layer guards

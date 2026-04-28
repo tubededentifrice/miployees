@@ -52,6 +52,8 @@ __all__ = [
     "ExpenseSubmitted",
     "LlmAssignmentChanged",
     "NotificationCreated",
+    "PayPeriodLocked",
+    "PayPeriodPaid",
     "PropertyClosureCreated",
     "ReservationChangeKind",
     "ReservationUpserted",
@@ -755,6 +757,26 @@ class ExpenseSubmitted(Event):
     submitter_user_id: str
     currency: str
     total_amount_cents: int
+
+
+@register
+class PayPeriodLocked(Event):
+    """A payroll period has been locked for payslip recomputation."""
+
+    name: ClassVar[str] = "payroll.period_locked"
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager",)
+
+    pay_period_id: str
+
+
+@register
+class PayPeriodPaid(Event):
+    """Every payslip in a locked payroll period has been marked paid."""
+
+    name: ClassVar[str] = "payroll.period_paid"
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager",)
+
+    pay_period_id: str
 
 
 @register

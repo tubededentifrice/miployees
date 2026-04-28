@@ -216,17 +216,35 @@ class TestMigrationShape:
             "workspace_id",
             "pay_period_id",
             "user_id",
+            "status",
+            "issued_at",
+            "paid_at",
             "shift_hours_decimal",
             "overtime_hours_decimal",
             "gross_cents",
             "deductions_cents",
             "net_cents",
             "pdf_blob_hash",
+            "payout_snapshot_json",
+            "payout_manifest_purged_at",
             "created_at",
         }
         assert set(cols) == expected
-        assert cols["pdf_blob_hash"]["nullable"] is True
-        for notnull in expected - {"pdf_blob_hash"}:
+        for nullable in (
+            "pdf_blob_hash",
+            "issued_at",
+            "paid_at",
+            "payout_snapshot_json",
+            "payout_manifest_purged_at",
+        ):
+            assert cols[nullable]["nullable"] is True, f"{nullable} must be nullable"
+        for notnull in expected - {
+            "pdf_blob_hash",
+            "issued_at",
+            "paid_at",
+            "payout_snapshot_json",
+            "payout_manifest_purged_at",
+        }:
             assert cols[notnull]["nullable"] is False, f"{notnull} must be NOT NULL"
 
     def test_payslip_fks(self, engine: Engine) -> None:
@@ -435,15 +453,24 @@ class TestPayslipCrud:
                 "advance": 20000,
             }
             assert reloaded.pdf_blob_hash is None
+            assert reloaded.status == "draft"
+            assert reloaded.issued_at is None
+            assert reloaded.paid_at is None
 
-            # Issue the payslip: set the PDF hash.
+            # Issue and pay the payslip.
             reloaded.pdf_blob_hash = "sha256-deadbeefcafebabe"
+            reloaded.status = "issued"
+            reloaded.issued_at = _PINNED + timedelta(days=32)
+            reloaded.status = "paid"
+            reloaded.paid_at = _PINNED + timedelta(days=33)
             db_session.flush()
             db_session.expire_all()
 
             issued = db_session.get(Payslip, slip.id)
             assert issued is not None
             assert issued.pdf_blob_hash == "sha256-deadbeefcafebabe"
+            assert issued.status == "paid"
+            assert issued.paid_at is not None
 
             db_session.delete(issued)
             db_session.flush()

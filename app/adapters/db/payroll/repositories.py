@@ -20,16 +20,19 @@ from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.adapters.db.payroll.models import PayPeriod, PayRule, Payslip
 from app.domain.payroll.ports import (
+    PayPeriodRepository,
+    PayPeriodRow,
     PayRuleRepository,
     PayRuleRow,
 )
 
 __all__ = [
+    "SqlAlchemyPayPeriodRepository",
     "SqlAlchemyPayRuleRepository",
 ]
 
@@ -77,6 +80,183 @@ def _to_row(row: PayRule) -> PayRuleRow:
         created_by=row.created_by,
         created_at=row.created_at,
     )
+
+
+def _period_to_row(row: PayPeriod) -> PayPeriodRow:
+    return PayPeriodRow(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        starts_at=row.starts_at,
+        ends_at=row.ends_at,
+        state=row.state,
+        locked_at=row.locked_at,
+        locked_by=row.locked_by,
+        created_at=row.created_at,
+    )
+
+
+class SqlAlchemyPayPeriodRepository(PayPeriodRepository):
+    """SA-backed concretion of :class:`PayPeriodRepository`."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    @property
+    def session(self) -> Session:
+        return self._session
+
+    def get(self, *, workspace_id: str, period_id: str) -> PayPeriodRow | None:
+        row = self._session.scalars(
+            select(PayPeriod).where(
+                PayPeriod.id == period_id,
+                PayPeriod.workspace_id == workspace_id,
+            )
+        ).one_or_none()
+        return _period_to_row(row) if row is not None else None
+
+    def list(self, *, workspace_id: str) -> Sequence[PayPeriodRow]:
+        rows = self._session.scalars(
+            select(PayPeriod)
+            .where(PayPeriod.workspace_id == workspace_id)
+            .order_by(PayPeriod.starts_at.desc(), PayPeriod.id.desc())
+        ).all()
+        return [_period_to_row(row) for row in rows]
+
+    def has_overlap(
+        self,
+        *,
+        workspace_id: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        exclude_period_id: str | None = None,
+    ) -> bool:
+        stmt = select(
+            exists().where(
+                PayPeriod.workspace_id == workspace_id,
+                PayPeriod.starts_at < ends_at,
+                PayPeriod.ends_at > starts_at,
+            )
+        )
+        if exclude_period_id is not None:
+            stmt = select(
+                exists().where(
+                    PayPeriod.workspace_id == workspace_id,
+                    PayPeriod.id != exclude_period_id,
+                    PayPeriod.starts_at < ends_at,
+                    PayPeriod.ends_at > starts_at,
+                )
+            )
+        return bool(self._session.scalar(stmt))
+
+    def insert(
+        self,
+        *,
+        period_id: str,
+        workspace_id: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        now: datetime,
+    ) -> PayPeriodRow:
+        row = PayPeriod(
+            id=period_id,
+            workspace_id=workspace_id,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            state="open",
+            created_at=now,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return _period_to_row(row)
+
+    def lock(
+        self,
+        *,
+        workspace_id: str,
+        period_id: str,
+        locked_at: datetime,
+        locked_by: str | None,
+    ) -> PayPeriodRow:
+        row = self._session.scalars(
+            select(PayPeriod).where(
+                PayPeriod.id == period_id,
+                PayPeriod.workspace_id == workspace_id,
+            )
+        ).one()
+        row.state = "locked"
+        row.locked_at = locked_at
+        row.locked_by = locked_by
+        self._session.flush()
+        return _period_to_row(row)
+
+    def reopen(self, *, workspace_id: str, period_id: str) -> PayPeriodRow:
+        row = self._session.scalars(
+            select(PayPeriod).where(
+                PayPeriod.id == period_id,
+                PayPeriod.workspace_id == workspace_id,
+            )
+        ).one()
+        row.state = "open"
+        row.locked_at = None
+        row.locked_by = None
+        self._session.execute(
+            update(Payslip)
+            .where(
+                Payslip.workspace_id == workspace_id,
+                Payslip.pay_period_id == period_id,
+            )
+            .values(status="draft", issued_at=None, paid_at=None)
+        )
+        self._session.flush()
+        return _period_to_row(row)
+
+    def mark_paid(self, *, workspace_id: str, period_id: str) -> PayPeriodRow:
+        row = self._session.scalars(
+            select(PayPeriod).where(
+                PayPeriod.id == period_id,
+                PayPeriod.workspace_id == workspace_id,
+            )
+        ).one()
+        row.state = "paid"
+        self._session.flush()
+        return _period_to_row(row)
+
+    def delete(self, *, workspace_id: str, period_id: str) -> None:
+        row = self._session.scalars(
+            select(PayPeriod).where(
+                PayPeriod.id == period_id,
+                PayPeriod.workspace_id == workspace_id,
+            )
+        ).one()
+        self._session.delete(row)
+        self._session.flush()
+
+    def has_paid_payslip(self, *, workspace_id: str, period_id: str) -> bool:
+        return bool(
+            self._session.scalar(
+                select(
+                    exists().where(
+                        Payslip.workspace_id == workspace_id,
+                        Payslip.pay_period_id == period_id,
+                        Payslip.status == "paid",
+                        Payslip.paid_at.is_not(None),
+                    )
+                )
+            )
+        )
+
+    def has_unpaid_payslip(self, *, workspace_id: str, period_id: str) -> bool:
+        return bool(
+            self._session.scalar(
+                select(
+                    exists().where(
+                        Payslip.workspace_id == workspace_id,
+                        Payslip.pay_period_id == period_id,
+                        or_(Payslip.status != "paid", Payslip.paid_at.is_(None)),
+                    )
+                )
+            )
+        )
 
 
 class SqlAlchemyPayRuleRepository(PayRuleRepository):

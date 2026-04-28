@@ -42,6 +42,9 @@ from typing import Protocol
 from sqlalchemy.orm import Session
 
 __all__ = [
+    "PayPeriodRecomputeScheduler",
+    "PayPeriodRepository",
+    "PayPeriodRow",
     "PayRuleRepository",
     "PayRuleRow",
 ]
@@ -74,6 +77,104 @@ class PayRuleRow:
     effective_to: datetime | None
     created_by: str | None
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PayPeriodRow:
+    """Immutable projection of a ``pay_period`` row."""
+
+    id: str
+    workspace_id: str
+    starts_at: datetime
+    ends_at: datetime
+    state: str
+    locked_at: datetime | None
+    locked_by: str | None
+    created_at: datetime
+
+
+class PayPeriodRecomputeScheduler(Protocol):
+    """Port for scheduling payslip recomputation after a period locks."""
+
+    def schedule_period_recompute(
+        self,
+        *,
+        workspace_id: str,
+        period_id: str,
+    ) -> None:
+        """Schedule the Phase 8 payslip recompute for ``period_id``."""
+        ...
+
+
+class PayPeriodRepository(Protocol):
+    """Read + write seam for ``pay_period`` rows and payslip guards."""
+
+    @property
+    def session(self) -> Session:
+        """Return the underlying SQLAlchemy session for audit writes."""
+        ...
+
+    def get(self, *, workspace_id: str, period_id: str) -> PayPeriodRow | None:
+        """Return the period or ``None`` when invisible to the caller."""
+        ...
+
+    def list(self, *, workspace_id: str) -> Sequence[PayPeriodRow]:
+        """Return workspace periods newest first."""
+        ...
+
+    def has_overlap(
+        self,
+        *,
+        workspace_id: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        exclude_period_id: str | None = None,
+    ) -> bool:
+        """Return whether another period intersects ``[starts_at, ends_at)``."""
+        ...
+
+    def insert(
+        self,
+        *,
+        period_id: str,
+        workspace_id: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        now: datetime,
+    ) -> PayPeriodRow:
+        """Insert an ``open`` period and return its projection."""
+        ...
+
+    def lock(
+        self,
+        *,
+        workspace_id: str,
+        period_id: str,
+        locked_at: datetime,
+        locked_by: str | None,
+    ) -> PayPeriodRow:
+        """Flip ``open`` to ``locked`` and stamp lock metadata."""
+        ...
+
+    def reopen(self, *, workspace_id: str, period_id: str) -> PayPeriodRow:
+        """Flip ``locked`` to ``open`` and reset contained payslips to draft."""
+        ...
+
+    def mark_paid(self, *, workspace_id: str, period_id: str) -> PayPeriodRow:
+        """Flip ``locked`` to ``paid``."""
+        ...
+
+    def delete(self, *, workspace_id: str, period_id: str) -> None:
+        """Delete an ``open`` period."""
+        ...
+
+    def has_paid_payslip(self, *, workspace_id: str, period_id: str) -> bool:
+        """Return whether any contained payslip is already paid."""
+        ...
+
+    def has_unpaid_payslip(self, *, workspace_id: str, period_id: str) -> bool:
+        """Return whether any contained payslip is not fully paid."""
+        ...
 
 
 # ---------------------------------------------------------------------------
