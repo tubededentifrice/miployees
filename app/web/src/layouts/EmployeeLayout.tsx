@@ -6,6 +6,7 @@ import AgentSidebar from "@/components/AgentSidebar";
 import BottomTabs from "@/components/BottomTabs";
 import SideNav, { type SideNavItem } from "@/components/SideNav";
 import { fetchJson } from "@/lib/api";
+import { usePendingMutationCount } from "@/lib/offlineQueue";
 import { qk } from "@/lib/queryKeys";
 import {
   initialAgentCollapsed,
@@ -60,6 +61,7 @@ function fmtBookingHint(b: Booking | undefined): string {
 export default function EmployeeLayout() {
   const { pathname } = useLocation();
   const isChat = pathname === "/chat";
+  const pendingMutationCount = usePendingMutationCount();
   const { data } = useQuery({ queryKey: qk.me(), queryFn: () => fetchJson<Me>("/api/v1/me") });
   const bookingsQ = useQuery({
     queryKey: qk.bookings(),
@@ -92,6 +94,19 @@ export default function EmployeeLayout() {
       {fmtBookingHint(myNext)}
     </NavLink>
   );
+  const pendingBadge = pendingMutationCount > 0
+    ? (
+        <div className="offline-queue-badge" role="status" aria-live="polite">
+          {pendingMutationCount} queued — will sync
+        </div>
+      )
+    : null;
+  const navAction = (
+    <div className="employee-shell-status">
+      {pendingBadge}
+      {bookingHint}
+    </div>
+  );
 
   return (
     <main
@@ -103,7 +118,7 @@ export default function EmployeeLayout() {
         items={NAV_ITEMS}
         collapsed={navCollapsed}
         onToggleCollapsed={toggleNavCollapsed}
-        action={bookingHint}
+        action={navAction}
         footer={{
           initials: footerInitials,
           avatarUrl: data?.employee.avatar_url ?? null,
@@ -115,6 +130,12 @@ export default function EmployeeLayout() {
       <div className="phone__body">
         <Outlet />
       </div>
+
+      {pendingMutationCount > 0 && (
+        <div className="offline-queue-badge offline-queue-badge--phone" role="status" aria-live="polite">
+          {pendingMutationCount} queued — will sync
+        </div>
+      )}
 
       {!isChat && <div className="phone__dock">{bookingHint}</div>}
 

@@ -137,6 +137,29 @@
   border-color: transparent;
 }
 
+.employee-shell-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.employee-shell-status > .booking-hint { width: 100%; }
+.offline-queue-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 32px; padding: 7px 12px;
+  border: 1px solid var(--sand);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  border-radius: 8px;
+  font-size: 12px; font-weight: 700;
+  text-align: center;
+}
+.offline-queue-badge--phone {
+  position: fixed; left: 12px; right: 12px; z-index: 18;
+  bottom: calc(101px + env(safe-area-inset-bottom, 0px));
+  box-shadow: var(--shadow);
+}
+
 .section-title {
   font-family: "Fraunces", ui-serif, serif; font-size: 14px; font-weight: 600;
   margin-bottom: 10px; color: var(--ink-2);
@@ -263,6 +286,7 @@
      and the clock-in at this width. */
   .phone__tabs { display: none; }
   .phone > .phone__dock { display: none; }
+  .offline-queue-badge--phone { display: none; }
 
   .phone__body {
     grid-column: 2;

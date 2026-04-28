@@ -35,6 +35,10 @@ export function registerWorkspaceSlugGetter(getter: Getter<string | null>): void
   workspaceSlugGetter = getter;
 }
 
+export function getActiveWorkspaceSlug(): string | null {
+  return workspaceSlugGetter();
+}
+
 /**
  * Wire the optional auth-token source. The passkey login / PAT flow
  * (cd-kc7u) registers this; until it ships the getter returns `null`

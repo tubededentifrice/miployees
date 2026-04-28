@@ -10,6 +10,7 @@ import { SseProvider } from "@/context/SseContext";
 import { WorkspaceProvider } from "@/context/WorkspaceContext";
 import { NavHistoryProvider } from "@/context/NavHistoryContext";
 import { AuthProvider } from "@/auth";
+import { startOfflineQueueReplay } from "@/lib/offlineQueue";
 
 import "@/styles/tokens.css";
 import "@/styles/reset.css";
@@ -20,15 +21,19 @@ import "@/styles/globals.css";
 // may still have a SW from that origin cached in their browser.
 // Proactively unregister it on boot and clear its caches so live
 // changes from the Vite dev server aren't masked by stale bundles.
-if ("serviceWorker" in navigator) {
+if (import.meta.env.DEV && "serviceWorker" in navigator) {
   void navigator.serviceWorker.getRegistrations().then((regs) => {
     for (const r of regs) void r.unregister();
   });
 }
-if ("caches" in window) {
+if (import.meta.env.DEV && "caches" in window) {
   void window.caches
     .keys()
     .then((keys) => Promise.all(keys.map((k) => window.caches.delete(k))));
+}
+
+if (typeof window !== "undefined") {
+  startOfflineQueueReplay();
 }
 
 const queryClient = makeQueryClient();
