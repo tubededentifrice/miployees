@@ -258,27 +258,27 @@ prompt: |
       ship the bundled commit.
 ```
 
-### Frontend work — load `/frontend-design:frontend-design`
+### Creative frontend work — load `/frontend-design:frontend-design`
 
-Whenever a Coder task touches `mocks/web/` (or any future production
-frontend under `app/web/`), **explicitly instruct the Coder to load the
-`/frontend-design:frontend-design` skill** before writing code. The skill
-enforces a distinctive, production-grade aesthetic and keeps the UI from
-drifting into generic AI-looking output. Include the directive in the
-prompt:
+Whenever a Coder task makes creative frontend decisions under
+`mocks/web/` or `app/web/` (new UI, redesign, component styling,
+visual polish), **explicitly instruct the Coder to load the
+`/frontend-design:frontend-design` skill** before writing code. Exact
+mock promotions do not need it unless the Coder must make design
+choices. Include the directive in the prompt:
 
 ```
 Area: mocks/web/src/pages/admin
-Skill to load: /frontend-design:frontend-design  (mandatory for any
-  component / page / styling change — load it before writing code)
+Skill to load: /frontend-design:frontend-design  (mandatory for creative
+  component / page / styling decisions — load it before writing code)
 Beads task: bd-071
 Test path: mocks/web (pnpm -C mocks/web typecheck && pnpm -C mocks/web build)
 Task: Redesign the LLM admin page per spec 11 §4
 ```
 
 Apply the same directive when the Coder runs the paired selfreview
-task on frontend changes — the skill should be referenced when
-judging aesthetic and component-quality decisions.
+task on creative frontend changes — the skill should be referenced
+when judging aesthetic and component-quality decisions.
 
 ## Quick checklist
 

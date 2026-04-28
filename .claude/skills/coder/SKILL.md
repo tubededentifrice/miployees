@@ -38,8 +38,10 @@ Every delegated coder task should include:
 - Read the relevant `docs/specs/*.md`; spec is the source of truth.
 - If the request contradicts a spec, stop and ask unless the task is
   explicitly to change the spec.
-- For frontend work under `mocks/web/` or future `app/web/`, load
-  `/frontend-design:frontend-design` before editing UI code.
+- For creative frontend work under `mocks/web/` or `app/web/`
+  (new UI, redesign, component styling, visual polish), load
+  `/frontend-design:frontend-design` before editing UI code. Exact
+  mock promotions do not need it unless you make design choices.
 
 ### 2. Search Before Writing
 

@@ -64,6 +64,13 @@ OpenClaw, etc.) operating on this repository.
    same gates: `CREWDAY_DEV_AUTH=1 ./scripts/dev-login.sh <email> <slug>`
    (needs `uv sync` / `pip install -e .` first). See
    `scripts/dev_login.py` for the full contract.
+5. Keep the dev SQLite schema usable. If `dev_login`, `/readyz`, or a
+   smoke request fails with a missing column/table, run:
+   `docker compose -f mocks/docker-compose.yml exec app-api alembic upgrade head`.
+   If that cannot repair the disposable local DB, it is acceptable to
+   reset only the dev app volume: stop/remove `app-api`, remove
+   `crewday-mocks_crewday-app-data`, then bring `app-api` back up. Do
+   not reset any non-dev database.
 
 ## Autonomy and persistence
 
@@ -195,7 +202,7 @@ Procedures live in `.claude/skills/<name>/`.
 | `/commiter` | Close Beads, sync/export, commit, and push |
 | `/oracle` | Deep research for hard decisions; no edits |
 | `/beads` | Create well-formed Beads tasks from a prompt |
-| `/frontend-design:frontend-design` | **Mandatory** before any frontend change under `mocks/web/` (or future `app/web/`) |
+| `/frontend-design:frontend-design` | **Mandatory** before creative frontend work under `mocks/web/` or `app/web/`; not needed for exact mock copying unless design choices are required |
 | `/ai-slop` | Strip AI-generated noise from a branch before it ships |
 
 ## Role workflows and specialised agents
