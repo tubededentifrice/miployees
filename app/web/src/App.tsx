@@ -215,7 +215,7 @@ export default function App() {
             <Route path="/admin/agent-docs" element={<AdminAgentDocsPage />} />
             <Route path="/admin/usage" element={<AdminUsagePage />} />
             <Route path="/admin/workspaces" element={<AdminWorkspacesPage />} />
-            <Route path="/admin/signup" element={<Navigate to="/admin/settings" replace />} />
+            <Route path="/admin/signup" element={<Navigate to="/admin/settings#signup" replace />} />
             <Route path="/admin/settings" element={<AdminSettingsPage />} />
             <Route path="/admin/admins" element={<AdminAdminsPage />} />
             <Route path="/admin/audit" element={<AdminAuditPage />} />

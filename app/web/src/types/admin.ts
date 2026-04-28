@@ -84,25 +84,32 @@ export interface AdminChatOverrideRow {
 }
 
 export interface AdminSignupSettings {
-  enabled: boolean;
-  disposable_domains_count: number;
-  throttle_per_ip_hour: number;
-  throttle_per_email_lifetime: number;
-  pre_verified_upload_mb_cap: number;
-  pre_verified_llm_percent_cap: number;
-  updated_at: string;
-  updated_by: string;
+  signup_enabled: boolean;
+  signup_throttle_overrides: Record<string, number>;
+  signup_disposable_domains_path: string;
+}
+
+export interface AdminDeploymentSettingsResponse {
+  settings: AdminDeploymentSetting[];
 }
 
 export interface AdminDeploymentSetting {
   key: string;
-  value: string | number | boolean;
-  kind: "bool" | "int" | "string";
+  value: string | number | boolean | JsonValue;
+  kind: "bool" | "int" | "string" | "json";
   description: string;
   root_only: boolean;
   updated_at: string;
   updated_by: string;
 }
+
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export interface AdminTeamMember {
   id: string;
