@@ -209,6 +209,7 @@ that load the matching skill.
 |----------|------|
 | `director` (skill) | Plans, tracks via Beads, delegates |
 | `/coder` | Implements within a narrow scope (code + docs); runs only its module's tests |
+| `/selfreview autofix` | Reviews the just-finished task, fixes BUGS/MISSING/RISKY, and stops before commit |
 | `/commiter` | Stages, signs off, commits, pushes — nothing else |
 | `/oracle` | Deep research for hard decisions; no edits, just advice |
 
