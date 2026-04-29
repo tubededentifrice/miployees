@@ -683,6 +683,7 @@ _INVALIDATIONS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
     "shift.ended": (("shifts",), ("my-schedule",)),
     "time.shift.changed": (("shifts",), ("my-schedule",)),
     "chat.message.sent": (("chat", "channels"),),
+    "chat.message.received": (("chat", "channels"),),
     # Bell-menu unread count + the notification list. Both query keys
     # are per-recipient; the event is user-scoped so only the
     # addressee's tabs receive it — the invalidation fires against
@@ -698,7 +699,7 @@ def _roles_for_event(
     kind: str,
     default: tuple[EventRole, ...],
 ) -> tuple[EventRole, ...]:
-    if kind != "chat.message.sent":
+    if kind not in {"chat.message.sent", "chat.message.received"}:
         return default
     channel_kind = getattr(event, "channel_kind", None)
     if channel_kind == "staff":

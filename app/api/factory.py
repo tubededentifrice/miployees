@@ -71,6 +71,7 @@ from app.adapters.storage.localfs import LocalFsStorage
 from app.adapters.storage.mime import FiletypeMimeSniffer
 from app.adapters.storage.ports import MimeSniffer, Storage
 from app.api.admin import admin_router
+from app.api.chat_gateway import build_chat_gateway_router
 from app.api.errors import add_exception_handlers
 from app.api.health import router as health_router
 from app.api.middleware import (
@@ -645,7 +646,7 @@ def _mount_auth_routers(
     app.include_router(build_permissions_router(), prefix=scoped_prefix)
 
 
-def _mount_context_routers(app: FastAPI) -> None:
+def _mount_context_routers(app: FastAPI, *, settings: Settings) -> None:
     """Mount each per-context router under ``/w/{slug}/api/v1/<ctx>``.
 
     Order matches :data:`app.api.v1.CONTEXT_ROUTERS` — the §01
@@ -712,6 +713,7 @@ def _mount_context_routers(app: FastAPI) -> None:
 
     # Deployment-scoped admin tree (bare host).
     app.include_router(admin_router, prefix="/admin/api/v1")
+    app.include_router(build_chat_gateway_router(settings=settings), prefix="")
 
 
 def _register_ops_routes(app: FastAPI) -> None:
@@ -1089,7 +1091,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         throttle=throttle,
         capabilities=capabilities,
     )
-    _mount_context_routers(app)
+    _mount_context_routers(app, settings=cfg)
     # Exception handlers are registered AFTER every router is mounted
     # so the :class:`DomainError` hierarchy and validation/HTTP-exception
     # handlers cover every surface — and BEFORE the custom OpenAPI

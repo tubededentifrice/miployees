@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     # the SMTPMailer falls back to the domain parsed from ``smtp_from``.
     smtp_bounce_domain: str | None = None
 
+    # --- Chat gateway inbound webhooks (§23) ---
+    # Deployment-scoped provider webhooks arrive on the bare host at
+    # ``/webhooks/chat/{provider}``. ``chat_gateway_workspace_id`` names
+    # the workspace that receives first-contact auto-created bindings
+    # for the deployment-default provider account; per-provider secrets
+    # verify the native webhook signature before any row is written.
+    chat_gateway_workspace_id: str | None = None
+    chat_gateway_twilio_secret: SecretStr | None = None
+    chat_gateway_meta_whatsapp_secret: SecretStr | None = None
+    chat_gateway_postmark_secret: SecretStr | None = None
+
     # --- LLM (optional; see §11 llm-and-agents) ---
     openrouter_api_key: SecretStr | None = None
     # Model id used by :mod:`app.domain.expenses.autofill` for receipt

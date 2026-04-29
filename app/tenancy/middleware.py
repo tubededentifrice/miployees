@@ -158,6 +158,7 @@ SKIP_PATHS: frozenset[str] = frozenset(
         "/me/email/verify",
         # Bare-host admin shell + API (§14 "Admin", §12 "Admin surface").
         "/admin",
+        "/webhooks",
         # Static assets + SPA chrome that the reverse proxy or FastAPI
         # may serve from the bare host (§14 "Shell chrome").
         "/static",

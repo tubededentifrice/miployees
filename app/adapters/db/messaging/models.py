@@ -57,6 +57,7 @@ from app.adapters.db.workspace import models as _workspace_models  # noqa: F401
 __all__ = [
     "ChatChannel",
     "ChatChannelMember",
+    "ChatGatewayBinding",
     "ChatMessage",
     "DigestRecord",
     "EmailDelivery",
@@ -514,6 +515,52 @@ class ChatChannelMember(Base):
     )
 
 
+class ChatGatewayBinding(Base):
+    """Provider/contact binding for inbound chat gateway webhooks.
+
+    The full §23 user-bound ``chat_channel_binding`` model lands in a
+    later slice. This row is the webhook-ingest primitive cd-r09r needs:
+    route a provider-native sender contact to one gateway channel and
+    keep the first-write idempotent on ``(provider, external_contact)``.
+    """
+
+    __tablename__ = "chat_gateway_binding"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    external_contact: Mapped[str] = mapped_column(String, nullable=False)
+    channel_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("chat_channel.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    display_label: Mapped[str] = mapped_column(String, nullable=False)
+    provider_metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_message_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_chat_gateway_binding_provider_contact",
+            "provider",
+            "external_contact",
+            unique=True,
+        ),
+        Index("ix_chat_gateway_binding_workspace", "workspace_id"),
+    )
+
+
 class ChatMessage(Base):
     """A single turn in a :class:`ChatChannel`.
 
@@ -585,6 +632,13 @@ class ChatMessage(Base):
     attachments_json: Mapped[list[Any]] = mapped_column(
         JSON, nullable=False, default=list
     )
+    source: Mapped[str] = mapped_column(String, nullable=False, default="app")
+    provider_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    gateway_binding_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("chat_gateway_binding.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # Set when the gateway dispatcher handed the row to the agent
     # runtime. ``NULL`` on in-app rows (synchronous per §11) and on
     # outbound rows; populated on gateway-inbound rows once the
@@ -615,6 +669,12 @@ class ChatMessage(Base):
             "ix_chat_message_workspace_channel",
             "workspace_id",
             "channel_id",
+        ),
+        Index(
+            "uq_chat_message_source_provider_message_id",
+            "source",
+            "provider_message_id",
+            unique=True,
         ),
     )
 

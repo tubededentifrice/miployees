@@ -46,6 +46,7 @@ __all__ = [
     "AgentTurnStarted",
     "ApprovalDecided",
     "ApprovalDecision",
+    "ChatMessageReceived",
     "ChatMessageSent",
     "ExpenseApproved",
     "ExpenseReimbursed",
@@ -491,6 +492,21 @@ class ChatMessageSent(Event):
     message_id: str
     author_user_id: str | None
     channel_kind: Literal["staff", "manager", "chat_gateway"]
+
+
+@register
+class ChatMessageReceived(Event):
+    """A provider-originated chat message row was appended to a channel."""
+
+    name: ClassVar[str] = "chat.message.received"
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager", "worker")
+
+    channel_id: str
+    message_id: str
+    author_user_id: str | None
+    channel_kind: Literal["staff", "manager", "chat_gateway"]
+    binding_id: str
+    source: str
 
 
 @register

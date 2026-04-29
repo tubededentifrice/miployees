@@ -44,6 +44,8 @@ from sqlalchemy.orm import Session
 __all__ = [
     "ChatChannelRepository",
     "ChatChannelRow",
+    "ChatGatewayBindingRow",
+    "ChatGatewayRepository",
     "ChatMessageRepository",
     "ChatMessageRow",
     "PushTokenRepository",
@@ -83,6 +85,21 @@ class ChatMessageRow:
     attachments_json: list[dict[str, str]]
     dispatched_to_agent_at: datetime | None
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGatewayBindingRow:
+    """Immutable projection of a ``chat_gateway_binding`` row."""
+
+    id: str
+    workspace_id: str
+    provider: str
+    external_contact: str
+    channel_id: str
+    display_label: str
+    provider_metadata_json: dict[str, object]
+    created_at: datetime
+    last_message_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,4 +392,63 @@ class ChatMessageRepository(Protocol):
         limit: int,
     ) -> Sequence[ChatMessageRow]:
         """Return messages newest-first, keyset-paged by ``created_at`` + ``id``."""
+        ...
+
+
+class ChatGatewayRepository(Protocol):
+    """Read + write seam for inbound chat-gateway persistence."""
+
+    @property
+    def session(self) -> Session:
+        """Return the underlying SQLAlchemy session for audit seams."""
+        ...
+
+    def find_binding(
+        self, *, provider: str, external_contact: str
+    ) -> ChatGatewayBindingRow | None:
+        """Return the provider/contact binding, or ``None``."""
+        ...
+
+    def insert_binding_with_channel(
+        self,
+        *,
+        binding_id: str,
+        channel_id: str,
+        workspace_id: str,
+        provider: str,
+        external_contact: str,
+        channel_source: str,
+        display_label: str,
+        provider_metadata_json: dict[str, object],
+        created_at: datetime,
+    ) -> ChatGatewayBindingRow:
+        """Create the gateway channel and its binding in one UoW."""
+        ...
+
+    def touch_binding(
+        self, *, binding_id: str, last_message_at: datetime
+    ) -> ChatGatewayBindingRow:
+        """Update ``last_message_at`` and return the binding."""
+        ...
+
+    def find_message_by_provider_id(
+        self, *, source: str, provider_message_id: str
+    ) -> ChatMessageRow | None:
+        """Return an already-ingested provider message, if any."""
+        ...
+
+    def insert_inbound_message(
+        self,
+        *,
+        message_id: str,
+        workspace_id: str,
+        channel_id: str,
+        gateway_binding_id: str,
+        source: str,
+        provider_message_id: str,
+        author_label: str,
+        body_md: str,
+        created_at: datetime,
+    ) -> ChatMessageRow:
+        """Insert a gateway-inbound message row."""
         ...

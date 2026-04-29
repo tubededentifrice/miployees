@@ -32,6 +32,7 @@ from app.adapters.db.identity.models import User
 from app.adapters.db.messaging.models import (
     ChatChannel,
     ChatChannelMember,
+    ChatGatewayBinding,
     ChatMessage,
     PushToken,
 )
@@ -39,14 +40,18 @@ from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.domain.messaging.ports import (
     ChatChannelRepository,
     ChatChannelRow,
+    ChatGatewayBindingRow,
+    ChatGatewayRepository,
     ChatMessageRepository,
     ChatMessageRow,
     PushTokenRepository,
     PushTokenRow,
 )
+from app.tenancy import tenant_agnostic
 
 __all__ = [
     "SqlAlchemyChatChannelRepository",
+    "SqlAlchemyChatGatewayRepository",
     "SqlAlchemyChatMessageRepository",
     "SqlAlchemyPushTokenRepository",
 ]
@@ -110,6 +115,22 @@ def _to_message_row(row: ChatMessage) -> ChatMessageRow:
             else None
         ),
         created_at=_as_utc(row.created_at),
+    )
+
+
+def _to_gateway_binding_row(row: ChatGatewayBinding) -> ChatGatewayBindingRow:
+    return ChatGatewayBindingRow(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        provider=row.provider,
+        external_contact=row.external_contact,
+        channel_id=row.channel_id,
+        display_label=row.display_label,
+        provider_metadata_json=dict(row.provider_metadata_json),
+        created_at=_as_utc(row.created_at),
+        last_message_at=(
+            _as_utc(row.last_message_at) if row.last_message_at is not None else None
+        ),
     )
 
 
@@ -346,6 +367,127 @@ class SqlAlchemyChatMessageRepository(ChatMessageRepository):
             )
         rows = self._session.scalars(stmt).all()
         return [_to_message_row(row) for row in rows]
+
+
+class SqlAlchemyChatGatewayRepository(ChatGatewayRepository):
+    """SA-backed concretion for inbound chat gateway persistence."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    @property
+    def session(self) -> Session:
+        return self._session
+
+    def find_binding(
+        self, *, provider: str, external_contact: str
+    ) -> ChatGatewayBindingRow | None:
+        with tenant_agnostic():
+            # justification: provider webhooks are bare-host ingress; the
+            # binding row itself carries the workspace selected by config.
+            row = self._session.scalars(
+                select(ChatGatewayBinding).where(
+                    ChatGatewayBinding.provider == provider,
+                    ChatGatewayBinding.external_contact == external_contact,
+                )
+            ).one_or_none()
+        return _to_gateway_binding_row(row) if row is not None else None
+
+    def insert_binding_with_channel(
+        self,
+        *,
+        binding_id: str,
+        channel_id: str,
+        workspace_id: str,
+        provider: str,
+        external_contact: str,
+        channel_source: str,
+        display_label: str,
+        provider_metadata_json: dict[str, object],
+        created_at: datetime,
+    ) -> ChatGatewayBindingRow:
+        channel = ChatChannel(
+            id=channel_id,
+            workspace_id=workspace_id,
+            kind="chat_gateway",
+            source=channel_source,
+            external_ref=f"{provider}:{external_contact}",
+            title=display_label,
+            created_at=created_at,
+            archived_at=None,
+        )
+        binding = ChatGatewayBinding(
+            id=binding_id,
+            workspace_id=workspace_id,
+            provider=provider,
+            external_contact=external_contact,
+            channel_id=channel_id,
+            display_label=display_label,
+            provider_metadata_json=dict(provider_metadata_json),
+            created_at=created_at,
+            last_message_at=None,
+        )
+        self._session.add_all([channel, binding])
+        self._session.flush()
+        return _to_gateway_binding_row(binding)
+
+    def touch_binding(
+        self, *, binding_id: str, last_message_at: datetime
+    ) -> ChatGatewayBindingRow:
+        with tenant_agnostic():
+            # justification: provider webhooks resolve tenant from the binding,
+            # not an authenticated workspace route.
+            row = self._session.get(ChatGatewayBinding, binding_id)
+            if row is None:
+                raise LookupError(f"chat_gateway_binding {binding_id!r} not found")
+            row.last_message_at = last_message_at
+            self._session.flush()
+        return _to_gateway_binding_row(row)
+
+    def find_message_by_provider_id(
+        self, *, source: str, provider_message_id: str
+    ) -> ChatMessageRow | None:
+        with tenant_agnostic():
+            # justification: replay defeat must work before a tenant context is
+            # bound; source/provider_message_id is globally unique.
+            row = self._session.scalars(
+                select(ChatMessage).where(
+                    ChatMessage.source == source,
+                    ChatMessage.provider_message_id == provider_message_id,
+                )
+            ).one_or_none()
+        return _to_message_row(row) if row is not None else None
+
+    def insert_inbound_message(
+        self,
+        *,
+        message_id: str,
+        workspace_id: str,
+        channel_id: str,
+        gateway_binding_id: str,
+        source: str,
+        provider_message_id: str,
+        author_label: str,
+        body_md: str,
+        created_at: datetime,
+    ) -> ChatMessageRow:
+        row = ChatMessage(
+            id=message_id,
+            workspace_id=workspace_id,
+            channel_id=channel_id,
+            author_user_id=None,
+            author_label=author_label,
+            body_md=body_md,
+            attachments_json=[],
+            source=source,
+            provider_message_id=provider_message_id,
+            gateway_binding_id=gateway_binding_id,
+            dispatched_to_agent_at=None,
+            created_at=created_at,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return _to_message_row(row)
 
 
 class SqlAlchemyPushTokenRepository(PushTokenRepository):

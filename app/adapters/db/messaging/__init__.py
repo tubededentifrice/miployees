@@ -61,6 +61,7 @@ from __future__ import annotations
 
 from app.adapters.db.messaging.models import (
     ChatChannel,
+    ChatGatewayBinding,
     ChatChannelMember,
     ChatMessage,
     DigestRecord,
@@ -77,6 +78,7 @@ for _table in (
     "digest_record",
     "chat_channel",
     "chat_channel_member",
+    "chat_gateway_binding",
     "chat_message",
     "email_opt_out",
     "email_delivery",
@@ -85,6 +87,7 @@ for _table in (
 
 __all__ = [
     "ChatChannel",
+    "ChatGatewayBinding",
     "ChatChannelMember",
     "ChatMessage",
     "DigestRecord",
