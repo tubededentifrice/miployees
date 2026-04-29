@@ -14,29 +14,58 @@ export interface AdminWorkspaceRow {
   id: string;
   slug: string;
   name: string;
-  plan: "free" | "pro" | "trial";
-  verification_state:
-    | "unverified"
-    | "email_verified"
-    | "human_verified"
-    | "trusted";
-  properties_count: number;
+  plan: string;
+  verification_state: string;
   members_count: number;
-  cap_usd_30d: number;
-  spent_usd_30d: number;
-  usage_percent: number;
-  paused: boolean;
   archived_at: string | null;
   created_at: string;
 }
 
+export interface AdminWorkspacesResponse {
+  workspaces: AdminWorkspaceRow[];
+}
+
+export interface AdminUsageWorkspaceRow {
+  workspace_id: string;
+  slug: string;
+  name: string;
+  cap_cents_30d: number;
+  spent_cents_30d: number;
+  percent: number;
+  paused: boolean;
+}
+
+export interface AdminUsageWorkspacesResponse {
+  workspaces: AdminUsageWorkspaceRow[];
+}
+
 export interface AdminUsageSummary {
   window_label: string;
-  deployment_spend_usd_30d: number;
-  deployment_call_count_30d: number;
+  deployment_spend_cents_30d: number;
+  deployment_calls_30d: number;
   workspace_count: number;
-  paused_workspaces: number;
-  per_capability: { capability: string; spend_usd_30d: number; calls_30d: number }[];
+  paused_workspace_count: number;
+  per_capability: { capability: string; spend_cents_30d: number; calls_30d: number }[];
+}
+
+export interface AdminAuditEntry {
+  id: string;
+  actor_id: string;
+  actor_kind: "user" | "agent" | "system";
+  actor_grant_role: string;
+  actor_was_owner_member: boolean;
+  entity_kind: string;
+  entity_id: string;
+  action: string;
+  diff: JsonValue;
+  correlation_id: string;
+  created_at: string;
+}
+
+export interface AdminAuditListResponse {
+  data: AdminAuditEntry[];
+  next_cursor: string | null;
+  has_more: boolean;
 }
 
 export interface AdminChatProviderCredential {

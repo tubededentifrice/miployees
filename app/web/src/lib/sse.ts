@@ -112,12 +112,11 @@ export type EventKind =
   // Shifts (§09 time + payroll).
   | "shift.ended"
   | "time.shift.changed"
-  // Admin / deployment-scope audit (§12 SSE — `/admin/events`). The
-  // server emits `admin.audit.appended` only for `scope_kind ==
-  // 'deployment'` rows; the `/admin/audit` page invalidates its
-  // cached list so a fresh row appears at the top without a full
-  // re-render.
+  // Admin / deployment-scope events (§12 SSE — `/admin/events`).
   | "admin.audit.appended"
+  | "admin.usage.updated"
+  | "admin.workspace.changed"
+  | "admin.workspace.budget_paused"
   // Catch-all workspace invalidation — e.g. owner flips a workspace
   // setting that reshapes policy. Drops every cached query under
   // the active workspace.
@@ -600,6 +599,20 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     invalidate(qc, qk.adminAudit());
   },
 
+  "admin.usage.updated": (_event, qc) => {
+    adminUsageInvalidations(qc);
+  },
+
+  "admin.workspace.changed": (_event, qc) => {
+    adminUsageInvalidations(qc);
+    invalidate(qc, qk.adminWorkspaces());
+  },
+
+  "admin.workspace.budget_paused": (_event, qc) => {
+    adminUsageInvalidations(qc);
+    invalidate(qc, qk.adminWorkspaces());
+  },
+
   "workspace.changed": (_event, qc) => {
     // Big-hammer: a workspace-level setting reshaped policy. Every
     // cached query under the active workspace is suspect.
@@ -614,6 +627,11 @@ function bookingInvalidations(qc: QueryClient): void {
   invalidate(qc, ["my-schedule"]);
   invalidate(qc, qk.bookings());
   invalidate(qc, qk.dashboard());
+}
+
+function adminUsageInvalidations(qc: QueryClient): void {
+  invalidate(qc, qk.adminUsageSummary());
+  invalidate(qc, qk.adminUsageWorkspaces());
 }
 
 // ---------------------------------------------------------------------------

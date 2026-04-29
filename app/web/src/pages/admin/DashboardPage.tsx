@@ -5,10 +5,12 @@ import { qk } from "@/lib/queryKeys";
 import { formatMoney } from "@/lib/money";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading, ProgressBar, StatCard } from "@/components/common";
+import { displayAuditRow } from "@/pages/admin/auditRows";
 import type {
+  AdminAuditListResponse,
   AdminUsageSummary,
-  AdminWorkspaceRow,
-  AuditEntry,
+  AdminUsageWorkspacesResponse,
+  AdminWorkspacesResponse,
 } from "@/types/api";
 
 export default function AdminDashboardPage() {
@@ -17,40 +19,60 @@ export default function AdminDashboardPage() {
     queryFn: () => fetchJson<AdminUsageSummary>("/admin/api/v1/usage/summary"),
   });
   const workspacesQ = useQuery({
+    queryKey: qk.adminUsageWorkspaces(),
+    queryFn: () =>
+      fetchJson<AdminUsageWorkspacesResponse>("/admin/api/v1/usage/workspaces"),
+  });
+  const workspaceMetaQ = useQuery({
     queryKey: qk.adminWorkspaces(),
-    queryFn: () => fetchJson<AdminWorkspaceRow[]>("/admin/api/v1/workspaces"),
+    queryFn: () => fetchJson<AdminWorkspacesResponse>("/admin/api/v1/workspaces"),
   });
   const auditQ = useQuery({
     queryKey: qk.adminAudit(),
-    queryFn: () => fetchJson<AuditEntry[]>("/admin/api/v1/audit"),
+    queryFn: () => fetchJson<AdminAuditListResponse>("/admin/api/v1/audit"),
   });
 
   const sub =
     "Deployment-wide health: spend, workspaces that need attention, and what changed recently.";
 
-  if (summaryQ.isPending || workspacesQ.isPending || auditQ.isPending) {
+  if (
+    summaryQ.isPending ||
+    workspacesQ.isPending ||
+    workspaceMetaQ.isPending ||
+    auditQ.isPending
+  ) {
     return <DeskPage title="Administration" sub={sub}><Loading /></DeskPage>;
   }
-  if (!summaryQ.data || !workspacesQ.data || !auditQ.data) {
+  if (
+    !summaryQ.data ||
+    !workspacesQ.data ||
+    !workspaceMetaQ.data ||
+    !auditQ.data
+  ) {
     return <DeskPage title="Administration" sub={sub}>Failed to load.</DeskPage>;
   }
 
   const sum = summaryQ.data;
-  const workspaces = workspacesQ.data;
-  const audit = auditQ.data.slice(0, 6);
+  const workspaceMeta = new Map(
+    workspaceMetaQ.data.workspaces.map((w) => [w.id, w]),
+  );
+  const workspaces = workspacesQ.data.workspaces.filter((w) => {
+    const meta = workspaceMeta.get(w.workspace_id);
+    return meta?.archived_at == null;
+  });
+  const audit = auditQ.data.data.slice(0, 6).map(displayAuditRow);
 
-  const active = workspaces.filter((w) => !w.archived_at);
-  const paused = active.filter((w) => w.paused);
-  const stressed = active
-    .filter((w) => !w.paused && w.usage_percent >= 70)
-    .sort((a, b) => b.usage_percent - a.usage_percent);
+  const paused = workspaces.filter((w) => w.paused);
+  const stressed = workspaces
+    .filter((w) => !w.paused && w.percent >= 70)
+    .sort((a, b) => b.percent - a.percent);
 
   return (
     <DeskPage title="Administration" sub={sub}>
       <section className="grid grid--stats">
         <StatCard
           label="30d LLM spend"
-          value={formatMoney(Math.round(sum.deployment_spend_usd_30d * 100), "USD")}
+          value={formatMoney(sum.deployment_spend_cents_30d, "USD")}
           sub={sum.window_label}
         />
         <StatCard
@@ -61,7 +83,7 @@ export default function AdminDashboardPage() {
         />
         <StatCard
           label="Calls (30d)"
-          value={sum.deployment_call_count_30d.toLocaleString()}
+          value={sum.deployment_calls_30d.toLocaleString()}
           sub={"across " + sum.per_capability.length + " capabilities"}
         />
         <StatCard
@@ -89,7 +111,7 @@ export default function AdminDashboardPage() {
             </thead>
             <tbody>
               {[...paused, ...stressed].map((w) => (
-                <tr key={w.id}>
+                <tr key={w.workspace_id}>
                   <td>
                     <Link to={"/admin/workspaces"} className="table__link">
                       {w.name}
@@ -99,12 +121,12 @@ export default function AdminDashboardPage() {
                   <td>
                     {w.paused
                       ? <Chip tone="rust" size="sm">paused</Chip>
-                      : <Chip tone="sand" size="sm">{w.usage_percent}%</Chip>}
+                      : <Chip tone="sand" size="sm">{w.percent}%</Chip>}
                   </td>
-                  <td className="mono">{formatMoney(Math.round(w.spent_usd_30d * 100), "USD")}</td>
-                  <td className="mono">{formatMoney(Math.round(w.cap_usd_30d * 100), "USD")}</td>
+                  <td className="mono">{formatMoney(w.spent_cents_30d, "USD")}</td>
+                  <td className="mono">{formatMoney(w.cap_cents_30d, "USD")}</td>
                   <td>
-                    <ProgressBar value={w.usage_percent} slim />
+                    <ProgressBar value={w.percent} slim />
                   </td>
                 </tr>
               ))}

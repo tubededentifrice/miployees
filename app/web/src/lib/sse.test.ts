@@ -115,6 +115,9 @@ describe("INVALIDATIONS — coverage", () => {
     "shift.ended",
     "time.shift.changed",
     "admin.audit.appended",
+    "admin.usage.updated",
+    "admin.workspace.changed",
+    "admin.workspace.budget_paused",
     "workspace.changed",
   ];
 
@@ -652,6 +655,25 @@ describe("INVALIDATIONS — per-kind behaviour", () => {
     );
     const called = spy.mock.calls.map((c) => c[0]?.queryKey);
     expect(called).toEqual(expect.arrayContaining([qk.adminAudit()]));
+  });
+
+  it("admin usage events invalidate deployment usage queries", () => {
+    for (const kind of [
+      "admin.usage.updated",
+      "admin.workspace.changed",
+      "admin.workspace.budget_paused",
+    ] as const) {
+      const qc = makeClient();
+      const spy = vi.spyOn(qc, "invalidateQueries");
+      INVALIDATIONS[kind](makeEvent(kind), qc);
+      const called = spy.mock.calls.map((c) => c[0]?.queryKey);
+      expect(called).toEqual(
+        expect.arrayContaining([
+          qk.adminUsageSummary(),
+          qk.adminUsageWorkspaces(),
+        ]),
+      );
+    }
   });
 
   it("workspace.changed invalidates everything", () => {

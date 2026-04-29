@@ -3,7 +3,8 @@ import { fetchJson } from "@/lib/api";
 import { qk } from "@/lib/queryKeys";
 import DeskPage from "@/components/DeskPage";
 import { Chip, Loading } from "@/components/common";
-import type { AuditEntry } from "@/types/api";
+import { displayAuditRow } from "@/pages/admin/auditRows";
+import type { AdminAuditListResponse, AuditEntry } from "@/types/api";
 
 const ACTOR_TONE: Record<AuditEntry["actor_kind"], "moss" | "sky" | "ghost"> = {
   user: "moss",
@@ -14,12 +15,13 @@ const ACTOR_TONE: Record<AuditEntry["actor_kind"], "moss" | "sky" | "ghost"> = {
 export default function AdminAuditPage() {
   const q = useQuery({
     queryKey: qk.adminAudit(),
-    queryFn: () => fetchJson<AuditEntry[]>("/admin/api/v1/audit"),
+    queryFn: () => fetchJson<AdminAuditListResponse>("/admin/api/v1/audit"),
   });
   const sub =
     "Deployment-scope audit — scope_kind='deployment' rows only. Each action ties back to its admin actor via actor_id.";
   if (q.isPending) return <DeskPage title="Audit log" sub={sub}><Loading /></DeskPage>;
   if (!q.data) return <DeskPage title="Audit log" sub={sub}>Failed to load.</DeskPage>;
+  const rows = q.data.data.map(displayAuditRow);
 
   return (
     <DeskPage title="Audit log" sub={sub}>
@@ -36,7 +38,7 @@ export default function AdminAuditPage() {
             </tr>
           </thead>
           <tbody>
-            {q.data.map((row, idx) => (
+            {rows.map((row, idx) => (
               <tr key={idx}>
                 <td className="mono">{new Date(row.at).toLocaleString()}</td>
                 <td>
