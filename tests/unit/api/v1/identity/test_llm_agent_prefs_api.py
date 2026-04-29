@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.llm.models import BudgetLedger
+from app.api.v1 import llm as llm_module
+from app.api.v1.llm import build_workspace_llm_router
 from app.api.v1.llm import router as llm_router
+from app.events.registry import Event
 from app.tenancy import WorkspaceContext
 from app.util.ulid import new_ulid
 from tests.unit.api.v1.identity.conftest import build_client
@@ -49,6 +53,46 @@ def test_visible_llm_routes_have_cli_and_agent_annotations() -> None:
     for key in mutating_routes:
         assert operations[key]["x-cli"]["mutates"] is True
         assert "x-agent-confirm" in operations[key]
+
+
+def test_flat_llm_routes_have_cli_and_agent_annotations() -> None:
+    app = FastAPI()
+    app.include_router(build_workspace_llm_router())
+
+    operations = {
+        (method.upper(), path): operation
+        for path, methods in app.openapi()["paths"].items()
+        for method, operation in methods.items()
+    }
+
+    visible_routes = {
+        ("GET", "/agent_preferences/workspace"),
+        ("PUT", "/agent_preferences/workspace"),
+        ("GET", "/agent_preferences/me"),
+        ("PUT", "/agent_preferences/me"),
+        ("GET", "/me/agent_approval_mode"),
+        ("PUT", "/me/agent_approval_mode"),
+        ("GET", "/workspace/usage"),
+    }
+    for key in visible_routes:
+        assert operations[key]["x-cli"]["summary"]
+
+    mutating_routes = {
+        ("PUT", "/agent_preferences/workspace"),
+        ("PUT", "/agent_preferences/me"),
+        ("PUT", "/me/agent_approval_mode"),
+    }
+    for key in mutating_routes:
+        assert operations[key]["x-cli"]["mutates"] is True
+        assert "x-agent-confirm" in operations[key]
+
+
+class _CapturingBus:
+    def __init__(self) -> None:
+        self.events: list[Event] = []
+
+    def publish(self, event: Event) -> None:
+        self.events.append(event)
 
 
 def test_workspace_agent_preferences_round_trip_via_api(
@@ -145,6 +189,26 @@ def test_self_agent_preferences_round_trip_via_spec_path(
     assert readback.json() == body
 
 
+def test_self_agent_preference_update_publishes_user_scoped_event(
+    owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, factory, _workspace_id = owner_ctx
+    bus = _CapturingBus()
+    monkeypatch.setattr(llm_module, "default_event_bus", bus)
+    client = _client(ctx, factory)
+
+    response = client.put(
+        "/agent_preferences/me",
+        json={"body_md": "Use direct bullets."},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [event.name for event in bus.events] == ["agent.settings.changed"]
+    assert bus.events[0].actor_user_id == ctx.actor_id
+    assert bus.events[0].changed_keys == ("agent_preferences.me",)
+
+
 def test_agent_preferences_reject_secret_like_body(
     owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
 ) -> None:
@@ -177,6 +241,23 @@ def test_my_agent_approval_mode_round_trip(
     readback = client.get("/me/agent_approval_mode")
     assert readback.status_code == 200
     assert readback.json() == {"mode": "auto"}
+
+
+def test_my_agent_approval_mode_update_publishes_user_scoped_event(
+    owner_ctx: tuple[WorkspaceContext, sessionmaker[Session], str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, factory, _workspace_id = owner_ctx
+    bus = _CapturingBus()
+    monkeypatch.setattr(llm_module, "default_event_bus", bus)
+    client = _client(ctx, factory)
+
+    response = client.put("/me/agent_approval_mode", json={"mode": "auto"})
+
+    assert response.status_code == 200, response.text
+    assert [event.name for event in bus.events] == ["agent.settings.changed"]
+    assert bus.events[0].actor_user_id == ctx.actor_id
+    assert bus.events[0].changed_keys == ("agent_approval_mode",)
 
 
 def test_workspace_usage_reads_budget_ledger(

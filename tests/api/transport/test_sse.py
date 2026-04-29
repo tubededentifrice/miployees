@@ -286,6 +286,10 @@ class TestDefaultInvalidates:
         assert _default_invalidates("task.created") == [["tasks"]]
         assert _default_invalidates("shift.ended") == [["shifts"], ["my-schedule"]]
         assert _default_invalidates("chat.message.sent") == [["chat", "channels"]]
+        assert _default_invalidates("agent.settings.changed") == [
+            ["agent_preferences", "me"],
+            ["me", "agent_approval_mode"],
+        ]
 
     def test_unknown_kind_empty(self) -> None:
         assert _default_invalidates("agent.turn.started") == []
@@ -1390,6 +1394,10 @@ DEFAULT_ROLE_EVENTS_ALLOWLIST: frozenset[str] = frozenset(
         # the rendered card via ``GET /approvals/{id}`` where the
         # per-row authorisation gate applies.
         "agent.action.pending",
+        # ``agent.settings.changed`` is personal preference state:
+        # every role may have an agent surface, and ``user_scoped``
+        # narrows delivery to the edited user's tabs.
+        "agent.settings.changed",
         # ``approval.decided`` (cd-9ghv) is workspace-wide on
         # purpose: owners and managers watching ``/approvals`` must
         # see decisions on rows they did not originate, and the
@@ -1398,6 +1406,10 @@ DEFAULT_ROLE_EVENTS_ALLOWLIST: frozenset[str] = frozenset(
         # the wire to drop its own card; that's a client-side
         # narrowing on top of the role allowlist.
         "approval.decided",
+        # ``workspace.changed`` carries only changed setting keys and
+        # is deliberately workspace-wide: every role may have cached
+        # policy-shaped data that needs to be re-fetched through REST.
+        "workspace.changed",
     }
 )
 

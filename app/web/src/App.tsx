@@ -179,6 +179,12 @@ export default function App() {
               </Route>
             </Route>
 
+            <Route element={<RequirePermission actionKey="scope.edit_settings" />}>
+              <Route element={<ManagerLayout />}>
+                <Route path="/settings" element={<SettingsPage />} />
+              </Route>
+            </Route>
+
             <Route element={<ManagerLayout />}>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/properties" element={<PropertiesPage />} />
@@ -213,7 +219,6 @@ export default function App() {
               <Route path="/organizations" element={<OrganizationsPage />} />
               <Route path="/webhooks" element={<WebhooksPage />} />
               <Route path="/tokens" element={<ApiTokensPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
             </Route>
 
             <Route element={<ClientLayout />}>

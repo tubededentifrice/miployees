@@ -88,7 +88,13 @@ export default function AgentPreferencesPanel({
     mutationFn: (body_md: string) =>
       fetchJson<AgentPreference>(endpointFor(scope, scopeId), {
         method: "PUT",
-        body: { body_md },
+        body: scope === "workspace" && q.data
+          ? {
+              body_md,
+              blocked_actions: q.data.blocked_actions,
+              default_approval_mode: q.data.default_approval_mode,
+            }
+          : { body_md },
       }),
     onSuccess: (next) => {
       qc.setQueryData(key, next);

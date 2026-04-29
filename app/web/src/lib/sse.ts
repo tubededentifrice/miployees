@@ -72,6 +72,7 @@ export type EventKind =
   | "agent.turn.started"
   | "agent.turn.finished"
   | "agent.action.pending"
+  | "agent.settings.changed"
   // Tasks (§06).
   | "task.created"
   | "task.assigned"
@@ -333,6 +334,11 @@ export const INVALIDATIONS: Record<EventKind, InvalidationHandler> = {
     stopTyping(qc, payload.scope, payload.task_id);
     invalidate(qc, qk.approvals());
     invalidate(qc, qk.dashboard());
+  },
+
+  "agent.settings.changed": (_event, qc) => {
+    invalidate(qc, qk.agentPrefs("me"));
+    invalidate(qc, qk.agentApprovalMode());
   },
 
   "task.created": (_event, qc) => {

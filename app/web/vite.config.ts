@@ -137,12 +137,13 @@ export default defineConfig({
   // Letting Vite pick HMR host/port from the page origin makes both
   // work without per-URL config: ws:// for 127.0.0.1:8100, wss://
   // for the public host (Traefik upgrades the websocket).
-  // `allowedHosts` lets the public hostname through Vite's host-check.
+  // `allowedHosts` lets the public hostname and the API container's
+  // proxy host through Vite's host-check.
   server: {
     host: "0.0.0.0",
     port: 5173,
     strictPort: true,
-    allowedHosts: ["dev.crew.day", "localhost", "127.0.0.1"],
+    allowedHosts: ["dev.crew.day", "localhost", "127.0.0.1", "web-dev"],
     proxy: {
       ...Object.fromEntries(
         API_PATHS.map((p) => [p, { target: BACKEND, changeOrigin: true, ws: true }]),

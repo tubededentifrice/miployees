@@ -190,6 +190,8 @@ export interface AgentPreference {
   writable: boolean;
   soft_cap: number;
   hard_cap: number;
+  blocked_actions: string[];
+  default_approval_mode: "bypass" | "auto" | "strict";
 }
 
 export interface AgentPreferenceRevision {

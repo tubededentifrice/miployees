@@ -1633,12 +1633,35 @@
 .settings-kv { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; }
 .settings-kv dt { color: var(--ink-3); font-size: 13px; }
 .settings-kv dd { margin: 0; font-weight: 500; }
+.settings-kv--editable { grid-template-columns: 1fr; gap: 12px; }
+.settings-editor {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.9fr) minmax(220px, 1.3fr);
+  gap: 8px 16px;
+  align-items: start;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--line);
+}
+.settings-editor:last-child { border-bottom: 0; padding-bottom: 0; }
+.settings-editor__form { display: flex; flex-direction: column; gap: 8px; }
+.settings-editor__control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.settings-editor__control input,
+.settings-editor__control select {
+  min-width: 132px;
+  max-width: 100%;
+  min-height: 34px;
+}
+.settings-editor__actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.settings-editor__error { margin: 0; color: var(--rust); font-size: 13px; }
 .settings-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .settings-list li { padding: 8px 0; border-bottom: 1px dashed var(--line); display: flex; justify-content: space-between; align-items: center; }
 .danger-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; color: var(--rust); }
 .danger-list li { padding: 6px 0; border-bottom: 1px dashed var(--rust-soft); }
 .setting-label { display: block; font-size: 0.8em; }
 .setting-scope { margin-left: 0.5rem; font-size: 0.8em; }
+@media (max-width: 640px) {
+  .settings-editor { grid-template-columns: 1fr; }
+}
 
 /* §11 agent usage: percent-only envelope on the workspace budget. */
 .agent-usage__heading { display: flex; align-items: baseline; gap: 10px; }

@@ -64,6 +64,7 @@ RUN pip install --no-cache-dir \
     "argon2-cffi>=23" \
     "aiosqlite" \
     "jinja2" \
+    "babel>=2.18.0" \
     "cryptography>=42" \
     "pyyaml>=6.0" \
     "filetype>=1.2" \

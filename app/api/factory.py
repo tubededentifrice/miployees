@@ -96,6 +96,7 @@ from app.api.v1.auth import recovery as recovery_module
 from app.api.v1.auth import signup as signup_module
 from app.api.v1.auth import tokens as tokens_module
 from app.api.v1.employees import build_employees_router
+from app.api.v1.llm import build_workspace_llm_router
 from app.api.v1.me_schedule import build_me_schedule_router
 from app.api.v1.permission_groups import build_permission_groups_router
 from app.api.v1.permission_rules import build_permission_rules_router
@@ -108,6 +109,7 @@ from app.api.v1.role_grants import (
     build_role_grants_router,
     build_users_role_grants_router,
 )
+from app.api.v1.settings import build_settings_router
 from app.api.v1.user_availability_overrides import (
     build_user_availability_overrides_router,
 )
@@ -645,6 +647,8 @@ def _mount_auth_routers(
     app.include_router(build_permission_groups_router(), prefix=scoped_prefix)
     app.include_router(build_permission_rules_router(), prefix=scoped_prefix)
     app.include_router(build_permissions_router(), prefix=scoped_prefix)
+    app.include_router(build_settings_router(), prefix=scoped_prefix)
+    app.include_router(build_workspace_llm_router(), prefix=scoped_prefix)
 
 
 def _mount_context_routers(app: FastAPI, *, settings: Settings) -> None:

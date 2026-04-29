@@ -690,6 +690,11 @@ _INVALIDATIONS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
     # their own cache entry and does not waste work on sibling tabs
     # in other browsers logged into the same workspace.
     "notification.created": (("notifications", "unread"), ("notifications",)),
+    "agent.settings.changed": (
+        ("agent_preferences", "me"),
+        ("me", "agent_approval_mode"),
+    ),
+    "workspace.changed": ((),),
 }
 
 

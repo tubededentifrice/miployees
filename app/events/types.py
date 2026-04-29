@@ -78,6 +78,8 @@ __all__ = [
     "TaskSkipped",
     "TaskUnassigned",
     "TaskUpdated",
+    "UserAgentSettingsChanged",
+    "WorkspaceChanged",
 ]
 
 
@@ -168,6 +170,36 @@ class TaskCreated(Event):
     name: ClassVar[str] = "task.created"
 
     task_id: str
+
+
+@register
+class WorkspaceChanged(Event):
+    """Workspace-level settings or identity changed.
+
+    Payload carries only setting keys, not values. The SPA treats this
+    as a broad invalidation signal and re-fetches through normal REST
+    authz, avoiding policy or preference drift across tabs.
+    """
+
+    name: ClassVar[str] = "workspace.changed"
+
+    changed_keys: tuple[str, ...]
+
+
+@register
+class UserAgentSettingsChanged(Event):
+    """The caller's personal agent settings changed.
+
+    User-scoped so only the edited user's tabs refresh personal agent
+    preference and approval-mode caches. Payload carries keys only;
+    the SPA re-fetches rendered values through REST.
+    """
+
+    name: ClassVar[str] = "agent.settings.changed"
+    user_scoped: ClassVar[bool] = True
+
+    actor_user_id: str
+    changed_keys: tuple[str, ...]
 
 
 @register

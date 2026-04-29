@@ -7,6 +7,7 @@ budgets, and outbound webhooks (spec §01 "Context map", §12
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,17 +22,22 @@ from app.audit import write_audit
 from app.authz.dep import Permission
 from app.domain.agent.preferences import (
     APPROVAL_MODES,
+    INJECTION_TOKEN_CAP,
+    PREFERENCE_HARD_TOKEN_CAP,
     PreferenceContainsSecret,
     PreferenceTooLarge,
     PreferenceUpdate,
     read_preference,
     save_preference,
 )
+from app.events.bus import bus as default_event_bus
+from app.events.types import UserAgentSettingsChanged, WorkspaceChanged
 from app.tenancy import WorkspaceContext
+from app.util.clock import SystemClock
 
 router = APIRouter(tags=["llm"])
 
-__all__ = ["router"]
+__all__ = ["build_workspace_llm_router", "router"]
 
 _Ctx = Annotated[WorkspaceContext, Depends(current_workspace_context)]
 _Db = Annotated[Session, Depends(db_session)]
@@ -47,6 +53,11 @@ class AgentPreferenceRead(BaseModel):
     scope_id: str
     body_md: str
     token_count: int
+    updated_by_user_id: str | None
+    updated_at: str | None
+    writable: bool
+    soft_cap: int
+    hard_cap: int
     blocked_actions: list[str] = Field(default_factory=list)
     default_approval_mode: ApprovalMode = "auto"
 
@@ -97,6 +108,82 @@ class SelfAgentPreferenceUpdate(BaseModel):
     change_note: str | None = None
 
 
+_WORKSPACE_PREFS_GET_OPENAPI = {
+    "x-cli": {
+        "group": "agent-prefs",
+        "verb": "show-workspace",
+        "summary": "Read workspace agent preferences",
+        "mutates": False,
+    },
+}
+_WORKSPACE_PREFS_PUT_OPENAPI = {
+    "x-agent-confirm": {
+        "summary": "Update workspace agent preferences?",
+        "risk": "medium",
+        "fields_to_show": ["blocked_actions", "default_approval_mode"],
+        "verb": "Update agent preferences",
+    },
+    "x-cli": {
+        "group": "agent-prefs",
+        "verb": "set-workspace",
+        "summary": "Update workspace agent preferences",
+        "mutates": True,
+    },
+}
+_ME_PREFS_GET_OPENAPI = {
+    "x-cli": {
+        "group": "agent-prefs",
+        "verb": "show-me",
+        "summary": "Read my agent preferences",
+        "mutates": False,
+    },
+}
+_ME_PREFS_PUT_OPENAPI = {
+    "x-agent-confirm": {
+        "summary": "Update your agent preferences?",
+        "risk": "low",
+        "fields_to_show": [],
+        "verb": "Update my agent preferences",
+    },
+    "x-cli": {
+        "group": "agent-prefs",
+        "verb": "set-me",
+        "summary": "Update my agent preferences",
+        "mutates": True,
+    },
+}
+_ME_APPROVAL_MODE_GET_OPENAPI = {
+    "x-cli": {
+        "group": "agent",
+        "verb": "approval-mode",
+        "summary": "Read my agent approval mode",
+        "mutates": False,
+    },
+}
+_ME_APPROVAL_MODE_PUT_OPENAPI = {
+    "x-agent-confirm": {
+        "summary": "Update your agent approval mode?",
+        "risk": "medium",
+        "fields_to_show": ["mode"],
+        "verb": "Update agent approval mode",
+    },
+    "x-cli": {
+        "group": "agent",
+        "verb": "set-approval-mode",
+        "summary": "Update my agent approval mode",
+        "mutates": True,
+    },
+}
+_WORKSPACE_USAGE_GET_OPENAPI = {
+    "x-cli": {
+        "group": "agent",
+        "verb": "usage",
+        "summary": "Read workspace agent usage",
+        "mutates": False,
+    },
+}
+
+
 def _empty_response(
     *, scope_kind: Literal["workspace", "user"], scope_id: str
 ) -> AgentPreferenceRead:
@@ -105,6 +192,11 @@ def _empty_response(
         scope_id=scope_id,
         body_md="",
         token_count=0,
+        updated_by_user_id=None,
+        updated_at=None,
+        writable=True,
+        soft_cap=INJECTION_TOKEN_CAP,
+        hard_cap=PREFERENCE_HARD_TOKEN_CAP,
         blocked_actions=[],
         default_approval_mode="auto",
     )
@@ -116,6 +208,11 @@ def _to_response(row: AgentPreference) -> AgentPreferenceRead:
         scope_id=row.scope_id,
         body_md=row.body_md,
         token_count=row.token_count,
+        updated_by_user_id=row.updated_by_user_id,
+        updated_at=_iso_utc_naive(row.updated_at),
+        writable=True,
+        soft_cap=INJECTION_TOKEN_CAP,
+        hard_cap=PREFERENCE_HARD_TOKEN_CAP,
         blocked_actions=list(row.blocked_actions),
         default_approval_mode=row.default_approval_mode,
     )
@@ -288,6 +385,7 @@ def put_workspace_agent_prefs(
         )
     except (PreferenceContainsSecret, PreferenceTooLarge) as exc:
         raise _save_error(exc) from exc
+    _publish_workspace_changed(ctx, changed_keys=("agent_preferences.workspace",))
     return _to_response(row)
 
 
@@ -384,6 +482,10 @@ def put_my_agent_prefs(
         )
     except (PreferenceContainsSecret, PreferenceTooLarge) as exc:
         raise _save_error(exc) from exc
+    _publish_user_agent_settings_changed(
+        ctx,
+        changed_keys=("agent_preferences.me",),
+    )
     return _to_response(row)
 
 
@@ -443,6 +545,10 @@ def put_my_agent_approval_mode(
         diff={"before": {"mode": before}, "after": {"mode": payload.mode}},
     )
     session.flush()
+    _publish_user_agent_settings_changed(
+        ctx,
+        changed_keys=("agent_approval_mode",),
+    )
     return AgentApprovalModeRead(mode=payload.mode)
 
 
@@ -463,3 +569,117 @@ def put_my_agent_approval_mode(
 )
 def get_workspace_usage(ctx: _Ctx, session: _Db) -> WorkspaceUsageRead:
     return _usage_response(_current_budget_ledger(session, ctx))
+
+
+def build_workspace_llm_router() -> APIRouter:
+    """Flat workspace LLM routes consumed by the SPA."""
+
+    flat = APIRouter(tags=["llm"])
+    flat.add_api_route(
+        "/agent_preferences/workspace",
+        get_workspace_agent_prefs,
+        methods=["GET"],
+        response_model=AgentPreferenceRead,
+        operation_id="workspace.llm.agent_preferences.workspace.get",
+        summary="Read workspace agent preferences",
+        openapi_extra=_WORKSPACE_PREFS_GET_OPENAPI,
+    )
+    flat.add_api_route(
+        "/agent_preferences/workspace",
+        put_workspace_agent_prefs,
+        methods=["PUT"],
+        response_model=AgentPreferenceRead,
+        operation_id="workspace.llm.agent_preferences.workspace.put",
+        summary="Update workspace agent preferences",
+        openapi_extra=_WORKSPACE_PREFS_PUT_OPENAPI,
+        dependencies=[
+            Depends(Permission("agent_prefs.edit_workspace", scope_kind="workspace"))
+        ],
+    )
+    flat.add_api_route(
+        "/agent_preferences/me",
+        get_my_agent_prefs,
+        methods=["GET"],
+        response_model=AgentPreferenceRead,
+        operation_id="workspace.llm.agent_preferences.me.get",
+        summary="Read my agent preferences",
+        openapi_extra=_ME_PREFS_GET_OPENAPI,
+    )
+    flat.add_api_route(
+        "/agent_preferences/me",
+        put_my_agent_prefs,
+        methods=["PUT"],
+        response_model=AgentPreferenceRead,
+        operation_id="workspace.llm.agent_preferences.me.put",
+        summary="Update my agent preferences",
+        openapi_extra=_ME_PREFS_PUT_OPENAPI,
+    )
+    flat.add_api_route(
+        "/me/agent_approval_mode",
+        get_my_agent_approval_mode,
+        methods=["GET"],
+        response_model=AgentApprovalModeRead,
+        operation_id="workspace.llm.agent_approval_mode.me.get",
+        summary="Read my agent approval mode",
+        openapi_extra=_ME_APPROVAL_MODE_GET_OPENAPI,
+    )
+    flat.add_api_route(
+        "/me/agent_approval_mode",
+        put_my_agent_approval_mode,
+        methods=["PUT"],
+        response_model=AgentApprovalModeRead,
+        operation_id="workspace.llm.agent_approval_mode.me.put",
+        summary="Update my agent approval mode",
+        openapi_extra=_ME_APPROVAL_MODE_PUT_OPENAPI,
+    )
+    flat.add_api_route(
+        "/workspace/usage",
+        get_workspace_usage,
+        methods=["GET"],
+        response_model=WorkspaceUsageRead,
+        operation_id="workspace.llm.usage.get",
+        summary="Read workspace agent usage",
+        openapi_extra=_WORKSPACE_USAGE_GET_OPENAPI,
+        dependencies=[
+            Depends(Permission("scope.edit_settings", scope_kind="workspace"))
+        ],
+    )
+    return flat
+
+
+def _iso_utc_naive(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        value = value.astimezone(UTC).replace(tzinfo=None)
+    return value.isoformat()
+
+
+def _publish_workspace_changed(
+    ctx: WorkspaceContext, *, changed_keys: tuple[str, ...]
+) -> None:
+    default_event_bus.publish(
+        WorkspaceChanged(
+            workspace_id=ctx.workspace_id,
+            actor_id=ctx.actor_id,
+            correlation_id=ctx.audit_correlation_id,
+            occurred_at=SystemClock().now(),
+            changed_keys=changed_keys,
+        )
+    )
+
+
+def _publish_user_agent_settings_changed(
+    ctx: WorkspaceContext, *, changed_keys: tuple[str, ...]
+) -> None:
+    now = SystemClock().now()
+    default_event_bus.publish(
+        UserAgentSettingsChanged(
+            workspace_id=ctx.workspace_id,
+            actor_id=ctx.actor_id,
+            correlation_id=ctx.audit_correlation_id,
+            occurred_at=now,
+            actor_user_id=ctx.actor_id,
+            changed_keys=changed_keys,
+        )
+    )
