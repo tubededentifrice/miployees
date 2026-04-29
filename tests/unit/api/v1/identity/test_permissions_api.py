@@ -5,6 +5,7 @@ same authz seam:
 
 * ``/permissions/action_catalog`` — read-only static catalog.
 * ``/permissions/resolved`` — non-raising resolver.
+* ``/permissions/resolved/self`` — current-actor resolver for route guards.
 * ``/permission_rules`` — root-only rule CRUD; v1 reality is the
   table doesn't exist yet so the GET surfaces empty + cursor scaffold,
   POST/DELETE 503 with the action gate firing first.
@@ -286,6 +287,46 @@ class TestPermissionsResolved:
         )
         assert resp.status_code == 403
 
+    def test_worker_can_resolve_own_scope_view_without_audit_gate(
+        self,
+        worker_ctx: tuple[WorkspaceContext, sessionmaker[Session], str, str],
+    ) -> None:
+        """Route guards can resolve the current actor without ``audit_log.view``."""
+        ctx, factory, ws_id, _ = worker_ctx
+        client = _permissions_client(ctx, factory)
+        resp = client.get(
+            "/permissions/resolved/self",
+            params={
+                "action_key": "scope.view",
+                "scope_kind": "workspace",
+                "scope_id": ws_id,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["effect"] == "allow"
+        assert "all_workers" in body["matched_groups"]
+
+    def test_worker_self_resolves_approvals_read_to_deny(
+        self,
+        worker_ctx: tuple[WorkspaceContext, sessionmaker[Session], str, str],
+    ) -> None:
+        ctx, factory, ws_id, _ = worker_ctx
+        client = _permissions_client(ctx, factory)
+        resp = client.get(
+            "/permissions/resolved/self",
+            params={
+                "action_key": "approvals.read",
+                "scope_kind": "workspace",
+                "scope_id": ws_id,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["effect"] == "deny"
+        assert body["source_layer"] == "no_match"
+        assert body["matched_groups"] == []
+
 
 # ---------------------------------------------------------------------------
 # /permission_rules
@@ -397,7 +438,11 @@ class TestOpenApiShape:
         ctx, factory, _ = owner_ctx
         client = _permissions_client(ctx, factory)
         schema = client.get("/openapi.json").json()
-        for path in ("/permissions/action_catalog", "/permissions/resolved"):
+        for path in (
+            "/permissions/action_catalog",
+            "/permissions/resolved",
+            "/permissions/resolved/self",
+        ):
             for op in schema["paths"][path].values():
                 assert "identity" in op["tags"]
                 assert "permissions" in op["tags"]

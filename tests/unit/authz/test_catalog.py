@@ -54,7 +54,7 @@ class TestShape:
         assert frozenset(ACTION_CATALOG.keys()) == ACTION_KEYS
 
     def test_catalog_has_expected_size(self) -> None:
-        """v1 spec §05 enumerates 7 root-only + 82 rule-driven = 89 keys.
+        """v1 spec §05 enumerates 7 root-only + 85 rule-driven = 92 keys.
 
         A hard number — if it changes, either the spec or the catalog
         drifted and the author needs to say which. cd-cfe4 added
@@ -69,9 +69,10 @@ class TestShape:
         ``availability_overrides.edit_others`` /
         ``availability_overrides.view_others`` for the
         ``/user_availability_overrides`` surface (§06 hybrid approval
-        model).
+        model). cd-hyo4 added ``approvals.read`` for the manager
+        approvals desk.
         """
-        assert len(ACTION_CATALOG) == 91
+        assert len(ACTION_CATALOG) == 92
 
     def test_entries_are_action_spec_instances(self) -> None:
         for key, spec in ACTION_CATALOG.items():

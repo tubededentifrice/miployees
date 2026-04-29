@@ -5,6 +5,7 @@ Spec §12 "Users / work roles / settings":
 ```
 GET    /permissions/action_catalog
 GET    /permissions/resolved   ?user_id=…&action_key=…&scope_kind=…&scope_id=…
+GET    /permissions/resolved/self?action_key=…&scope_kind=…&scope_id=…
 ```
 
 Mounted inside the ``/w/<slug>/api/v1`` tree by the app factory.
@@ -18,10 +19,13 @@ Both routes are read-only.
   "all_clients")``).
 * ``/permissions/resolved`` answers "would user U be allowed action A
   on scope S?" by walking the resolver in a non-raising mode and
-  returning the structured decision. The route is governance-
-  sensitive: it can reveal who has access to what, so it gates on
-  ``audit_log.view`` (default-allow owners + managers,
-  ``root_protected_deny``).
+  returning the structured decision. The route is governance-sensitive:
+  it can reveal who has access to what, so it gates on ``audit_log.view``
+  (default-allow owners + managers, ``root_protected_deny``).
+* ``/permissions/resolved/self`` resolves the current actor's own
+  permission and is the route-guard seam. It is intentionally not gated
+  by ``audit_log.view``; the workspace context already authenticates the
+  actor, and the endpoint never accepts an arbitrary ``user_id``.
 
 See ``docs/specs/02-domain-model.md`` §"Permission resolution" and
 ``docs/specs/05-employees-and-roles.md`` §"Action catalog".
@@ -385,6 +389,53 @@ def build_permissions_router() -> APIRouter:
                 session,
                 ctx,
                 user_id=user_id,
+                action_key=action_key,
+                scope_kind=scope_kind,
+                scope_id=scope_id,
+            )
+        except UnknownActionKey as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "unknown_action_key",
+                    "action_key": action_key,
+                    "message": str(exc),
+                },
+            ) from exc
+        except InvalidScope as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "invalid_scope_kind",
+                    "action_key": action_key,
+                    "message": str(exc),
+                },
+            ) from exc
+
+    @api.get(
+        "/resolved/self",
+        response_model=ResolvedPermissionResponse,
+        operation_id="permissions.resolved_self",
+        summary='"Would the current actor be allowed action A on scope S?"',
+    )
+    def resolved_self(
+        ctx: _Ctx,
+        session: _Db,
+        action_key: _ActionKeyQuery,
+        scope_kind: _ScopeKindQuery,
+        scope_id: _ScopeIdQuery,
+    ) -> ResolvedPermissionResponse:
+        """Resolve the current actor's own permission for route guards.
+
+        This is deliberately narrower than ``/permissions/resolved``:
+        callers cannot inspect another user's permissions, so the route
+        does not require the governance-only ``audit_log.view`` action.
+        """
+        try:
+            return _resolve_decision(
+                session,
+                ctx,
+                user_id=ctx.actor_id,
                 action_key=action_key,
                 scope_kind=scope_kind,
                 scope_id=scope_id,

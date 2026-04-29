@@ -8,6 +8,7 @@
 
 export { AuthProvider } from "./AuthProvider";
 export { RequireAuth } from "./RequireAuth";
+export { RequirePermission, ForbiddenPanel } from "./RequirePermission";
 export { WorkspaceGate } from "./WorkspaceGate";
 export {
   useAuth,

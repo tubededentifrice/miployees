@@ -66,6 +66,7 @@ from sqlalchemy.orm import Session
 from app.adapters.db.identity.models import ApiToken
 from app.api.deps import current_workspace_context, db_session
 from app.audit import write_audit
+from app.authz.dep import Permission
 from app.domain.agent.approval import (
     DEFAULT_PAGE_LIMIT,
     MAX_PAGE_LIMIT,
@@ -484,12 +485,14 @@ _Ctx = Annotated[WorkspaceContext, Depends(current_workspace_context)]
 _Db = Annotated[Session, Depends(db_session)]
 _DeciderCtx = Annotated[WorkspaceContext, Depends(_require_decider_principal)]
 _Dispatcher = Annotated[ToolDispatcher, Depends(get_tool_dispatcher)]
+_ApprovalReadGate = Depends(Permission("approvals.read", scope_kind="workspace"))
 
 
 @router.get(
     "",
     response_model=ApprovalsListResponse,
     summary="List pending approvals",
+    dependencies=[_ApprovalReadGate],
 )
 def list_approvals(
     ctx: _Ctx,
@@ -533,6 +536,7 @@ def list_approvals(
     "/{approval_request_id}",
     response_model=ApprovalPayload,
     summary="Get one approval by id",
+    dependencies=[_ApprovalReadGate],
 )
 def get_approval(
     ctx: _Ctx,

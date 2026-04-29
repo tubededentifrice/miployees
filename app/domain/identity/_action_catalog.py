@@ -162,6 +162,13 @@ _RULE_DRIVEN: tuple[ActionSpec, ...] = (
         root_protected_deny=True,
     ),
     ActionSpec(
+        key="approvals.read",
+        valid_scope_kinds=("workspace",),
+        default_allow=("owners", "managers"),
+        root_only=False,
+        root_protected_deny=False,
+    ),
+    ActionSpec(
         key="assets.edit",
         valid_scope_kinds=("workspace", "property"),
         default_allow=("owners", "managers"),

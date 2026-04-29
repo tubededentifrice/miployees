@@ -862,7 +862,9 @@ scope_kind, scope_id) → {effect, source_layer,
 source_rule_id?, matched_groups[]}` returns both the decision
 and provenance (which layer decided, which rule id if any,
 and which of the user's group memberships matched). The UI
-exposes this as `GET /permissions/resolved` (§12).
+exposes this as `GET /permissions/resolved` for governance users
+and `GET /permissions/resolved/self` for current-actor route
+guards (§12).
 
 **Bootstrap.** Creating a new workspace atomically:
 

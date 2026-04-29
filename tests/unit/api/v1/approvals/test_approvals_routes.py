@@ -36,9 +36,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.db.audit.models import AuditLog
+from app.adapters.db.authz.models import RoleGrant
 from app.adapters.db.llm.models import ApprovalRequest
 from app.tenancy import tenant_agnostic
-from tests.factories.identity import bootstrap_user, bootstrap_workspace
+from app.util.ulid import new_ulid
+from tests.factories.identity import (
+    bootstrap_user,
+    bootstrap_workspace,
+    build_workspace_context,
+)
 from tests.unit.api.v1.approvals.conftest import (
     _PINNED,
     APPROVALS_ACT_SCOPE,
@@ -77,6 +83,42 @@ def _refresh_row(persona: _Persona, row_id: str) -> ApprovalRequest:
         # ``ObjectDeletedError`` from a second session opening.
         s.expunge(row)
         return row
+
+
+def _worker_persona(owner_ctx: _Persona) -> _Persona:
+    """Seed a workspace worker in the owner's workspace."""
+    with owner_ctx.factory() as s, tenant_agnostic():
+        worker = bootstrap_user(
+            s, email="approvals-worker@example.com", display_name="Approvals Worker"
+        )
+        grant = RoleGrant(
+            id=new_ulid(),
+            workspace_id=owner_ctx.workspace_id,
+            user_id=worker.id,
+            grant_role="worker",
+            scope_kind="workspace",
+            scope_property_id=None,
+            created_at=_PINNED,
+            created_by_user_id=owner_ctx.owner_id,
+        )
+        s.add(grant)
+        s.commit()
+        worker_id = worker.id
+
+    ctx = build_workspace_context(
+        workspace_id=owner_ctx.workspace_id,
+        workspace_slug=owner_ctx.ctx.workspace_slug,
+        actor_id=worker_id,
+        actor_kind="user",
+        actor_grant_role="worker",
+        actor_was_owner_member=False,
+    )
+    return _Persona(
+        ctx=ctx,
+        factory=owner_ctx.factory,
+        workspace_id=owner_ctx.workspace_id,
+        owner_id=worker_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +206,21 @@ class TestListPending:
         resp = client.get("/approvals/", params={"limit": 0})
         assert resp.status_code == 422
 
+    def test_worker_without_read_permission_gets_403(
+        self, owner_ctx: _Persona
+    ) -> None:
+        seed_pending(
+            owner_ctx.factory,
+            workspace_id=owner_ctx.workspace_id,
+            requester_actor_id=owner_ctx.owner_id,
+        )
+        client = build_client(_worker_persona(owner_ctx))
+        resp = client.get("/approvals/")
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"] == "permission_denied"
+        assert body["action_key"] == "approvals.read"
+
 
 # ---------------------------------------------------------------------------
 # GET /{id} (single row)
@@ -232,6 +289,21 @@ class TestGetOne:
         assert resp.status_code == 404
         body = resp.json()
         assert body["type"].endswith("/approval_not_found")
+
+    def test_worker_without_read_permission_gets_403(
+        self, owner_ctx: _Persona
+    ) -> None:
+        row_id = seed_pending(
+            owner_ctx.factory,
+            workspace_id=owner_ctx.workspace_id,
+            requester_actor_id=owner_ctx.owner_id,
+        )
+        client = build_client(_worker_persona(owner_ctx))
+        resp = client.get(f"/approvals/{row_id}")
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"] == "permission_denied"
+        assert body["action_key"] == "approvals.read"
 
 
 # ---------------------------------------------------------------------------

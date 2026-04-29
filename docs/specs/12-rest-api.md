@@ -996,6 +996,8 @@ DELETE /permission_rules/{id}                # action: permissions.edit_rules (r
 GET    /permissions/action_catalog           # read-only; the compile-time catalog from §05
 GET    /permissions/resolved                 # ?user_id=…&action_key=…&scope_kind=…&scope_id=…
                                              # returns {effect, source_layer, source_rule_id?, matched_groups[]}
+GET    /permissions/resolved/self            # ?action_key=…&scope_kind=…&scope_id=…; current actor only
+                                             # route-guard-safe; no arbitrary user_id lookup
 
 GET    /work_engagements          # ?user_id=…&active=true|false
                                    #   `active=true` narrows to

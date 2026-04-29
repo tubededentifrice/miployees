@@ -70,7 +70,7 @@ import ClientBillableHoursPage from "@/pages/client/BillableHoursPage";
 import ClientQuotesPage from "@/pages/client/QuotesPage";
 import ClientInvoicesPage from "@/pages/client/InvoicesPage";
 
-import { RequireAuth, WorkspaceGate } from "@/auth";
+import { RequireAuth, RequirePermission, WorkspaceGate } from "@/auth";
 
 const STYLEGUIDE_ENABLED =
   import.meta.env.DEV ||
@@ -173,6 +173,12 @@ export default function App() {
               <Route path="/asset/scan" element={<AssetScanPage />} />
             </Route>
 
+            <Route element={<RequirePermission actionKey="approvals.read" />}>
+              <Route element={<ManagerLayout />}>
+                <Route path="/approvals" element={<ApprovalsPage />} />
+              </Route>
+            </Route>
+
             <Route element={<ManagerLayout />}>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/properties" element={<PropertiesPage />} />
@@ -183,7 +189,6 @@ export default function App() {
               <Route path="/employee/:eid/leaves" element={<EmployeeLeavesPage />} />
               <Route path="/leaves" element={<LeavesInboxPage />} />
               <Route path="/stays" element={<StaysPage />} />
-              <Route path="/approvals" element={<ApprovalsPage />} />
               <Route
                 path="/expenses"
                 element={
