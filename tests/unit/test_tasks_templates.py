@@ -32,7 +32,7 @@ See ``docs/specs/06-tasks-and-scheduling.md`` §"Task template",
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -45,6 +45,8 @@ from app.adapters.db.session import make_engine
 from app.adapters.db.tasks.models import Schedule, TaskTemplate
 from app.adapters.db.workspace.models import Workspace
 from app.domain.tasks.templates import (
+    ChecklistRRULEError,
+    ChecklistTemplateItem,
     ChecklistTemplateItemPayload,
     ScopeInconsistent,
     TaskTemplateCreate,
@@ -54,10 +56,13 @@ from app.domain.tasks.templates import (
     TemplateInUseError,
     create,
     delete,
+    expand_checklist_for_task,
     list_templates,
     read,
     read_many,
+    reorder_checklist,
     update,
+    validate_checklist_template,
 )
 from app.tenancy.context import WorkspaceContext
 from app.util.clock import FrozenClock
@@ -449,6 +454,14 @@ class TestChecklistValidation:
                 checklist_template_json=[{"key": "", "text": "x"}],
             )
 
+    def test_key_must_be_stable_slug(self) -> None:
+        for key in ("CleanFridge", "clean-fridge", "clean fridge", "x" * 65):
+            with pytest.raises(ValidationError):
+                TaskTemplateCreate(
+                    name="t",
+                    checklist_template_json=[{"key": key, "text": "x"}],
+                )
+
     def test_empty_text_rejected(self) -> None:
         with pytest.raises(ValidationError):
             TaskTemplateCreate(
@@ -473,6 +486,17 @@ class TestChecklistValidation:
         item = dto.checklist_template_json[0]
         assert item.rrule is None
         assert item.dtstart_local is None
+
+    def test_invalid_rrule_rejected_at_write_time(self) -> None:
+        with pytest.raises(ValidationError) as exc:
+            TaskTemplateCreate(
+                name="t",
+                checklist_template_json=[
+                    {"key": "deep_clean", "text": "Deep clean", "rrule": "NOPE=1"}
+                ],
+            )
+
+        assert "NOPE=1" in str(exc.value)
 
 
 class TestInventoryValidation:
@@ -560,10 +584,162 @@ class TestChecklistItemPayload:
         )
         assert item.required is True
         assert item.rrule is not None
+        assert item.dtstart_local == date(2026, 1, 1)
 
     def test_unknown_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
             ChecklistTemplateItemPayload(key="k", text="t", something="else")  # type: ignore[call-arg]
+
+
+class TestChecklistTemplateHelpers:
+    """Checklist editor helpers validate, expand, and reorder §06 items."""
+
+    def test_validate_returns_typed_items_and_rejects_duplicate_keys(self) -> None:
+        items = validate_checklist_template(
+            [
+                {"key": "wipe_counters", "text": "Wipe counters"},
+                ChecklistTemplateItem(key="clean_fridge", text="Clean fridge"),
+            ]
+        )
+
+        assert [item.key for item in items] == ["wipe_counters", "clean_fridge"]
+        with pytest.raises(ScopeInconsistent):
+            validate_checklist_template(
+                [
+                    {"key": "wipe_counters", "text": "Wipe counters"},
+                    {"key": "wipe_counters", "text": "Again"},
+                ]
+            )
+
+    def test_normalises_rrule_body_and_exposes_typed_error(self) -> None:
+        item = ChecklistTemplateItem(
+            key="monthly",
+            text="Monthly",
+            rrule="RRULE:FREQ=MONTHLY;BYMONTHDAY=1",
+        )
+
+        assert item.rrule == "FREQ=MONTHLY;BYMONTHDAY=1"
+        with pytest.raises(ChecklistRRULEError) as exc:
+            validate_checklist_template(
+                [{"key": "bad", "text": "Bad", "rrule": "NOPE=1"}]
+            )
+        assert exc.value.rrule == "NOPE=1"
+
+    def test_expand_checklist_filters_monthly_every_n_weeks_and_six_months(
+        self,
+    ) -> None:
+        items = [
+            {"key": "always", "text": "Always"},
+            {
+                "key": "monthly",
+                "text": "Monthly",
+                "rrule": "FREQ=MONTHLY;BYMONTHDAY=1",
+                "dtstart_local": "2026-01-01",
+            },
+            {
+                "key": "fortnightly",
+                "text": "Fortnightly",
+                "rrule": "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO",
+                "dtstart_local": "2026-01-05",
+            },
+            {
+                "key": "six_month",
+                "text": "Six-month service",
+                "rrule": "FREQ=MONTHLY;INTERVAL=6;BYMONTHDAY=1",
+                "dtstart_local": "2026-01-01",
+            },
+        ]
+
+        jan_first = expand_checklist_for_task(
+            items,
+            scheduled_for_local=date(2026, 1, 1),
+            is_ad_hoc=False,
+        )
+        jan_fifth = expand_checklist_for_task(
+            items,
+            scheduled_for_local=date(2026, 1, 5),
+            is_ad_hoc=False,
+        )
+        jan_twelfth = expand_checklist_for_task(
+            items,
+            scheduled_for_local=date(2026, 1, 12),
+            is_ad_hoc=False,
+        )
+        jul_first = expand_checklist_for_task(
+            items,
+            scheduled_for_local=datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+            is_ad_hoc=False,
+        )
+
+        assert [item.key for item in jan_first] == ["always", "monthly", "six_month"]
+        assert [item.key for item in jan_fifth] == ["always", "fortnightly"]
+        assert [item.key for item in jan_twelfth] == ["always"]
+        assert [item.key for item in jul_first] == ["always", "monthly", "six_month"]
+
+    def test_expand_checklist_uses_resolved_anchor_when_item_omits_dtstart(
+        self,
+    ) -> None:
+        items = [
+            {"key": "always", "text": "Always"},
+            {
+                "key": "fortnightly",
+                "text": "Fortnightly",
+                "rrule": "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO",
+            },
+        ]
+
+        included = expand_checklist_for_task(
+            items,
+            scheduled_for_local=date(2026, 1, 19),
+            is_ad_hoc=False,
+            dtstart_local=date(2026, 1, 5),
+        )
+        skipped = expand_checklist_for_task(
+            items,
+            scheduled_for_local=date(2026, 1, 12),
+            is_ad_hoc=False,
+            dtstart_local=date(2026, 1, 5),
+        )
+
+        assert [item.key for item in included] == ["always", "fortnightly"]
+        assert [item.key for item in skipped] == ["always"]
+
+    def test_ad_hoc_expansion_includes_every_item(self) -> None:
+        items = [
+            {"key": "always", "text": "Always"},
+            {
+                "key": "monthly",
+                "text": "Monthly",
+                "rrule": "FREQ=MONTHLY;BYMONTHDAY=1",
+                "dtstart_local": "2026-01-01",
+            },
+        ]
+
+        expanded = expand_checklist_for_task(
+            items,
+            scheduled_for_local=date(2026, 1, 2),
+            is_ad_hoc=True,
+        )
+
+        assert [item.key for item in expanded] == ["always", "monthly"]
+
+    def test_reorder_preserves_item_payloads_by_key(self) -> None:
+        items = [
+            ChecklistTemplateItem(key="wipe", text="Wipe", required=True),
+            ChecklistTemplateItem(key="mop", text="Mop", guest_visible=True),
+        ]
+
+        reordered = reorder_checklist(items, ["mop", "wipe"])
+
+        assert [item.key for item in reordered] == ["mop", "wipe"]
+        assert reordered[0].guest_visible is True
+        assert reordered[1].required is True
+        with pytest.raises(ScopeInconsistent):
+            reorder_checklist(items, ["mop"])
+        with pytest.raises(ScopeInconsistent):
+            reorder_checklist(items, ["mop", "mop"])
+        with pytest.raises(ScopeInconsistent):
+            reorder_checklist(items, ["mop", "unknown"])
 
 
 # ---------------------------------------------------------------------------
@@ -1208,4 +1384,4 @@ class TestChecklistRoundTrip:
 
         item = loaded.checklist_template_json[0]
         assert item.rrule == "FREQ=MONTHLY;BYMONTHDAY=1"
-        assert item.dtstart_local == "2026-01-01"
+        assert item.dtstart_local == date(2026, 1, 1)

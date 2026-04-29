@@ -58,10 +58,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from dateutil.rrule import rrulestr
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -72,6 +73,8 @@ from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
 
 __all__ = [
+    "ChecklistRRULEError",
+    "ChecklistTemplateItem",
     "ChecklistTemplateItemPayload",
     "ScopeInconsistent",
     "TaskTemplateCreate",
@@ -81,10 +84,13 @@ __all__ = [
     "TemplateInUseError",
     "create",
     "delete",
+    "expand_checklist_for_task",
     "list_templates",
     "read",
     "read_many",
+    "reorder_checklist",
     "update",
+    "validate_checklist_template",
 ]
 
 
@@ -184,7 +190,15 @@ _MAX_INSTRUCTION_LINKS = 200
 _MAX_CHECKLIST_ITEMS = 200
 
 
-class ChecklistTemplateItemPayload(BaseModel):
+class ChecklistRRULEError(ValueError):
+    """A checklist item's RRULE is not parseable as RFC 5545."""
+
+    def __init__(self, rrule: str) -> None:
+        self.rrule = rrule
+        super().__init__(f"invalid checklist RRULE {rrule!r}")
+
+
+class ChecklistTemplateItem(BaseModel):
     """One entry in the ``checklist_template_json`` list.
 
     Mirrors §06 "Checklist template shape":
@@ -197,21 +211,30 @@ class ChecklistTemplateItemPayload(BaseModel):
       in the property timezone at generation time.
     * ``dtstart_local`` (optional, ISO-8601 date) — RRULE anchor.
 
-    The service only enforces structural validation (types, field
-    presence, key uniqueness within the list). Semantic validation
-    of the RRULE string (parsability, frequency constraints) lives
-    in the scheduler worker (§06 "Generation"), which owns the
-    property timezone and the dtstart resolution.
+    RRULE strings are validated at write time and normalised to the
+    canonical ``RRULE:`` body without the prefix. Expansion still
+    resolves the effective ``dtstart_local`` because schedule / stay
+    generation may supply that anchor later.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    key: str = Field(..., min_length=1, max_length=100)
+    key: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
     text: str = Field(..., min_length=1, max_length=500)
     required: bool = False
     guest_visible: bool = False
     rrule: str | None = Field(default=None, max_length=500)
-    dtstart_local: str | None = Field(default=None, max_length=32)
+    dtstart_local: date | None = None
+
+    @field_validator("rrule")
+    @classmethod
+    def _validate_rrule(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _normalise_rrule(value)
+
+
+ChecklistTemplateItemPayload = ChecklistTemplateItem
 
 
 class _TaskTemplateBody(BaseModel):
@@ -237,7 +260,7 @@ class _TaskTemplateBody(BaseModel):
     )
     area_scope: AreaScope = "any"
     listed_area_ids: list[str] = Field(default_factory=list, max_length=_MAX_SCOPE_IDS)
-    checklist_template_json: list[ChecklistTemplateItemPayload] = Field(
+    checklist_template_json: list[ChecklistTemplateItem] = Field(
         default_factory=list, max_length=_MAX_CHECKLIST_ITEMS
     )
     photo_evidence: PhotoEvidence = "disabled"
@@ -264,7 +287,7 @@ class _TaskTemplateBody(BaseModel):
         """
         _assert_property_scope(self.property_scope, self.listed_property_ids)
         _assert_area_scope(self.area_scope, self.listed_area_ids)
-        _assert_checklist_keys_unique(self.checklist_template_json)
+        validate_checklist_template(self.checklist_template_json)
         _assert_inventory_positive(self.inventory_consumption_json)
         return self
 
@@ -313,7 +336,7 @@ class TaskTemplateView:
     listed_property_ids: tuple[str, ...]
     area_scope: AreaScope
     listed_area_ids: tuple[str, ...]
-    checklist_template_json: tuple[ChecklistTemplateItemPayload, ...]
+    checklist_template_json: tuple[ChecklistTemplateItem, ...]
     photo_evidence: PhotoEvidence
     linked_instruction_ids: tuple[str, ...]
     priority: Priority
@@ -369,9 +392,7 @@ def _assert_area_scope(scope: str, ids: Sequence[str]) -> None:
         raise ScopeInconsistent("listed_area_ids must not contain duplicates")
 
 
-def _assert_checklist_keys_unique(
-    items: Sequence[ChecklistTemplateItemPayload],
-) -> None:
+def _assert_checklist_keys_unique(items: Sequence[ChecklistTemplateItem]) -> None:
     """Reject duplicate ``key`` entries within a single template.
 
     The spec pins ``key`` as a stable per-template slug used by
@@ -385,6 +406,130 @@ def _assert_checklist_keys_unique(
                 f"duplicate checklist key {item.key!r} in checklist_template_json"
             )
         seen.add(item.key)
+
+
+def validate_checklist_template(
+    items: Sequence[ChecklistTemplateItem | dict[str, Any]],
+) -> tuple[ChecklistTemplateItem, ...]:
+    """Validate and return a typed checklist-template payload.
+
+    This is the shared editor/generator contract: callers may pass
+    already-parsed items from the DTO or raw JSON dictionaries loaded
+    from storage. The function enforces per-item schema, RRULE
+    parseability, and per-template key uniqueness.
+    """
+    normalised_items: list[ChecklistTemplateItem | dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, ChecklistTemplateItem):
+            normalised_items.append(item)
+            continue
+        rrule = item.get("rrule")
+        if isinstance(rrule, str):
+            item = {**item, "rrule": _normalise_rrule(rrule)}
+        normalised_items.append(item)
+    parsed = tuple(
+        item
+        if isinstance(item, ChecklistTemplateItem)
+        else ChecklistTemplateItem.model_validate(item)
+        for item in normalised_items
+    )
+    _assert_checklist_keys_unique(parsed)
+    return parsed
+
+
+def expand_checklist_for_task(
+    items: Sequence[ChecklistTemplateItem | dict[str, Any]],
+    *,
+    scheduled_for_local: date | datetime,
+    is_ad_hoc: bool,
+    dtstart_local: date | datetime | None = None,
+) -> tuple[ChecklistTemplateItem, ...]:
+    """Return the checklist items that should seed a generated task.
+
+    Ad-hoc tasks include every item because they have no stable
+    calendar anchor. Scheduled and stay-generated tasks evaluate each
+    optional RRULE against ``scheduled_for_local.date()`` per §06. When
+    an item omits its own ``dtstart_local``, callers can pass the
+    resolved schedule / stay / template anchor via ``dtstart_local``.
+    """
+    parsed = validate_checklist_template(items)
+    if is_ad_hoc:
+        return parsed
+    scheduled_date = (
+        scheduled_for_local.date()
+        if isinstance(scheduled_for_local, datetime)
+        else scheduled_for_local
+    )
+    fallback_anchor = (
+        dtstart_local.date() if isinstance(dtstart_local, datetime) else dtstart_local
+    )
+    return tuple(
+        item
+        for item in parsed
+        if _checklist_item_applies(
+            item,
+            scheduled_date,
+            dtstart_local=fallback_anchor,
+        )
+    )
+
+
+def reorder_checklist(
+    items: Sequence[ChecklistTemplateItem | dict[str, Any]],
+    ordered_keys: Sequence[str],
+) -> tuple[ChecklistTemplateItem, ...]:
+    """Return ``items`` in ``ordered_keys`` order, preserving each item by key."""
+    parsed = validate_checklist_template(items)
+    by_key = {item.key: item for item in parsed}
+    expected = set(by_key)
+    requested = set(ordered_keys)
+    if len(requested) != len(ordered_keys):
+        raise ScopeInconsistent("ordered_keys must not contain duplicates")
+    if requested != expected:
+        missing = ", ".join(sorted(expected - requested))
+        unknown = ", ".join(sorted(requested - expected))
+        detail = "; ".join(
+            part
+            for part in (
+                f"missing keys: {missing}" if missing else "",
+                f"unknown keys: {unknown}" if unknown else "",
+            )
+            if part
+        )
+        raise ScopeInconsistent(f"ordered_keys must match checklist keys ({detail})")
+    return tuple(by_key[key] for key in ordered_keys)
+
+
+def _checklist_item_applies(
+    item: ChecklistTemplateItem,
+    scheduled_date: date,
+    *,
+    dtstart_local: date | None,
+) -> bool:
+    if item.rrule is None:
+        return True
+    anchor = item.dtstart_local or dtstart_local or scheduled_date
+    rule = rrulestr(
+        item.rrule,
+        dtstart=datetime.combine(anchor, time.min),
+    )
+    window_start = datetime.combine(scheduled_date, time.min)
+    window_end = window_start + timedelta(days=1)
+    return bool(rule.between(window_start, window_end, inc=True))
+
+
+def _normalise_rrule(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise ChecklistRRULEError(value)
+    try:
+        parsed = rrulestr(raw, dtstart=datetime(2000, 1, 1))
+    except (TypeError, ValueError) as exc:
+        raise ChecklistRRULEError(value) from exc
+    for line in str(parsed).splitlines():
+        if line.startswith("RRULE:"):
+            return line.removeprefix("RRULE:")
+    raise ChecklistRRULEError(value)
 
 
 def _assert_inventory_positive(payload: dict[str, int]) -> None:
@@ -415,7 +560,7 @@ def _row_to_view(row: TaskTemplate) -> TaskTemplateView:
     # schema they would post.
     raw_checklist = row.checklist_template_json or []
     parsed_checklist = tuple(
-        ChecklistTemplateItemPayload.model_validate(item) for item in raw_checklist
+        ChecklistTemplateItem.model_validate(item) for item in raw_checklist
     )
     # ``property_scope`` / ``area_scope`` / ``photo_evidence`` /
     # ``priority`` columns are NOT NULL at the DB layer (CHECK-gated
@@ -441,7 +586,7 @@ def _row_to_view(row: TaskTemplate) -> TaskTemplateView:
         photo_evidence=_narrow_photo_evidence(row.photo_evidence),
         linked_instruction_ids=tuple(row.linked_instruction_ids or []),
         priority=_narrow_priority(row.priority),
-        inventory_consumption_json=dict(row.inventory_consumption_json or {}),
+        inventory_consumption_json=_consumption_from_effects(row.inventory_effects_json),
         llm_hints_md=row.llm_hints_md,
         created_at=row.created_at,
         deleted_at=row.deleted_at,
@@ -525,7 +670,7 @@ def _view_to_diff_dict(view: TaskTemplateView) -> dict[str, Any]:
         "area_scope": view.area_scope,
         "listed_area_ids": list(view.listed_area_ids),
         "checklist_template_json": [
-            item.model_dump() for item in view.checklist_template_json
+            item.model_dump(mode="json") for item in view.checklist_template_json
         ],
         "photo_evidence": view.photo_evidence,
         "linked_instruction_ids": list(view.linked_instruction_ids),
@@ -591,12 +736,14 @@ def _apply_body(row: TaskTemplate, body: _TaskTemplateBody) -> None:
     row.area_scope = body.area_scope
     row.listed_area_ids = list(body.listed_area_ids)
     row.checklist_template_json = [
-        item.model_dump() for item in body.checklist_template_json
+        item.model_dump(mode="json") for item in body.checklist_template_json
     ]
     row.photo_evidence = body.photo_evidence
     row.linked_instruction_ids = list(body.linked_instruction_ids)
     row.priority = body.priority
-    row.inventory_consumption_json = dict(body.inventory_consumption_json)
+    row.inventory_effects_json = _effects_from_consumption(
+        body.inventory_consumption_json
+    )
     row.llm_hints_md = body.llm_hints_md
     # Mirror the photo-evidence policy onto the legacy columns so the
     # cd-chd CHECK constraints stay green on INSERT. ``required``
@@ -611,6 +758,27 @@ def _apply_body(row: TaskTemplate, body: _TaskTemplateBody) -> None:
     # — the column is nullable at the DB layer and cd-chd's
     # integration tests already cover the NULL path.
     row.default_assignee_role = None
+
+
+def _effects_from_consumption(payload: dict[str, int]) -> list[dict[str, Any]]:
+    return [
+        {"item_ref": item_ref, "kind": "consume", "qty": qty}
+        for item_ref, qty in payload.items()
+    ]
+
+
+def _consumption_from_effects(payload: Sequence[Any]) -> dict[str, int]:
+    consumption: dict[str, int] = {}
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("kind") != "consume":
+            continue
+        item_ref = entry.get("item_ref")
+        qty = entry.get("qty")
+        if isinstance(item_ref, str) and isinstance(qty, int):
+            consumption[item_ref] = qty
+    return consumption
 
 
 # ---------------------------------------------------------------------------

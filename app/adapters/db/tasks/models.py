@@ -299,6 +299,28 @@ class TaskTemplate(Base):
         DateTime(timezone=True), nullable=False
     )
 
+    @property
+    def inventory_consumption_json(self) -> dict[str, int]:
+        """Compatibility view over consume-only ``inventory_effects_json`` rows."""
+        consumption: dict[str, int] = {}
+        for entry in self.inventory_effects_json or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("kind") != "consume":
+                continue
+            item_ref = entry.get("item_ref")
+            qty = entry.get("qty")
+            if isinstance(item_ref, str) and isinstance(qty, int):
+                consumption[item_ref] = qty
+        return consumption
+
+    @inventory_consumption_json.setter
+    def inventory_consumption_json(self, value: dict[str, int]) -> None:
+        self.inventory_effects_json = [
+            {"item_ref": item_ref, "kind": "consume", "qty": qty}
+            for item_ref, qty in value.items()
+        ]
+
     __table_args__ = (
         CheckConstraint(
             f"required_evidence IN ({_in_clause(_REQUIRED_EVIDENCE_VALUES)})",

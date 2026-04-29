@@ -10,7 +10,7 @@ router wiring. The integration-level behaviour is exercised by
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -25,7 +25,7 @@ from app.api.v1.tasks import (
     _humanize_rrule,
 )
 from app.domain.tasks.oneoff import TaskView
-from app.domain.tasks.templates import TaskTemplateView
+from app.domain.tasks.templates import ChecklistTemplateItem, TaskTemplateView
 
 
 def _view(
@@ -437,6 +437,7 @@ class TestHumanizeRrule:
 
 def _template_view(
     *,
+    checklist_template_json: tuple[ChecklistTemplateItem, ...] = (),
     inventory_consumption: dict[str, int] | None = None,
 ) -> TaskTemplateView:
     """Return a deterministic :class:`TaskTemplateView` for projection tests."""
@@ -451,7 +452,7 @@ def _template_view(
         listed_property_ids=(),
         area_scope="any",
         listed_area_ids=(),
-        checklist_template_json=(),
+        checklist_template_json=checklist_template_json,
         photo_evidence="disabled",
         linked_instruction_ids=(),
         priority="normal",
@@ -517,3 +518,28 @@ class TestTaskTemplatePayloadInventoryEffects:
         # Source map (and the view it backs) stay untouched.
         assert source == {"TP-12": 4}
         assert view.inventory_consumption_json == {"TP-12": 4}
+
+    def test_checklist_dates_are_json_serialized(self) -> None:
+        view = _template_view(
+            checklist_template_json=(
+                ChecklistTemplateItem(
+                    key="deep_clean",
+                    text="Deep clean",
+                    rrule="FREQ=MONTHLY;BYMONTHDAY=1",
+                    dtstart_local=date(2026, 1, 1),
+                ),
+            )
+        )
+
+        payload = TaskTemplatePayload.from_view(view)
+
+        assert payload.checklist_template_json == [
+            {
+                "key": "deep_clean",
+                "text": "Deep clean",
+                "required": False,
+                "guest_visible": False,
+                "rrule": "FREQ=MONTHLY;BYMONTHDAY=1",
+                "dtstart_local": "2026-01-01",
+            }
+        ]

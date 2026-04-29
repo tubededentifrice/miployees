@@ -353,7 +353,7 @@ class TaskTemplatePayload(BaseModel):
             area_scope=view.area_scope,
             listed_area_ids=list(view.listed_area_ids),
             checklist_template_json=[
-                item.model_dump() for item in view.checklist_template_json
+                item.model_dump(mode="json") for item in view.checklist_template_json
             ],
             photo_evidence=view.photo_evidence,
             linked_instruction_ids=list(view.linked_instruction_ids),
