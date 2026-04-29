@@ -117,6 +117,7 @@ from app.audit import write_audit
 from app.events import NotificationCreated
 from app.events.bus import EventBus
 from app.events.bus import bus as default_event_bus
+from app.i18n import activate_locale, install_jinja_i18n
 from app.tenancy import WorkspaceContext
 from app.util.clock import Clock, SystemClock
 from app.util.ulid import new_ulid
@@ -301,6 +302,7 @@ class Jinja2TemplateLoader:
         """
         env = Environment(
             loader=FileSystemLoader(str(TEMPLATE_ROOT)),
+            extensions=["jinja2.ext.i18n"],
             autoescape=select_autoescape(["html", "j2"]),
             undefined=StrictUndefined,
             # ``trim_blocks`` + ``lstrip_blocks`` keep block-tag
@@ -311,6 +313,7 @@ class Jinja2TemplateLoader:
             lstrip_blocks=True,
             keep_trailing_newline=False,
         )
+        install_jinja_i18n(env)
         return cls(env=env)
 
     def render(
@@ -348,7 +351,8 @@ class Jinja2TemplateLoader:
                 template = self.env.get_template(name)
             except _JinjaTemplateNotFound:
                 continue
-            return template.render(**context)
+            with activate_locale(locale):
+                return template.render(**context)
 
         raise TemplateNotFound(kind=kind, channel=channel, locale=locale)
 

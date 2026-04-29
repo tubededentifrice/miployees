@@ -1,0 +1,32 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: crewday 0.0.1\n"
+"Language: en-US\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "login.title"
+msgstr "Sign in to crew.day"
+
+msgid "task.status.scheduled"
+msgstr "Scheduled"
+
+msgid "task.status.in_progress"
+msgstr "In progress"
+
+msgid "task.status.done"
+msgstr "Done"
+
+msgid "task.status.cancelled"
+msgstr "Cancelled"
+
+msgid "approval.status.pending"
+msgstr "Pending"
+
+msgid "approval.status.approved"
+msgstr "Approved"
+
+msgid "approval.status.rejected"
+msgstr "Rejected"
+
+msgid "notification.task_assigned"
+msgstr "Task assigned: {task_title}"

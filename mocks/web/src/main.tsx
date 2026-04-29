@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { SseProvider } from "@/context/SseContext";
 import { WorkspaceProvider } from "@/context/WorkspaceContext";
 import { NavHistoryProvider } from "@/context/NavHistoryContext";
+import { I18nProvider } from "@/i18n";
 
 import "@/styles/tokens.css";
 import "@/styles/reset.css";
@@ -43,19 +44,21 @@ const queryClient = makeQueryClient();
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename={ROUTER_BASENAME}>
-        <NavHistoryProvider>
-          <ThemeProvider>
-            <RoleProvider>
-              <WorkspaceProvider>
-                <SseProvider>
-                  <App />
-                </SseProvider>
-              </WorkspaceProvider>
-            </RoleProvider>
-          </ThemeProvider>
-        </NavHistoryProvider>
-      </BrowserRouter>
+      <I18nProvider>
+        <BrowserRouter basename={ROUTER_BASENAME}>
+          <NavHistoryProvider>
+            <ThemeProvider>
+              <RoleProvider>
+                <WorkspaceProvider>
+                  <SseProvider>
+                    <App />
+                  </SseProvider>
+                </WorkspaceProvider>
+              </RoleProvider>
+            </ThemeProvider>
+          </NavHistoryProvider>
+        </BrowserRouter>
+      </I18nProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 );

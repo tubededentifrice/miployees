@@ -82,6 +82,7 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy>=0.62b1",
     "opentelemetry-instrumentation-httpx>=0.62b1",
     "opentelemetry-exporter-otlp>=1.41.1",
+    "babel>=2.18.0",
 ]
 
 # ``crewday`` is the sole console-script entry point. The target is
