@@ -1,0 +1,12 @@
+{
+	admin 127.0.0.1:2019
+	acme_ca {$CREWDAY_CADDY_ACME_CA:https://acme-staging-v02.api.letsencrypt.org/directory}
+}
+
+{$CREWDAY_DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy app:8000
+	log {
+		output file /data/access.log
+	}
+}

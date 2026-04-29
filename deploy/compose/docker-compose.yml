@@ -1,0 +1,148 @@
+name: crewday
+
+x-app-env: &app-env
+  CREWDAY_DATABASE_URL: "postgresql+psycopg://crewday:${CREWDAY_POSTGRES_PASSWORD:-crewday-dev}@postgres:5432/crewday"
+  CREWDAY_DATA_DIR: "/data"
+  CREWDAY_BIND_HOST: "0.0.0.0"
+  CREWDAY_BIND_PORT: "8000"
+  CREWDAY_ALLOW_PUBLIC_BIND: "1"
+  CREWDAY_WORKER: "external"
+  CREWDAY_PUBLIC_URL: "${CREWDAY_PUBLIC_URL:-https://localhost:8443}"
+  CREWDAY_ROOT_KEY:
+  CREWDAY_LOG_LEVEL: "${CREWDAY_LOG_LEVEL:-INFO}"
+  # MinIO is part of the compose topology; keep localfs until the S3
+  # adapter is wired, then override this to s3 with S3 credentials.
+  CREWDAY_STORAGE_BACKEND: "${CREWDAY_STORAGE_BACKEND:-localfs}"
+  CREWDAY_SMTP_HOST:
+  CREWDAY_SMTP_PORT:
+  CREWDAY_SMTP_FROM:
+  CREWDAY_SMTP_USER:
+  CREWDAY_SMTP_PASSWORD:
+  CREWDAY_SMTP_USE_TLS:
+  CREWDAY_OPENROUTER_API_KEY:
+
+x-app-build: &app-build
+  context: ../..
+  dockerfile: deploy/single/Dockerfile
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${CREWDAY_CADDY_BIND:-127.0.0.1}:${CREWDAY_CADDY_HTTP_PORT:-8180}:80"
+      - "${CREWDAY_CADDY_BIND:-127.0.0.1}:${CREWDAY_CADDY_HTTPS_PORT:-8443}:443"
+    environment:
+      CREWDAY_DOMAIN: "${CREWDAY_DOMAIN:-localhost}"
+      CREWDAY_CADDY_ACME_CA: "${CREWDAY_CADDY_ACME_CA:-https://acme-staging-v02.api.letsencrypt.org/directory}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - crewday
+
+  app:
+    build: *app-build
+    image: crewday:local
+    restart: unless-stopped
+    user: "10001:10001"
+    environment: *app-env
+    volumes:
+      - app-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 6
+    networks:
+      - crewday
+
+  worker:
+    build: *app-build
+    image: crewday:local
+    restart: unless-stopped
+    user: "10001:10001"
+    command: ["worker"]
+    healthcheck:
+      disable: true
+    environment: *app-env
+    volumes:
+      - app-data:/data
+    depends_on:
+      app:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - crewday
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crewday
+      POSTGRES_PASSWORD: "${CREWDAY_POSTGRES_PASSWORD:-crewday-dev}"
+      POSTGRES_DB: crewday
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crewday -d crewday"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - crewday
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-crewday}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-crewday-minio-dev}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - minio-data:/data
+    networks:
+      - crewday
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    profiles: ["dev"]
+    restart: unless-stopped
+    ports:
+      - "${CREWDAY_MAILHOG_BIND:-127.0.0.1}:8025:8025"
+    networks:
+      - crewday
+
+volumes:
+  app-data:
+  postgres-data:
+  minio-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  crewday:

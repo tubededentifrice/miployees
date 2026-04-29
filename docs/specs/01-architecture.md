@@ -361,7 +361,7 @@ Capabilities come from two sources:
     SQLite compiled with FTS5.
   - `features.concurrent_writers` — Postgres (true MVCC) or
     the SQLite WAL-mode tuned ≥ configured write concurrency.
-  - `features.object_storage` — `CREWDAY_STORAGE=s3`.
+  - `features.object_storage` — `CREWDAY_STORAGE_BACKEND=s3`.
   - `features.wildcard_subdomains` — `CREWDAY_PUBLIC_URL`
     matches a wildcard TLS cert installed on the reverse proxy.
   - `features.email_bounce_webhooks` — SMTP provider exposes

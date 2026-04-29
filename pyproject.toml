@@ -83,6 +83,10 @@ dependencies = [
     "opentelemetry-instrumentation-httpx>=0.62b1",
     "opentelemetry-exporter-otlp>=1.41.1",
     "babel>=2.18.0",
+    # Postgres driver for Recipe B / D deployments. The sync DB engine
+    # rewrites postgresql+asyncpg URLs to postgresql+psycopg at runtime,
+    # so the production image must carry psycopg, not just the test env.
+    "psycopg[binary]>=3",
 ]
 
 # ``crewday`` is the sole console-script entry point. The target is
@@ -134,12 +138,6 @@ dev = [
     "locust",
     "factory-boy",
     "hypothesis",
-    # Postgres driver for the integration-test shard in CI. The sync
-    # engine builds `postgresql+psycopg://` URLs (see
-    # `app/adapters/db/session.py::normalise_sync_url`) so psycopg 3 must
-    # be installed wherever integration tests target PG. SQLite shards
-    # don't need it but installing in dev keeps parity with CI.
-    "psycopg[binary]",
     # Spin up a real Postgres 15 per integration-test session (cd-rhaj).
     # The sqlite shard never touches this package, but it's cheap to
     # install in dev and keeps the PG shard hermetic: no need for a

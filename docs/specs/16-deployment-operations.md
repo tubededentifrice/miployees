@@ -52,15 +52,16 @@ services:
       # ALLOW_PUBLIC_BIND=1 explicitly here, alongside the `ports:`
       # mapping below which is what actually limits reachability to
       # the host loopback.
-      CREWDAY_BIND: "0.0.0.0:8000"
+      CREWDAY_BIND_HOST: "0.0.0.0"
+      CREWDAY_BIND_PORT: "8000"
       CREWDAY_ALLOW_PUBLIC_BIND: "1"
       CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
       CREWDAY_PUBLIC_URL: "https://ops.example.com"
-      SMTP_HOST: "..."
-      SMTP_USER: "..."
-      SMTP_PASS: "..."
-      MAIL_FROM: "crew.day <ops@example.com>"
-      OPENROUTER_API_KEY: "..."
+      CREWDAY_SMTP_HOST: "..."
+      CREWDAY_SMTP_USER: "..."
+      CREWDAY_SMTP_PASSWORD: "..."
+      CREWDAY_SMTP_FROM: "crew.day <ops@example.com>"
+      CREWDAY_OPENROUTER_API_KEY: "..."
     volumes:
       - ./data:/data
     ports:
@@ -90,8 +91,9 @@ address is assigned to an interface whose name matches a glob in
 wholesale when set); CGNAT ranges are not trusted by CIDR:
 
 ```
-CREWDAY_BIND: "127.0.0.1:8000"     # always passes
-CREWDAY_BIND: "100.x.y.z:8000"     # passes if that address is on tailscale0
+CREWDAY_BIND_HOST: "127.0.0.1"     # always passes
+CREWDAY_BIND_HOST: "100.x.y.z"     # passes if that address is on tailscale0
+CREWDAY_BIND_PORT: "8000"
 ```
 
 ### Backup
@@ -145,17 +147,18 @@ x-app-env: &app-env
   # publishes no host port, so reachability is strictly Caddy →
   # app:8000 on the internal compose network. The §15 guard is strict
   # and requires the opt-in below to be explicit.
-  CREWDAY_BIND: "0.0.0.0:8000"
+  CREWDAY_BIND_HOST: "0.0.0.0"
+  CREWDAY_BIND_PORT: "8000"
   CREWDAY_ALLOW_PUBLIC_BIND: "1"
   CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
   CREWDAY_PUBLIC_URL: "https://ops.example.com"
-  CREWDAY_STORAGE: "s3"
-  AWS_ACCESS_KEY_ID: "${MINIO_USER}"
-  AWS_SECRET_ACCESS_KEY: "${MINIO_PASS}"
-  S3_ENDPOINT: "http://minio:9000"
-  S3_BUCKET: "crewday"
-  OPENROUTER_API_KEY: "..."
-  SMTP_HOST: "..."
+  CREWDAY_STORAGE_BACKEND: "s3"
+  CREWDAY_S3_ACCESS_KEY_ID: "${MINIO_USER}"
+  CREWDAY_S3_SECRET_ACCESS_KEY: "${MINIO_PASS}"
+  CREWDAY_S3_ENDPOINT: "http://minio:9000"
+  CREWDAY_S3_BUCKET: "crewday"
+  CREWDAY_OPENROUTER_API_KEY: "..."
+  CREWDAY_SMTP_HOST: "..."
 
 services:
   caddy:
@@ -286,14 +289,15 @@ services:
       CREWDAY_PUBLIC_URL: "https://demo.crew.day"
       CREWDAY_DATABASE_URL: "sqlite+aiosqlite:///data/demo.db"
       CREWDAY_DATA_DIR: "/data"
-      CREWDAY_BIND: "0.0.0.0:8000"
+      CREWDAY_BIND_HOST: "0.0.0.0"
+      CREWDAY_BIND_PORT: "8000"
       CREWDAY_ALLOW_PUBLIC_BIND: "1"
       CREWDAY_ROOT_KEY: "${DEMO_ROOT_KEY}"              # distinct from prod
       CREWDAY_DEMO_COOKIE_KEY: "${DEMO_COOKIE_KEY}"     # 32 bytes base64
       CREWDAY_DEMO_FRAME_ANCESTORS: "https://crew.day https://*.crew.day"
       CREWDAY_DEMO_GLOBAL_DAILY_USD_CAP: "5"
       CREWDAY_DEMO_BLOCK_CIDR: ""                        # optional deny-list
-      OPENROUTER_API_KEY: "${DEMO_OPENROUTER_KEY}"       # distinct from prod
+      CREWDAY_OPENROUTER_API_KEY: "${DEMO_OPENROUTER_KEY}" # distinct from prod
       # No SMTP_*; the Mailer port binds to the null adapter under
       # CREWDAY_DEMO_MODE=1 regardless of SMTP_* values.
     volumes:
@@ -453,18 +457,19 @@ services:
     user: "10001:10001"
     environment:
       CREWDAY_DATABASE_URL: "postgresql+psycopg://crewday:${PG_PASS}@db:5432/crewday"
-      CREWDAY_STORAGE: "s3"
+      CREWDAY_STORAGE_BACKEND: "s3"
       CREWDAY_S3_BUCKET: "crewday-saas"
       CREWDAY_S3_ENDPOINT: "https://s3.<region>.amazonaws.com"
-      CREWDAY_BIND: "0.0.0.0:8000"
+      CREWDAY_BIND_HOST: "0.0.0.0"
+      CREWDAY_BIND_PORT: "8000"
       CREWDAY_ALLOW_PUBLIC_BIND: "1"
       CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
       CREWDAY_PUBLIC_URL: "https://crew.day"
-      SMTP_HOST: "..."
-      SMTP_USER: "..."
-      SMTP_PASS: "..."
-      MAIL_FROM: "crew.day <no-reply@crew.day>"
-      OPENROUTER_API_KEY: "..."
+      CREWDAY_SMTP_HOST: "..."
+      CREWDAY_SMTP_USER: "..."
+      CREWDAY_SMTP_PASSWORD: "..."
+      CREWDAY_SMTP_FROM: "crew.day <no-reply@crew.day>"
+      CREWDAY_OPENROUTER_API_KEY: "..."
     depends_on: [db, worker]
     ports: ["127.0.0.1:8000:8000"]
 
@@ -475,10 +480,10 @@ services:
     user: "10001:10001"
     environment:
       CREWDAY_DATABASE_URL: "postgresql+psycopg://crewday:${PG_PASS}@db:5432/crewday"
-      CREWDAY_STORAGE: "s3"
+      CREWDAY_STORAGE_BACKEND: "s3"
       CREWDAY_S3_BUCKET: "crewday-saas"
       CREWDAY_ROOT_KEY: "${CREWDAY_ROOT_KEY}"
-      OPENROUTER_API_KEY: "..."
+      CREWDAY_OPENROUTER_API_KEY: "..."
     depends_on: [db]
 
   db:
@@ -623,17 +628,18 @@ provisioned per visitor, not per operator.
 |-----------------------------|--------------------------------|--------------------------|
 | `CREWDAY_DATABASE_URL`    | sqlite+aiosqlite:///./data/db  |                          |
 | `CREWDAY_DATA_DIR`        | `./data`                       |                          |
-| `CREWDAY_BIND`            | `127.0.0.1:8000`               |                          |
+| `CREWDAY_BIND_HOST`       | `127.0.0.1`                    |                          |
+| `CREWDAY_BIND_PORT`       | `8000`                         |                          |
 | `CREWDAY_PUBLIC_URL`      | -                              | required for link building |
 | `CREWDAY_ROOT_KEY`        | -                              | required                 |
-| `CREWDAY_STORAGE`         | `local`                        | or `s3`                  |
-| `CREWDAY_WORKER`          | `inprocess`                    | or `external`            |
+| `CREWDAY_STORAGE_BACKEND` | `localfs`                      | or `s3`                  |
+| `CREWDAY_WORKER`          | `internal`                     | or `external`            |
 | `CREWDAY_SESSION_IDLE_DAYS`| 14                            |                          |
 | `CREWDAY_SESSION_ABS_DAYS`| 30                             |                          |
 | `CREWDAY_ALLOW_PUBLIC_BIND`| 0                              | required for any bind that isn't loopback or on a trusted interface; compose recipes set it explicitly |
 | `CREWDAY_TRUSTED_INTERFACES`| `tailscale*`                  | comma-separated fnmatch globs of interface names whose addresses pass without the opt-in; set value **replaces** the default (no implicit baseline) |
-| `SMTP_*`                    | -                              | see §10                  |
-| `OPENROUTER_API_KEY`        | -                              | see §11                  |
+| `CREWDAY_SMTP_*`            | -                              | see §10                  |
+| `CREWDAY_OPENROUTER_API_KEY`| -                              | see §11                  |
 | `CREWDAY_DEMO_MODE`         | 0                              | Recipe C only; refuses to boot outside the demo URL allowlist. §24 |
 | `CREWDAY_DEMO_COOKIE_KEY`   | -                              | Recipe C only; 32 bytes base64; signs `__Host-crewday_demo`. §24 |
 | `CREWDAY_DEMO_FRAME_ANCESTORS` | -                           | Recipe C only; whitespace-separated CSP `frame-ancestors` allowlist. §15 |
@@ -868,7 +874,7 @@ Documented in `docs/runbooks/dr-drill.md`. Quarterly exercise:
 
 ## Tailscale
 
-- The app binds to `tailscale0` naturally if `CREWDAY_BIND` is set
-  to `<tailscale-ip>:8000`.
+- The app binds to `tailscale0` naturally if `CREWDAY_BIND_HOST` is
+  set to `<tailscale-ip>` and `CREWDAY_BIND_PORT` is set to `8000`.
 - The compose recipe documents a `tailscale` sidecar for hosts that
   prefer to keep Caddy off the public Internet.
