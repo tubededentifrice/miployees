@@ -87,6 +87,10 @@ dependencies = [
     # rewrites postgresql+asyncpg URLs to postgresql+psycopg at runtime,
     # so the production image must carry psycopg, not just the test env.
     "psycopg[binary]>=3",
+    # zstd compression for host-side backup bundles (§16). Python's stdlib
+    # tarfile on our runtime does not expose ``w:zst`` yet, so the admin
+    # backup command streams tar entries through this package explicitly.
+    "zstandard>=0.23",
 ]
 
 # ``crewday`` is the sole console-script entry point. The target is

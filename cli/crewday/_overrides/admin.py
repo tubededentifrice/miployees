@@ -31,6 +31,16 @@ def _load_app_admin() -> Any:
     return admin_init_mod
 
 
+def _load_app_backup() -> Any:
+    try:
+        from app.admin import backup as admin_backup_mod
+    except Exception as exc:
+        raise ConfigError(
+            "admin commands must run on the server host with app dependencies installed"
+        ) from exc
+    return admin_backup_mod
+
+
 def _make_uow() -> Any:
     try:
         from app.adapters.db.session import make_uow
@@ -278,6 +288,116 @@ def purge(
 purge = cli_override("admin", "purge", covers=[])(purge)
 
 
+@click.command(name="backup")
+@click.option(
+    "--to",
+    "out_dir",
+    required=True,
+    type=click.Path(file_okay=False, dir_okay=True, path_type=pathlib.Path),
+    help="Directory where the .tar.zst backup archive will be written.",
+)
+@click.option(
+    "--keep-daily",
+    type=click.IntRange(min=0),
+    default=30,
+    show_default=True,
+)
+@click.option(
+    "--keep-monthly",
+    type=click.IntRange(min=0),
+    default=12,
+    show_default=True,
+)
+@click.pass_obj
+def backup(
+    _ctx: object,
+    *,
+    out_dir: pathlib.Path,
+    keep_daily: int,
+    keep_monthly: int,
+) -> None:
+    """Create a local filesystem deployment backup archive."""
+    admin_init_mod = _load_app_admin()
+    admin_backup_mod = _load_app_backup()
+    settings = _settings()
+    _refuse_demo(settings, admin_init_mod)
+    result = admin_backup_mod.backup(
+        out_dir,
+        settings=settings,
+        keep_daily=keep_daily,
+        keep_monthly=keep_monthly,
+    )
+    click.echo(
+        json.dumps(
+            {
+                "archive_path": str(result.archive_path),
+                "kind": result.manifest.kind,
+                "content_sha256": result.manifest.content_sha256,
+                "row_counts": result.manifest.row_counts,
+                "secret_envelope_count": result.manifest.secret_envelope_count,
+                "pruned": [str(path) for path in result.pruned],
+            },
+            sort_keys=True,
+        )
+    )
+
+
+backup = cli_override("admin", "backup", covers=[])(backup)
+
+
+@click.command(name="restore")
+@click.option(
+    "--from",
+    "bundle",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=pathlib.Path),
+    help="Backup .tar.zst archive to restore.",
+)
+@click.option(
+    "--legacy-key-file",
+    "legacy_key_files",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=pathlib.Path),
+    help="Root key file for older secret-envelope fingerprints. Repeatable.",
+)
+@click.pass_obj
+def restore(
+    _ctx: object,
+    *,
+    bundle: pathlib.Path,
+    legacy_key_files: tuple[pathlib.Path, ...],
+) -> None:
+    """Restore a backup archive into the configured deployment paths."""
+    admin_init_mod = _load_app_admin()
+    admin_backup_mod = _load_app_backup()
+    settings = _settings()
+    _refuse_demo(settings, admin_init_mod)
+    result = admin_backup_mod.restore(
+        bundle,
+        settings=settings,
+        legacy_key_files=legacy_key_files,
+    )
+    _run_migrations()
+    click.echo(
+        json.dumps(
+            {
+                "kind": result.manifest.kind,
+                "restored_database": (
+                    str(result.restored_database)
+                    if result.restored_database is not None
+                    else None
+                ),
+                "restored_files": str(result.restored_files),
+                "content_sha256": result.manifest.content_sha256,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+restore = cli_override("admin", "restore", covers=[])(restore)
+
+
 def _ensure_group(root: click.Group, name: str, *, help_text: str) -> click.Group:
     group = root.get_command(click.Context(root), name)
     if group is None:
@@ -291,7 +411,9 @@ def _ensure_group(root: click.Group, name: str, *, help_text: str) -> click.Grou
 def register(root: click.Group) -> None:
     group = _ensure_group(root, "admin", help_text="host-only admin commands")
     group.add_command(init)
+    group.add_command(backup)
     group.add_command(purge)
+    group.add_command(restore)
 
     user = _ensure_group(group, "user", help_text="host-only user admin commands")
     user.add_command(user_invite)
