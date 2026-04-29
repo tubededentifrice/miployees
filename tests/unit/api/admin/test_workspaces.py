@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.db.audit.models import AuditLog
 from app.adapters.db.llm.models import LlmUsage
+from app.adapters.db.places.models import Property, PropertyWorkspace
 from app.adapters.db.workspace.models import Workspace
 from app.api.admin._workspace_state import (
     ARCHIVED_AT_KEY,
@@ -113,6 +114,42 @@ def _add_llm_usage(
         s.commit()
 
 
+def _add_property_workspace(
+    session_factory: sessionmaker[Session],
+    *,
+    workspace_id: str,
+    label: str,
+) -> None:
+    property_id = new_ulid()
+    with session_factory() as s, tenant_agnostic():
+        s.add(
+            Property(
+                id=property_id,
+                name=label,
+                kind="residence",
+                address=f"{label} address",
+                address_json={},
+                country="US",
+                timezone="Etc/UTC",
+                tags_json=[],
+                welcome_defaults_json={},
+                property_notes_md="",
+                created_at=PINNED,
+            )
+        )
+        s.add(
+            PropertyWorkspace(
+                property_id=property_id,
+                workspace_id=workspace_id,
+                label=label,
+                membership_role="owner_workspace",
+                status="active",
+                created_at=PINNED,
+            )
+        )
+        s.commit()
+
+
 class TestListWorkspaces:
     """``GET /admin/api/v1/workspaces``."""
 
@@ -123,11 +160,26 @@ class TestListWorkspaces:
         settings: Settings,
     ) -> None:
         with session_factory() as s:
-            ws_old = seed_workspace(s, slug="alpha", created_at=PINNED)
+            ws_old = seed_workspace(
+                s,
+                slug="alpha",
+                quota_json={"llm_budget_cents_30d": 500},
+                created_at=PINNED,
+            )
             ws_new = seed_workspace(
                 s, slug="beta", created_at=PINNED + timedelta(hours=1)
             )
             s.commit()
+        _add_property_workspace(
+            session_factory, workspace_id=ws_old, label="North House"
+        )
+        _add_llm_usage(
+            session_factory,
+            workspace_id=ws_old,
+            capability="chat.manager",
+            cost_cents=123,
+            created_at=datetime.now(UTC) - timedelta(days=1),
+        )
         _user, cookie = _admin_cookie(session_factory, settings)
         client.cookies.set(SESSION_COOKIE_NAME, cookie)
 
@@ -138,7 +190,10 @@ class TestListWorkspaces:
         assert ids == [ws_old, ws_new]
         # Default verification state surfaces when no key written.
         assert body["workspaces"][0]["verification_state"] == "unverified"
+        assert body["workspaces"][0]["properties_count"] == 1
         assert body["workspaces"][0]["members_count"] == 0
+        assert body["workspaces"][0]["spent_cents_30d"] == 123
+        assert body["workspaces"][0]["cap_cents_30d"] == 500
         assert body["workspaces"][0]["archived_at"] is None
         assert body["workspaces"][0]["created_at"].endswith("+00:00")
 

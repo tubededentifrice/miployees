@@ -31,9 +31,8 @@ usage budget".
 
 from __future__ import annotations
 
-from dataclasses import fields
-from datetime import UTC, datetime, timedelta
-from typing import Annotated, Final
+from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -43,10 +42,16 @@ from sqlalchemy.orm import Session
 from app.adapters.db.llm.models import LlmUsage
 from app.adapters.db.workspace.models import Workspace
 from app.api.admin._audit import audit_admin
+from app.api.admin._usage_helpers import (
+    _QUOTA_CAP_KEY,
+    _deployment_default_cap,
+    _list_workspace_aggregates,
+    _resolved_cap,
+    _window,
+)
 from app.api.admin._workspace_state import load_workspace
 from app.api.admin.deps import current_deployment_admin_principal
 from app.api.deps import db_session
-from app.capabilities import Capabilities, DeploymentSettings
 from app.tenancy import DeploymentContext, tenant_agnostic
 
 __all__ = [
@@ -60,16 +65,6 @@ __all__ = [
 
 
 _Db = Annotated[Session, Depends(db_session)]
-
-
-# Rolling-window cutoff. Module-level so tests can monkey-patch.
-_ROLLING_30D: Final[timedelta] = timedelta(days=30)
-
-
-# ``llm_budget_cents_30d`` is the canonical cap key inside
-# :attr:`Workspace.quota_json` — see :data:`FREE_TIER_DEFAULTS`
-# in :mod:`app.domain.plans`.
-_QUOTA_CAP_KEY: Final[str] = "llm_budget_cents_30d"
 
 
 class UsageSummaryEntry(BaseModel):
@@ -156,59 +151,6 @@ class UsageCapResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _deployment_default_cap(request: Request) -> int:
-    """Resolve the deployment's default LLM budget cap.
-
-    Reads :attr:`app.state.capabilities` first so the in-memory
-    snapshot stays authoritative; falls back to the
-    :class:`DeploymentSettings` factory default when the cache
-    is unset (unit-test path that hasn't run :func:`probe`).
-    """
-    capabilities: Capabilities | None = getattr(request.app.state, "capabilities", None)
-    if capabilities is not None:
-        return int(capabilities.settings.llm_default_budget_cents_30d)
-    return _DEFAULT_DEPLOYMENT_BUDGET_CENTS
-
-
-# ``DeploymentSettings`` is a slotted dataclass; class-level
-# field access returns a slot descriptor rather than the default,
-# which trips mypy. Build the registry of cap defaults once at
-# import time so the runtime fallback is deterministic without
-# the fragile ``DeploymentSettings.field`` read.
-def _resolve_default_budget_cents() -> int:
-    for field in fields(DeploymentSettings):
-        if field.name == "llm_default_budget_cents_30d":
-            value = field.default
-            if isinstance(value, int) and not isinstance(value, bool):
-                return value
-    raise RuntimeError(  # pragma: no cover - dataclass invariant
-        "DeploymentSettings.llm_default_budget_cents_30d default missing"
-    )
-
-
-_DEFAULT_DEPLOYMENT_BUDGET_CENTS: Final[int] = _resolve_default_budget_cents()
-
-
-def _resolved_cap(workspace: Workspace, *, deployment_default: int) -> int:
-    """Return the workspace's resolved cap in cents.
-
-    The cap lives at ``workspace.quota_json[_QUOTA_CAP_KEY]`` when
-    the workspace was provisioned via signup; pre-cap workspaces
-    (or workspaces seeded outside signup) fall back to the
-    deployment default. Non-int stored values collapse to the
-    default rather than raising — the table view must stay
-    rendering.
-    """
-    raw = (
-        workspace.quota_json.get(_QUOTA_CAP_KEY)
-        if isinstance(workspace.quota_json, dict)
-        else None
-    )
-    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
-        return raw
-    return deployment_default
-
-
 def _percent(spent: int, cap: int) -> int:
     """Return the integer percentage of ``cap`` consumed by ``spent``.
 
@@ -220,39 +162,6 @@ def _percent(spent: int, cap: int) -> int:
         return 100
     pct = (spent * 100) // cap
     return min(int(pct), 100)
-
-
-def _window(now: datetime) -> datetime:
-    """Return the cutoff timestamp for the rolling 30-day window."""
-    return now - _ROLLING_30D
-
-
-def _list_workspace_aggregates(
-    session: Session,
-    *,
-    cutoff: datetime,
-) -> dict[str, tuple[int, int]]:
-    """Return ``{workspace_id: (call_count, spend_cents)}`` for the window.
-
-    One round-trip aggregate that the per-workspace table reads
-    instead of issuing N+1 SELECTs. Workspaces with no calls in
-    the window are absent from the dict — the table view treats
-    a missing entry as ``(0, 0)``.
-    """
-    with tenant_agnostic():
-        rows = session.execute(
-            select(
-                LlmUsage.workspace_id,
-                func.count(LlmUsage.id),
-                func.coalesce(func.sum(LlmUsage.cost_cents), 0),
-            )
-            .where(LlmUsage.created_at >= cutoff)
-            .group_by(LlmUsage.workspace_id)
-        ).all()
-    return {
-        workspace_id: (int(count or 0), int(spent or 0))
-        for workspace_id, count, spent in rows
-    }
 
 
 def _list_capability_aggregates(

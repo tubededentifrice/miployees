@@ -10,13 +10,23 @@ export interface AdminMe {
   capabilities: Record<string, boolean>;
 }
 
+export type AdminWorkspaceVerificationState =
+  | "trusted"
+  | "human_verified"
+  | "email_verified"
+  | "unverified"
+  | "archived";
+
 export interface AdminWorkspaceRow {
   id: string;
   slug: string;
   name: string;
   plan: string;
-  verification_state: string;
+  verification_state: AdminWorkspaceVerificationState;
+  properties_count: number;
   members_count: number;
+  spent_cents_30d: number;
+  cap_cents_30d: number;
   archived_at: string | null;
   created_at: string;
 }

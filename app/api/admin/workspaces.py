@@ -42,9 +42,16 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.adapters.db.llm.models import LlmUsage
+from app.adapters.db.places.models import PropertyWorkspace
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.api.admin._audit import audit_admin
 from app.api.admin._owners import ensure_deployment_owner
+from app.api.admin._usage_helpers import (
+    _deployment_default_cap,
+    _list_workspace_aggregates,
+    _resolved_cap,
+    _window,
+)
 from app.api.admin._workspace_state import (
     format_archived_at,
     load_workspace,
@@ -84,7 +91,10 @@ class WorkspaceListItem(BaseModel):
       :class:`Workspace`.
     * ``verification_state`` — read from the interim
       ``settings_json`` slot (cd-s8kk follow-up promotes the column).
+    * ``properties_count`` — active :class:`PropertyWorkspace` rows.
     * ``members_count`` — count of :class:`UserWorkspace` rows.
+    * ``spent_cents_30d`` / ``cap_cents_30d`` — rolling usage and
+      resolved LLM budget cap, matching the admin usage table.
     * ``archived_at`` — ISO-8601 UTC string; ``None`` for live rows.
     * ``created_at`` — ISO-8601 UTC string for the row's creation.
     """
@@ -94,7 +104,10 @@ class WorkspaceListItem(BaseModel):
     name: str
     plan: str
     verification_state: str
+    properties_count: int
     members_count: int
+    spent_cents_30d: int
+    cap_cents_30d: int
     archived_at: str | None
     created_at: str
 
@@ -202,6 +215,17 @@ def _members_count(session: Session, *, workspace_id: str) -> int:
     return int(count or 0)
 
 
+def _property_counts(session: Session) -> dict[str, int]:
+    """Return active property-membership counts keyed by workspace id."""
+    with tenant_agnostic():
+        rows = session.execute(
+            select(PropertyWorkspace.workspace_id, func.count())
+            .where(PropertyWorkspace.status == "active")
+            .group_by(PropertyWorkspace.workspace_id)
+        ).all()
+    return {workspace_id: int(count or 0) for workspace_id, count in rows}
+
+
 def _llm_window_aggregates(
     session: Session,
     *,
@@ -232,7 +256,14 @@ def _llm_window_aggregates(
     return int(call_count or 0), int(spend_cents or 0)
 
 
-def _list_item(session: Session, *, workspace: Workspace) -> WorkspaceListItem:
+def _list_item(
+    session: Session,
+    *,
+    workspace: Workspace,
+    properties_count: int,
+    spent_cents_30d: int,
+    cap_cents_30d: int,
+) -> WorkspaceListItem:
     """Project a :class:`Workspace` row into the list-row response."""
     return WorkspaceListItem(
         id=workspace.id,
@@ -240,7 +271,10 @@ def _list_item(session: Session, *, workspace: Workspace) -> WorkspaceListItem:
         name=workspace.name,
         plan=workspace.plan,
         verification_state=verification_state_of(workspace),
+        properties_count=properties_count,
         members_count=_members_count(session, workspace_id=workspace.id),
+        spent_cents_30d=spent_cents_30d,
+        cap_cents_30d=cap_cents_30d,
         archived_at=format_archived_at(workspace),
         created_at=_format_created_at(workspace),
     )
@@ -292,6 +326,7 @@ def build_admin_workspaces_router() -> APIRouter:
     def list_workspaces(
         _ctx: Annotated[DeploymentContext, Depends(current_deployment_admin_principal)],
         session: _Db,
+        request: Request,
     ) -> WorkspaceListResponse:
         """Return every :class:`Workspace` row, ordered oldest-first.
 
@@ -312,7 +347,20 @@ def build_admin_workspaces_router() -> APIRouter:
                 .scalars()
                 .all()
             )
-        items = [_list_item(session, workspace=row) for row in rows]
+        cutoff = _window(datetime.now(UTC))
+        usage = _list_workspace_aggregates(session, cutoff=cutoff)
+        property_counts = _property_counts(session)
+        deployment_default = _deployment_default_cap(request)
+        items = [
+            _list_item(
+                session,
+                workspace=row,
+                properties_count=property_counts.get(row.id, 0),
+                spent_cents_30d=usage.get(row.id, (0, 0))[1],
+                cap_cents_30d=_resolved_cap(row, deployment_default=deployment_default),
+            )
+            for row in rows
+        ]
         return WorkspaceListResponse(workspaces=items)
 
     @router.get(
