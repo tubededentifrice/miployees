@@ -4,6 +4,11 @@ import { useRole } from "@/context/RoleContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useBannerHeightVar } from "@/lib/useBannerHeightVar";
 
+const STYLEGUIDE_ENABLED =
+  import.meta.env.DEV ||
+  import.meta.env.VITE_CREWDAY_STAGING === "1" ||
+  import.meta.env.VITE_CREWDAY_STAGING === "true";
+
 // PreviewShell is the outermost layout: grain, sticky preview banner,
 // then the routed layout inside <Outlet />. Grain is mounted once at
 // tree root (not per-page) so navigation doesn't flicker.
@@ -19,7 +24,7 @@ export default function PreviewShell() {
   // should display as active while the user is here. Public auth flows
   // are role-agnostic AND should keep the user in place.
   const roleNeutral =
-    pathname === "/styleguide" ||
+    (STYLEGUIDE_ENABLED && pathname === "/styleguide") ||
     pathname === "/login" ||
     pathname === "/recover" ||
     pathname.startsWith("/accept/") ||
@@ -85,7 +90,9 @@ export default function PreviewShell() {
               <Monitor size={14} aria-hidden="true" />
             )}
           </button>
-          <Link to="/styleguide" className="pill pill--ghost">§ styleguide</Link>
+          {STYLEGUIDE_ENABLED ? (
+            <Link to="/styleguide" className="pill pill--ghost">§ styleguide</Link>
+          ) : null}
         </nav>
       </div>
 

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import PreviewShell from "@/layouts/PreviewShell";
 import EmployeeLayout from "@/layouts/EmployeeLayout";
@@ -61,7 +62,6 @@ import EnrollPage from "@/pages/public/EnrollPage";
 import AcceptPage from "@/pages/public/AcceptPage";
 import GuestPage from "@/pages/public/GuestPage";
 
-import StyleguidePage from "@/pages/StyleguidePage";
 import SchedulerPage from "@/pages/SchedulerPage";
 
 import ClientLayout from "@/layouts/ClientLayout";
@@ -71,6 +71,14 @@ import ClientQuotesPage from "@/pages/client/QuotesPage";
 import ClientInvoicesPage from "@/pages/client/InvoicesPage";
 
 import { RequireAuth, WorkspaceGate } from "@/auth";
+
+const STYLEGUIDE_ENABLED =
+  import.meta.env.DEV ||
+  import.meta.env.VITE_CREWDAY_STAGING === "1" ||
+  import.meta.env.VITE_CREWDAY_STAGING === "true";
+const StyleguidePage = STYLEGUIDE_ENABLED
+  ? lazy(() => import("@/pages/StyleguidePage"))
+  : null;
 
 function RoleHome() {
   const { role } = useRole();
@@ -113,7 +121,16 @@ export default function App() {
         {/* Styleguide — public dev surface; render without auth so
             designers can land on it directly. Same posture as
             `mocks/web/`. */}
-        <Route path="/styleguide" element={<StyleguidePage />} />
+        {StyleguidePage ? (
+          <Route
+            path="/styleguide"
+            element={
+              <Suspense fallback={null}>
+                <StyleguidePage />
+              </Suspense>
+            }
+          />
+        ) : null}
 
         {/* Everything else sits behind the auth gate.
             `<RequireAuth>` resolves the session (loading | login |
