@@ -39,11 +39,12 @@ Close only the Beads ids the caller provided:
 ```bash
 bd close <main-task-id>
 bd close <selfreview-task-id>
-bd export
+bd export -o .beads/issues.jsonl
 ```
 
-If no Beads ids were provided, skip closes but still run `bd export` when
-Beads is available so pending metadata exports are current.
+If no Beads ids were provided, skip closes but still run
+`bd export -o .beads/issues.jsonl` when Beads is available so pending
+metadata exports are current.
 
 ### 3. Stage Explicit Paths
 

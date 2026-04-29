@@ -88,7 +88,7 @@ DIRECTOR: pick top task from the cached ready list
      `bd dep <blocker> --blocks <picked>` → **the picked task is now
      blocked; do NOT start it.** Drop it from your cached list and
      pick the next entry. The graph fix ships with the next pair's
-   commit (`/commiter`'s `bd export`).
+   commit (`/commiter`'s Beads export step).
    • Otherwise, locate (or create via `/beads`) the paired selfreview
      task — triage does not return it — and continue.
     │
@@ -107,7 +107,8 @@ DIRECTOR: pick top task from the cached ready list
     │       main↔selfreview coupling.
     │
     ▼
-4. COMMITER WORKFLOW: `bd close <main>` → `bd close <sr>` → `bd export` →
+4. COMMITER WORKFLOW: `bd close <main>` → `bd close <sr>` →
+    │       `bd export -o .beads/issues.jsonl` →
     │       `git add` (in-scope code + `.beads/`) → signed-off
     │       Conventional Commit referencing both IDs → `git push`.
     │       Single atomic step: closure ships with the commit.
@@ -193,7 +194,7 @@ Read, in order:
   next entry from your cached ready list (refresh via triage
   only if the list is empty). Wrong-order picks waste a coder run
   and leave the graph misleading. The dep edit ships with the next
-  commit (`/commiter`'s `bd export` covers it).
+  commit (`/commiter`'s Beads export step covers it).
 
 ## Role Workflows And Delegation
 
@@ -309,7 +310,7 @@ bd show <id>                          # full context
 bd update <id> --claim                # claim it (in_progress)
 # … implement …
 bd close <id>                         # done — /commiter runs this in step 4
-bd export                             # export jsonl after ANY bd mutation
+bd export -o .beads/issues.jsonl      # export jsonl after ANY bd mutation
                                       # (close/create/update); /commiter runs
                                       # this before `git add` so the .beads/
                                       # delta ships in the same commit

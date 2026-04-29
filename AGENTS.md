@@ -246,7 +246,7 @@ bd show <id>                          # full task context
 bd update <id> --claim                # claim it
 # … do the work …
 bd close <id>                         # done
-bd export                               # export jsonl to git
+bd export -o .beads/issues.jsonl        # export jsonl to git
 ```
 
 - **Create issues** for anything you discover but won't do this
@@ -255,8 +255,9 @@ bd export                               # export jsonl to git
   [`.claude/skills/beads/SKILL.md`](.claude/skills/beads/SKILL.md)).
 - **Link dependencies** with `bd dep <blocker> --blocks <blocked>`
   only when one task literally cannot start before another.
-- **Commit the jsonl**: after any `bd` change, `bd export` and include
-  `.beads/` in the same commit (the `/commiter` workflow handles this).
+- **Commit the jsonl**: after any `bd` change, run
+  `bd export -o .beads/issues.jsonl` and include `.beads/` in the same
+  commit (the `/commiter` workflow handles this).
 - **Close what you claim** before handing off, so `bd ready` stays
   honest.
 
@@ -350,7 +351,8 @@ Plain text to the user; CLI handles styling.
 - **File follow-ups** as Beads issues, not commit-message
   footnotes.
 - **Close or block** what you claimed (`bd close <id>` /
-  `bd update <id> --status blocked`); then `bd export`.
+  `bd update <id> --status blocked`); then
+  `bd export -o .beads/issues.jsonl`.
 - **Run the quality gates** that apply (`pytest <scope>`, `mypy`,
   `ruff`).
 - **Commit and push** via `/commiter`; include `.beads/` in the same

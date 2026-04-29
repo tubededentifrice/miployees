@@ -460,7 +460,7 @@ bd comments list <id>
 ### Sync
 
 ```bash
-bd export # export to jsonl for git
+bd export -o .beads/issues.jsonl # export to jsonl for git
 ```
 
 ## Common mistakes
