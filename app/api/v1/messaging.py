@@ -41,15 +41,19 @@ from collections.abc import Callable
 from datetime import datetime
 from threading import Lock
 from typing import Annotated
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.adapters.db.messaging.models import Notification, PushToken
 from app.adapters.db.messaging.repositories import SqlAlchemyPushTokenRepository
 from app.api.deps import current_workspace_context, db_session
 from app.api.messaging.channels import build_channels_router
 from app.api.messaging.messages import build_messages_router
+from app.audit import write_audit
 from app.domain.messaging.push_tokens import (
     MAX_ENDPOINT_LEN,
     EndpointNotAllowed,
@@ -58,14 +62,21 @@ from app.domain.messaging.push_tokens import (
     PushTokenView,
     VapidNotConfigured,
     get_vapid_public_key,
+    list_for_user,
     register,
     unregister,
 )
 from app.events.bus import EventBus
 from app.tenancy import WorkspaceContext
+from app.util.clock import SystemClock
 
 __all__ = [
+    "BulkMarkReadRequest",
+    "NotificationListResponse",
+    "NotificationPatchRequest",
+    "NotificationPayload",
     "PushTokenPayload",
+    "PushTokenUnavailableRequest",
     "PushUnsubscribe",
     "VapidKeyPayload",
     "build_messaging_router",
@@ -99,6 +110,38 @@ class PushUnsubscribe(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     endpoint: str = Field(min_length=1, max_length=MAX_ENDPOINT_LEN)
+
+
+class BulkMarkReadRequest(BaseModel):
+    """Request body for ``POST /notifications:mark-read``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class NotificationPatchRequest(BaseModel):
+    """Request body for ``PATCH /notifications/{id}``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    read: bool = True
+
+
+class PushTokenUnavailableRequest(BaseModel):
+    """Reserved native-app push token registration body.
+
+    Native FCM/APNS delivery is not provisioned in this slice, so the
+    endpoint always returns ``501 push_unavailable`` after validating
+    the basic shape. Web push remains live through ``/subscribe``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    platform: str = Field(pattern="^(android|ios)$")
+    token: str = Field(min_length=1, max_length=4096)
+    device_label: str | None = Field(default=None, max_length=120)
+    app_version: str | None = Field(default=None, max_length=64)
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +178,43 @@ class PushTokenPayload(BaseModel):
             last_used_at=view.last_used_at,
             user_agent=view.user_agent,
         )
+
+
+class NotificationPayload(BaseModel):
+    """HTTP projection of a caller-visible notification row."""
+
+    id: str
+    workspace_id: str
+    recipient_user_id: str
+    kind: str
+    subject: str
+    body_md: str | None
+    payload: dict[str, object]
+    read_at: datetime | None
+    created_at: datetime
+
+    @classmethod
+    def from_row(cls, row: Notification) -> NotificationPayload:
+        return cls(
+            id=row.id,
+            workspace_id=row.workspace_id,
+            recipient_user_id=row.recipient_user_id,
+            kind=row.kind,
+            subject=row.subject,
+            body_md=row.body_md,
+            payload=dict(row.payload_json),
+            read_at=row.read_at,
+            created_at=row.created_at,
+        )
+
+
+class NotificationListResponse(BaseModel):
+    """Collection envelope for notification list reads."""
+
+    data: list[NotificationPayload]
+    next_cursor: str | None
+    has_more: bool
+    total_estimate: int
 
 
 class VapidKeyPayload(BaseModel):
@@ -274,6 +354,53 @@ def _http_for_push_error(exc: Exception) -> HTTPException:
     )
 
 
+def _notification_or_404(
+    session: Session,
+    ctx: WorkspaceContext,
+    notification_id: str,
+) -> Notification:
+    row = session.scalars(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.workspace_id == ctx.workspace_id,
+            Notification.recipient_user_id == ctx.actor_id,
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "notification_not_found"},
+        )
+    return row
+
+
+def _mark_notification(
+    session: Session,
+    ctx: WorkspaceContext,
+    row: Notification,
+    *,
+    read: bool,
+) -> Notification:
+    now = SystemClock().now()
+    before = row.read_at
+    if read and row.read_at is None:
+        row.read_at = now
+    elif not read and row.read_at is not None:
+        row.read_at = None
+    if row.read_at != before:
+        write_audit(
+            session,
+            ctx,
+            entity_kind="notification",
+            entity_id=row.id,
+            action="messaging.notification.read_state_changed",
+            diff={"read": row.read_at is not None},
+            via="api",
+        )
+        session.flush()
+    return row
+
+
 # ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
@@ -295,6 +422,113 @@ def build_messaging_router(
     r = APIRouter(tags=["messaging"])
     r.include_router(build_channels_router())
     r.include_router(build_messages_router(event_bus=event_bus))
+
+    @r.get(
+        "/notifications",
+        response_model=NotificationListResponse,
+        operation_id="messaging.notifications.list",
+        summary="List the caller's notifications",
+    )
+    def list_notifications(
+        ctx: _Ctx,
+        session: _Db,
+        unread_only: bool = Query(default=False),
+        cursor: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=100),
+    ) -> NotificationListResponse:
+        stmt = (
+            select(Notification)
+            .where(
+                Notification.workspace_id == ctx.workspace_id,
+                Notification.recipient_user_id == ctx.actor_id,
+            )
+            .order_by(Notification.id.desc())
+            .limit(limit + 1)
+        )
+        if unread_only:
+            stmt = stmt.where(Notification.read_at.is_(None))
+        if cursor is not None:
+            stmt = stmt.where(Notification.id < cursor)
+        rows = list(session.scalars(stmt).all())
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        total_stmt = (
+            select(func.count())
+            .select_from(Notification)
+            .where(
+                Notification.workspace_id == ctx.workspace_id,
+                Notification.recipient_user_id == ctx.actor_id,
+            )
+        )
+        if unread_only:
+            total_stmt = total_stmt.where(Notification.read_at.is_(None))
+        return NotificationListResponse(
+            data=[NotificationPayload.from_row(row) for row in page],
+            next_cursor=page[-1].id if has_more and page else None,
+            has_more=has_more,
+            total_estimate=session.scalar(total_stmt) or 0,
+        )
+
+    @r.get(
+        "/notifications/{notification_id}",
+        response_model=NotificationPayload,
+        operation_id="messaging.notifications.get",
+        summary="Get one notification",
+    )
+    def get_notification(
+        notification_id: Annotated[str, Path(min_length=1)],
+        ctx: _Ctx,
+        session: _Db,
+    ) -> NotificationPayload:
+        return NotificationPayload.from_row(
+            _notification_or_404(session, ctx, notification_id)
+        )
+
+    @r.patch(
+        "/notifications/{notification_id}",
+        response_model=NotificationPayload,
+        operation_id="messaging.notifications.update",
+        summary="Mark a notification read or unread",
+    )
+    def patch_notification(
+        notification_id: Annotated[str, Path(min_length=1)],
+        body: NotificationPatchRequest,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> NotificationPayload:
+        row = _notification_or_404(session, ctx, notification_id)
+        return NotificationPayload.from_row(
+            _mark_notification(session, ctx, row, read=body.read)
+        )
+
+    @r.post(
+        "/notifications:mark-read",
+        response_model=NotificationListResponse,
+        operation_id="messaging.notifications.mark_read",
+        summary="Bulk-mark notifications as read",
+    )
+    def post_mark_read(
+        body: BulkMarkReadRequest,
+        ctx: _Ctx,
+        session: _Db,
+    ) -> NotificationListResponse:
+        rows = session.scalars(
+            select(Notification)
+            .where(
+                Notification.workspace_id == ctx.workspace_id,
+                Notification.recipient_user_id == ctx.actor_id,
+                Notification.id.in_(body.ids),
+            )
+            .order_by(Notification.id.desc())
+        ).all()
+        for row in rows:
+            _mark_notification(session, ctx, row, read=True)
+        return NotificationListResponse(
+            data=[NotificationPayload.from_row(row) for row in rows],
+            next_cursor=None,
+            has_more=False,
+            total_estimate=len(rows),
+        )
 
     @r.get(
         "/notifications/push/vapid-key",
@@ -349,6 +583,69 @@ def build_messaging_router(
         except (EndpointNotAllowed, EndpointSchemeInvalid) as exc:
             raise _http_for_push_error(exc) from exc
         return PushTokenPayload.from_view(view)
+
+    @r.get(
+        "/notifications/push/tokens",
+        response_model=list[PushTokenPayload],
+        operation_id="messaging.push_tokens.list",
+        summary="List the caller's registered web-push tokens",
+    )
+    def get_push_tokens(
+        ctx: _Ctx,
+        session: _Db,
+    ) -> list[PushTokenPayload]:
+        views = list_for_user(SqlAlchemyPushTokenRepository(session), ctx)
+        return [PushTokenPayload.from_view(view) for view in views]
+
+    @r.post(
+        "/notifications/push/tokens",
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        operation_id="messaging.push_tokens.register_native_unavailable",
+        summary="Reserved native-app push token registration surface",
+    )
+    def post_native_push_token(
+        body: PushTokenUnavailableRequest,
+        ctx: _Ctx,
+    ) -> None:
+        del body
+        del ctx
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail={"error": "push_unavailable"},
+        )
+
+    @r.delete(
+        "/notifications/push/tokens/{token_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        operation_id="messaging.push_tokens.delete",
+        summary="Delete one of the caller's web-push tokens",
+    )
+    def delete_push_token(
+        token_id: Annotated[str, Path(min_length=1)],
+        ctx: _Ctx,
+        session: _Db,
+    ) -> Response:
+        row = session.scalars(
+            select(PushToken).where(
+                PushToken.id == token_id,
+                PushToken.workspace_id == ctx.workspace_id,
+                PushToken.user_id == ctx.actor_id,
+            )
+        ).one_or_none()
+        if row is not None:
+            endpoint_host = urlparse(row.endpoint).hostname
+            session.delete(row)
+            write_audit(
+                session,
+                ctx,
+                entity_kind="push_token",
+                entity_id=token_id,
+                action="messaging.push_token.deleted",
+                diff={"endpoint_host": endpoint_host},
+                via="api",
+            )
+            session.flush()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @r.post(
         "/notifications/push/unsubscribe",
