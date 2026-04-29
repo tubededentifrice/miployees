@@ -104,12 +104,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.adapters.db.identity.models import ApiToken
 from app.adapters.db.places.models import Property
 from app.adapters.db.tasks.models import Occurrence
+from app.adapters.llm.ports import LLMClient
 from app.adapters.storage.ports import MimeSniffer, Storage
 from app.api.deps import (
     current_workspace_context,
     db_session,
+    get_llm,
     get_mime_sniffer,
     get_storage,
 )
@@ -121,6 +124,27 @@ from app.api.pagination import (
     encode_cursor,
     paginate,
 )
+from app.domain.llm.budget import BudgetExceeded
+from app.domain.llm.capabilities.tasks_intake import (
+    Ambiguity,
+    NlCommitEdits,
+    NlIntakeContext,
+    NlPreview,
+    NlPreviewExpired,
+    NlPreviewNotFound,
+    NlPreviewUnresolved,
+    ResolvedTask,
+    ScheduledTask,
+    TaskIntakeParseError,
+)
+from app.domain.llm.capabilities.tasks_intake import (
+    commit as commit_nl_task,
+)
+from app.domain.llm.capabilities.tasks_intake import (
+    draft as draft_nl_task,
+)
+from app.domain.llm.router import CapabilityUnassignedError
+from app.domain.llm.usage_recorder import AgentAttribution
 from app.domain.tasks.assignment import (
     TaskAlreadyAssigned,
     assign_task,
@@ -243,7 +267,8 @@ from app.domain.tasks.templates import (
 from app.domain.tasks.templates import (
     update as update_template,
 )
-from app.tenancy import WorkspaceContext
+from app.tenancy import WorkspaceContext, tenant_agnostic
+from app.tenancy.middleware import ACTOR_STATE_ATTR, ActorIdentity
 
 __all__ = ["router"]
 
@@ -255,6 +280,41 @@ _Ctx = Annotated[WorkspaceContext, Depends(current_workspace_context)]
 _Db = Annotated[Session, Depends(db_session)]
 _Storage = Annotated[Storage, Depends(get_storage)]
 _MimeSniffer = Annotated[MimeSniffer, Depends(get_mime_sniffer)]
+_Llm = Annotated[LLMClient, Depends(get_llm)]
+
+
+def _agent_attribution_from_request(
+    session: Session,
+    ctx: WorkspaceContext,
+    request: Request,
+) -> AgentAttribution:
+    actor = getattr(request.state, ACTOR_STATE_ATTR, None)
+    if not isinstance(actor, ActorIdentity) or actor.token_id is None:
+        return AgentAttribution(
+            actor_user_id=ctx.actor_id,
+            token_id=None,
+            agent_label=None,
+        )
+    if ctx.principal_kind == "session":
+        return AgentAttribution(
+            actor_user_id=ctx.actor_id,
+            token_id=None,
+            agent_label=None,
+        )
+    with tenant_agnostic():
+        row = session.get(ApiToken, actor.token_id)
+    if row is None or row.kind != "delegated":
+        return AgentAttribution(
+            actor_user_id=ctx.actor_id,
+            token_id=None,
+            agent_label=None,
+        )
+    return AgentAttribution(
+        actor_user_id=ctx.actor_id,
+        token_id=row.id,
+        agent_label=row.label,
+        agent_conversation_ref=request.headers.get("X-Agent-Conversation-Ref"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +487,60 @@ class SchedulePayload(BaseModel):
             paused_at=view.paused_at,
             created_at=view.created_at,
             deleted_at=view.deleted_at,
+        )
+
+
+class NlTaskPreviewRequest(BaseModel):
+    """Request body for ``POST /tasks/from_nl``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(..., min_length=1, max_length=10_000)
+    dry_run: bool = True
+
+
+class NlTaskCommitRequest(BaseModel):
+    """Request body for ``POST /tasks/from_nl/commit``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    preview_id: str = Field(..., min_length=1, max_length=96)
+    resolved: ResolvedTask | None = None
+    assumptions: list[str] | None = None
+    ambiguities: list[Ambiguity] | None = None
+
+
+class NlTaskPreviewPayload(BaseModel):
+    """HTTP projection of an NL task preview."""
+
+    preview_id: str
+    resolved: ResolvedTask
+    assumptions: list[str]
+    ambiguities: list[Ambiguity]
+    expires_at: datetime
+
+    @classmethod
+    def from_preview(cls, preview: NlPreview) -> NlTaskPreviewPayload:
+        return cls(
+            preview_id=preview.preview_id,
+            resolved=preview.resolved,
+            assumptions=list(preview.assumptions),
+            ambiguities=list(preview.ambiguities),
+            expires_at=preview.expires_at,
+        )
+
+
+class NlTaskCommitPayload(BaseModel):
+    """HTTP projection of the rows created from an NL task preview."""
+
+    template: TaskTemplatePayload
+    schedule: SchedulePayload
+
+    @classmethod
+    def from_scheduled(cls, scheduled: ScheduledTask) -> NlTaskCommitPayload:
+        return cls(
+            template=TaskTemplatePayload.from_view(scheduled.template),
+            schedule=SchedulePayload.from_view(scheduled.schedule),
         )
 
 
@@ -1150,6 +1264,36 @@ def _comment_not_found() -> HTTPException:
     return _http(status.HTTP_404_NOT_FOUND, "comment_not_found")
 
 
+def _http_for_nl_task_intake(exc: Exception) -> HTTPException:
+    """Map NL task-intake exceptions to their HTTP shape."""
+    if isinstance(exc, NlPreviewNotFound):
+        return _http(status.HTTP_404_NOT_FOUND, "preview_not_found")
+    if isinstance(exc, NlPreviewExpired):
+        return _http(status.HTTP_410_GONE, "preview_expired")
+    if isinstance(exc, NlPreviewUnresolved):
+        return _http(
+            422,
+            "preview_unresolved",
+            ambiguities=[
+                ambiguity.model_dump(mode="json") for ambiguity in exc.ambiguities
+            ],
+        )
+    if isinstance(exc, CapabilityUnassignedError):
+        return _http(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "capability_unassigned",
+            capability=exc.capability,
+        )
+    if isinstance(exc, BudgetExceeded):
+        return HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=exc.to_dict(),
+        )
+    if isinstance(exc, TaskIntakeParseError):
+        return _http(422, "task_intake_parse_error", message=str(exc))
+    return _http(500, "internal")
+
+
 def _http_for_template_mutation(exc: Exception) -> HTTPException:
     """Map a template-domain exception to its HTTP shape."""
     if isinstance(exc, TaskTemplateNotFound):
@@ -1728,6 +1872,81 @@ def create_task_route(
         raise _http_for_task_mutation(exc) from exc
     zone = _property_timezone(session, view.property_id)
     return TaskPayload.from_view(view, property_timezone=zone)
+
+
+@router.post(
+    "/tasks/from_nl",
+    response_model=NlTaskPreviewPayload,
+    operation_id="draft_task_from_nl",
+    summary="Draft a task schedule from natural language",
+)
+def draft_task_from_nl_route(
+    body: NlTaskPreviewRequest,
+    request: Request,
+    ctx: _Ctx,
+    session: _Db,
+    llm: _Llm,
+) -> NlTaskPreviewPayload:
+    """Dry-run natural-language task intake; no task rows are created."""
+    if not body.dry_run:
+        raise _http(422, "dry_run_required")
+    try:
+        preview = draft_nl_task(
+            NlIntakeContext(
+                session=session,
+                workspace_ctx=ctx,
+                llm=llm,
+                attribution=_agent_attribution_from_request(session, ctx, request),
+            ),
+            body.text,
+        )
+    except (BudgetExceeded, CapabilityUnassignedError, TaskIntakeParseError) as exc:
+        raise _http_for_nl_task_intake(exc) from exc
+    return NlTaskPreviewPayload.from_preview(preview)
+
+
+@router.post(
+    "/tasks/from_nl/commit",
+    status_code=status.HTTP_201_CREATED,
+    response_model=NlTaskCommitPayload,
+    operation_id="commit_task_from_nl",
+    summary="Commit a natural-language task preview",
+)
+def commit_task_from_nl_route(
+    body: NlTaskCommitRequest,
+    request: Request,
+    ctx: _Ctx,
+    session: _Db,
+) -> NlTaskCommitPayload:
+    """Confirm an NL preview and create the template + schedule.
+
+    ``Idempotency-Key`` replay is handled by the process-wide middleware.
+    """
+    try:
+        scheduled = commit_nl_task(
+            NlIntakeContext(
+                session=session,
+                workspace_ctx=ctx,
+                llm=None,
+                attribution=_agent_attribution_from_request(session, ctx, request),
+            ),
+            body.preview_id,
+            NlCommitEdits(
+                resolved=body.resolved,
+                assumptions=body.assumptions,
+                ambiguities=body.ambiguities,
+            ),
+        )
+    except (
+        NlPreviewNotFound,
+        NlPreviewExpired,
+        NlPreviewUnresolved,
+        TaskIntakeParseError,
+    ) as exc:
+        raise _http_for_nl_task_intake(exc) from exc
+    except (InvalidRRule, InvalidBackupWorkRole, ValueError) as exc:
+        raise _http_for_schedule_mutation(exc) from exc
+    return NlTaskCommitPayload.from_scheduled(scheduled)
 
 
 @router.get(

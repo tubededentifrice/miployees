@@ -77,6 +77,7 @@ __all__ = [
     "ChecklistTemplateItem",
     "Comment",
     "Evidence",
+    "NlTaskPreview",
     "Occurrence",
     "Schedule",
     "TaskTemplate",
@@ -547,6 +548,54 @@ class Schedule(Base):
         # filters on ``(workspace_id, deleted_at IS NULL)``; the
         # composite index powers the manager's `/schedules` view.
         Index("ix_schedule_workspace_deleted", "workspace_id", "deleted_at"),
+    )
+
+
+class NlTaskPreview(Base):
+    """Short-lived preview for natural-language task intake.
+
+    ``POST /tasks/from_nl`` is dry-run-first: the LLM output and the
+    deterministic resolver result are persisted here for up to 24 hours,
+    then ``/tasks/from_nl/commit`` consumes the stored shape to create the
+    task template and schedule. The table is workspace-scoped so previews
+    cannot be committed across tenants.
+    """
+
+    __tablename__ = "nl_task_preview"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("workspace.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    original_text: Mapped[str] = mapped_column(String, nullable=False)
+    resolved_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    assumptions_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    ambiguities_json: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    committed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_nl_task_preview_workspace_expires", "workspace_id", "expires_at"),
     )
 
 
