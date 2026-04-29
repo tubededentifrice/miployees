@@ -44,6 +44,8 @@ from sqlalchemy.orm import Session
 __all__ = [
     "ChatChannelRepository",
     "ChatChannelRow",
+    "ChatMessageRepository",
+    "ChatMessageRow",
     "PushTokenRepository",
     "PushTokenRow",
 ]
@@ -66,6 +68,21 @@ class ChatChannelRow:
     title: str | None
     created_at: datetime
     archived_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessageRow:
+    """Immutable projection of a ``chat_message`` row."""
+
+    id: str
+    workspace_id: str
+    channel_id: str
+    author_user_id: str | None
+    author_label: str
+    body_md: str
+    attachments_json: list[dict[str, str]]
+    dispatched_to_agent_at: datetime | None
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,4 +335,44 @@ class ChatChannelRepository(Protocol):
         user_id: str,
     ) -> None:
         """Remove an explicit channel member idempotently."""
+        ...
+
+
+class ChatMessageRepository(Protocol):
+    """Read + write seam for ``chat_message`` rows."""
+
+    @property
+    def session(self) -> Session:
+        """Return the underlying SQLAlchemy session for audit seams."""
+        ...
+
+    def display_label_for_user(self, *, workspace_id: str, user_id: str) -> str:
+        """Return the denormalised display label for an author."""
+        ...
+
+    def insert(
+        self,
+        *,
+        message_id: str,
+        workspace_id: str,
+        channel_id: str,
+        author_user_id: str | None,
+        author_label: str,
+        body_md: str,
+        attachments_json: list[dict[str, str]],
+        created_at: datetime,
+    ) -> ChatMessageRow:
+        """Insert a fresh message row and return its projection."""
+        ...
+
+    def list_for_channel(
+        self,
+        *,
+        workspace_id: str,
+        channel_id: str,
+        before_created_at: datetime | None,
+        before_id: str | None,
+        limit: int,
+    ) -> Sequence[ChatMessageRow]:
+        """Return messages newest-first, keyset-paged by ``created_at`` + ``id``."""
         ...

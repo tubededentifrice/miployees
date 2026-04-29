@@ -63,7 +63,7 @@ import secrets
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, Iterable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Final
 
@@ -313,7 +313,7 @@ class SSEFanOut:
         """
         cls = type(event)
         kind = cls.name
-        roles = tuple(cls.allowed_roles)
+        roles = _roles_for_event(event, kind=kind, default=tuple(cls.allowed_roles))
         user_scope: str | None = None
         if cls.user_scoped:
             # The registry invariant (see ``registry.register``)
@@ -682,6 +682,7 @@ _INVALIDATIONS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
     "expense.approved": (("expenses",),),
     "shift.ended": (("shifts",), ("my-schedule",)),
     "time.shift.changed": (("shifts",), ("my-schedule",)),
+    "chat.message.sent": (("chat", "channels"),),
     # Bell-menu unread count + the notification list. Both query keys
     # are per-recipient; the event is user-scoped so only the
     # addressee's tabs receive it — the invalidation fires against
@@ -689,6 +690,20 @@ _INVALIDATIONS: Final[dict[str, tuple[tuple[str, ...], ...]]] = {
     # in other browsers logged into the same workspace.
     "notification.created": (("notifications", "unread"), ("notifications",)),
 }
+
+
+def _roles_for_event(
+    event: Event,
+    *,
+    kind: str,
+    default: tuple[EventRole, ...],
+) -> tuple[EventRole, ...]:
+    if kind != "chat.message.sent":
+        return default
+    channel_kind = getattr(event, "channel_kind", None)
+    if channel_kind == "staff":
+        return ("manager", "worker")
+    return ("manager",)
 
 
 def _default_invalidates(kind: str) -> list[list[str]]:
@@ -823,7 +838,7 @@ async def _stream_events(
     role: EventRole,
     last_event_id: _ParsedLastEventId,
     heartbeat_interval: float,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes]:
     """Yield SSE frames for one client connection.
 
     Three loops interleave:

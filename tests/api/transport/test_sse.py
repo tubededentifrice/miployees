@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from typing import ClassVar
@@ -36,7 +37,13 @@ from app.api.transport.sse import (
 from app.events import bus as default_bus
 from app.events import registry as registry_module
 from app.events.registry import ALL_ROLES, Event, register
-from app.events.types import TaskCompleted, TaskCreated, TaskSkipped, TaskUpdated
+from app.events.types import (
+    ChatMessageSent,
+    TaskCompleted,
+    TaskCreated,
+    TaskSkipped,
+    TaskUpdated,
+)
 
 
 def _fresh_id() -> _ParsedLastEventId:
@@ -278,6 +285,7 @@ class TestDefaultInvalidates:
     def test_known_kind(self) -> None:
         assert _default_invalidates("task.created") == [["tasks"]]
         assert _default_invalidates("shift.ended") == [["shifts"], ["my-schedule"]]
+        assert _default_invalidates("chat.message.sent") == [["chat", "channels"]]
 
     def test_unknown_kind_empty(self) -> None:
         assert _default_invalidates("agent.turn.started") == []
@@ -483,7 +491,7 @@ class TestFanOutDirect:
         # Freeze time forward across the 60 s window and confirm
         # the buffer is empty on replay.
         clock = {"now": 1000.0}
-        monkeypatch.setattr(sse_mod.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
 
         fresh_fanout.publish(
             workspace_id="ws_1",
@@ -864,6 +872,58 @@ class TestBindToBus:
         assert data["workspace_id"] == "01HX00000000000000000WS0000"
         # Timestamp is serialised as ISO-8601 string.
         assert data["occurred_at"].startswith("2026-04-24")
+
+    async def test_chat_message_role_scope_tracks_channel_kind(
+        self,
+        fresh_fanout: SSEFanOut,
+        isolate_bus: None,
+    ) -> None:
+        from app.events.bus import EventBus
+
+        local_bus = EventBus()
+        fresh_fanout.bind_to_bus(local_bus)
+        manager = fresh_fanout.subscribe(
+            workspace_id="01HX00000000000000000WS0000",
+            user_id="01HX00000000000000000MGR000",
+            role="manager",
+        )
+        worker = fresh_fanout.subscribe(
+            workspace_id="01HX00000000000000000WS0000",
+            user_id="01HX00000000000000000WRK000",
+            role="worker",
+        )
+        local_bus.publish(
+            ChatMessageSent(
+                workspace_id="01HX00000000000000000WS0000",
+                actor_id="01HX00000000000000000MGR000",
+                correlation_id="01HX00000000000000000COR000",
+                occurred_at=_utc(),
+                channel_id="01HX00000000000000000CHA000",
+                message_id="01HX00000000000000000MSG000",
+                author_user_id="01HX00000000000000000MGR000",
+                channel_kind="staff",
+            )
+        )
+        await asyncio.wait_for(manager.queue.get(), 0.5)
+        await asyncio.wait_for(worker.queue.get(), 0.5)
+
+        local_bus.publish(
+            ChatMessageSent(
+                workspace_id="01HX00000000000000000WS0000",
+                actor_id="01HX00000000000000000MGR000",
+                correlation_id="01HX00000000000000000COR001",
+                occurred_at=_utc(),
+                channel_id="01HX00000000000000000CHA001",
+                message_id="01HX00000000000000000MSG001",
+                author_user_id="01HX00000000000000000MGR000",
+                channel_kind="manager",
+            )
+        )
+        manager_frame = await asyncio.wait_for(manager.queue.get(), 0.5)
+        assert json.loads(_parse_frames(manager_frame)[0]["data"])["channel_kind"] == (
+            "manager"
+        )
+        assert worker.queue.empty()
 
 
 # ---------------------------------------------------------------------------

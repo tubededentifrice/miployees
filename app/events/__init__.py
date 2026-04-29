@@ -10,6 +10,7 @@ from app.events.registry import (
     registered_events,
 )
 from app.events.types import (
+    ChatMessageSent,
     ExpenseApproved,
     ExpenseReimbursed,
     ExpenseRejected,
@@ -32,6 +33,7 @@ from app.events.types import (
 )
 
 __all__ = [
+    "ChatMessageSent",
     "Event",
     "EventAlreadyRegistered",
     "EventBus",

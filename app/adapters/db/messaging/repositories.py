@@ -23,22 +23,31 @@ owns the transaction boundary (§01 "Key runtime invariants" #3).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.adapters.db.messaging.models import ChatChannel, ChatChannelMember, PushToken
+from app.adapters.db.identity.models import User
+from app.adapters.db.messaging.models import (
+    ChatChannel,
+    ChatChannelMember,
+    ChatMessage,
+    PushToken,
+)
 from app.adapters.db.workspace.models import UserWorkspace, Workspace
 from app.domain.messaging.ports import (
     ChatChannelRepository,
     ChatChannelRow,
+    ChatMessageRepository,
+    ChatMessageRow,
     PushTokenRepository,
     PushTokenRow,
 )
 
 __all__ = [
     "SqlAlchemyChatChannelRepository",
+    "SqlAlchemyChatMessageRepository",
     "SqlAlchemyPushTokenRepository",
 ]
 
@@ -71,8 +80,36 @@ def _to_channel_row(row: ChatChannel) -> ChatChannelRow:
         source=row.source,
         external_ref=row.external_ref,
         title=row.title,
-        created_at=row.created_at,
-        archived_at=row.archived_at,
+        created_at=_as_utc(row.created_at),
+        archived_at=_as_utc(row.archived_at) if row.archived_at is not None else None,
+    )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _to_message_row(row: ChatMessage) -> ChatMessageRow:
+    return ChatMessageRow(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        channel_id=row.channel_id,
+        author_user_id=row.author_user_id,
+        author_label=row.author_label,
+        body_md=row.body_md,
+        attachments_json=[
+            {"blob_hash": str(item["blob_hash"])}
+            for item in row.attachments_json
+            if isinstance(item, dict) and "blob_hash" in item
+        ],
+        dispatched_to_agent_at=(
+            _as_utc(row.dispatched_to_agent_at)
+            if row.dispatched_to_agent_at is not None
+            else None
+        ),
+        created_at=_as_utc(row.created_at),
     )
 
 
@@ -229,6 +266,86 @@ class SqlAlchemyChatChannelRepository(ChatChannelRepository):
                 ChatChannel.id == channel_id,
             )
         ).one()
+
+
+class SqlAlchemyChatMessageRepository(ChatMessageRepository):
+    """SA-backed concretion of :class:`ChatMessageRepository`."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    @property
+    def session(self) -> Session:
+        return self._session
+
+    def display_label_for_user(self, *, workspace_id: str, user_id: str) -> str:
+        row = self._session.scalars(
+            select(User)
+            .join(UserWorkspace, UserWorkspace.user_id == User.id)
+            .where(
+                User.id == user_id,
+                UserWorkspace.workspace_id == workspace_id,
+            )
+        ).one()
+        return row.display_name or row.email
+
+    def insert(
+        self,
+        *,
+        message_id: str,
+        workspace_id: str,
+        channel_id: str,
+        author_user_id: str | None,
+        author_label: str,
+        body_md: str,
+        attachments_json: list[dict[str, str]],
+        created_at: datetime,
+    ) -> ChatMessageRow:
+        row = ChatMessage(
+            id=message_id,
+            workspace_id=workspace_id,
+            channel_id=channel_id,
+            author_user_id=author_user_id,
+            author_label=author_label,
+            body_md=body_md,
+            attachments_json=attachments_json,
+            dispatched_to_agent_at=None,
+            created_at=created_at,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return _to_message_row(row)
+
+    def list_for_channel(
+        self,
+        *,
+        workspace_id: str,
+        channel_id: str,
+        before_created_at: datetime | None,
+        before_id: str | None,
+        limit: int,
+    ) -> Sequence[ChatMessageRow]:
+        stmt = (
+            select(ChatMessage)
+            .where(
+                ChatMessage.workspace_id == workspace_id,
+                ChatMessage.channel_id == channel_id,
+            )
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+            .limit(limit)
+        )
+        if before_created_at is not None and before_id is not None:
+            stmt = stmt.where(
+                or_(
+                    ChatMessage.created_at < before_created_at,
+                    (
+                        (ChatMessage.created_at == before_created_at)
+                        & (ChatMessage.id < before_id)
+                    ),
+                )
+            )
+        rows = self._session.scalars(stmt).all()
+        return [_to_message_row(row) for row in rows]
 
 
 class SqlAlchemyPushTokenRepository(PushTokenRepository):

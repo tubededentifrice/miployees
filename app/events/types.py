@@ -46,6 +46,7 @@ __all__ = [
     "AgentTurnStarted",
     "ApprovalDecided",
     "ApprovalDecision",
+    "ChatMessageSent",
     "ExpenseApproved",
     "ExpenseReimbursed",
     "ExpenseRejected",
@@ -470,6 +471,26 @@ class TaskCommentAdded(Event):
     kind: Literal["user", "agent", "system"]
     author_user_id: str | None
     mentioned_user_ids: list[str]
+
+
+@register
+class ChatMessageSent(Event):
+    """A chat message row was appended to a channel.
+
+    Payload carries identifiers only, so SSE subscribers invalidate and
+    re-fetch the message list through the normal channel-visibility gate.
+    The SSE transport narrows this further by ``channel_kind``: staff
+    channel messages reach managers and workers, while manager and
+    gateway-channel messages stay manager-only.
+    """
+
+    name: ClassVar[str] = "chat.message.sent"
+    allowed_roles: ClassVar[tuple[EventRole, ...]] = ("manager", "worker")
+
+    channel_id: str
+    message_id: str
+    author_user_id: str | None
+    channel_kind: Literal["staff", "manager", "chat_gateway"]
 
 
 @register

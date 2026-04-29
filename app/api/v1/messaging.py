@@ -49,6 +49,7 @@ from sqlalchemy.orm import Session
 from app.adapters.db.messaging.repositories import SqlAlchemyPushTokenRepository
 from app.api.deps import current_workspace_context, db_session
 from app.api.messaging.channels import build_channels_router
+from app.api.messaging.messages import build_messages_router
 from app.domain.messaging.push_tokens import (
     MAX_ENDPOINT_LEN,
     EndpointNotAllowed,
@@ -60,6 +61,7 @@ from app.domain.messaging.push_tokens import (
     register,
     unregister,
 )
+from app.events.bus import EventBus
 from app.tenancy import WorkspaceContext
 
 __all__ = [
@@ -280,6 +282,7 @@ def _http_for_push_error(exc: Exception) -> HTTPException:
 def build_messaging_router(
     *,
     monotonic: _MonotonicFn | None = None,
+    event_bus: EventBus | None = None,
 ) -> APIRouter:
     """Build the messaging router with an injectable monotonic clock.
 
@@ -291,6 +294,7 @@ def build_messaging_router(
 
     r = APIRouter(tags=["messaging"])
     r.include_router(build_channels_router())
+    r.include_router(build_messages_router(event_bus=event_bus))
 
     @r.get(
         "/notifications/push/vapid-key",
